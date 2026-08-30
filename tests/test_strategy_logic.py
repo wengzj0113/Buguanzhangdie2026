@@ -1,6 +1,6 @@
 import pytest
 
-from strategy_logic import CycleMode, Direction, DistanceMode, StrategyModel, cycle_directions
+from strategy_logic import CycleMode, Direction, DistanceMode, OrderType, StrategyModel, cycle_directions
 
 
 def test_cycle_templates_cover_both_modes_and_first_directions():
@@ -107,7 +107,10 @@ def test_candle_range_mode_skips_a_new_order_outside_inclusive_bounds(range_poin
         max_range_points=1000,
     )
 
-    actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=range_points)
+    actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=range_points,
+        previous_high=1.1000, previous_low=1.0400,
+    )
 
     assert actions == []
     assert model.position is None
@@ -123,7 +126,10 @@ def test_candle_range_mode_accepts_boundary_and_middle_values(range_points):
         max_range_points=1000,
     )
 
-    actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=range_points)
+    actions = model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=range_points,
+        previous_high=1.1000, previous_low=1.0400,
+    )
 
     assert actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
     assert model.position.stop_loss == pytest.approx(1.1002 - range_points * 0.0001)
@@ -143,6 +149,86 @@ def test_fixed_distance_mode_ignores_an_invalid_candle_range():
     assert actions[0] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
 
 
+@pytest.mark.parametrize(
+    ("order_type", "bid", "ask", "expected_first", "expected_cycle"),
+    [
+        (OrderType.FORWARD, 1.1010, 1.1012, Direction.BUY, CycleMode.MODE_1),
+        (OrderType.REVERSE, 1.1010, 1.1012, Direction.SELL, CycleMode.MODE_2),
+        (OrderType.FORWARD, 1.0390, 1.0392, Direction.SELL, CycleMode.MODE_1),
+        (OrderType.REVERSE, 1.0390, 1.0392, Direction.BUY, CycleMode.MODE_2),
+    ],
+)
+def test_candle_breakout_selects_first_direction_and_cycle_from_order_type(
+    order_type, bid, ask, expected_first, expected_cycle,
+):
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+        order_type=order_type,
+    )
+
+    actions = model.on_tick(
+        bid=bid, ask=ask, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+
+    assert actions[0] == {"kind": "market", "direction": expected_first, "lots": 0.01}
+    assert model.cycle_mode is expected_cycle
+    assert model.sequence[0] is expected_first
+
+
+def test_candle_range_mode_waits_for_a_breakout_before_opening():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+        order_type=OrderType.FORWARD,
+    )
+
+    actions = model.on_tick(
+        bid=1.0700, ask=1.0702, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+
+    assert actions == []
+    assert model.position is None
+    assert model.pending is None
+
+
+def test_candle_mode_ignores_user_first_direction_and_cycle_mode_inputs():
+    forward_model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_2, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+        order_type=OrderType.FORWARD,
+    )
+    forward_actions = forward_model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+
+    reverse_model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_3, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+        order_type=OrderType.REVERSE,
+    )
+    reverse_actions = reverse_model.on_tick(
+        bid=1.0390, ask=1.0392, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+
+    assert forward_actions[0]["direction"] is Direction.BUY
+    assert forward_model.cycle_mode is CycleMode.MODE_1
+    assert reverse_actions[0]["direction"] is Direction.BUY
+    assert reverse_model.cycle_mode is CycleMode.MODE_2
+
+
 def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
@@ -151,7 +237,10 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         max_range_points=1000,
     )
 
-    model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=600)
+    model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
     for _ in range(3):
         pending = model.pending
         model.fill_pending(pending.price)
@@ -159,6 +248,7 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
             bid=model.position.entry,
             ask=model.position.entry + 0.0002,
             candle_range_points=600,
+            previous_high=1.1000, previous_low=1.0400,
         )
 
     pending = model.pending
@@ -167,12 +257,13 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         bid=model.position.entry,
         ask=model.position.entry + 0.0002,
         candle_range_points=300,
+        previous_high=1.1000, previous_low=1.0700,
     )
 
     assert model.position.lots == pytest.approx(0.16)
     assert actions[0] == {
-        "kind": "pending", "direction": Direction.SELL, "lots": 0.32,
-        "price": model.position.stop_loss, "order_type": "SELL_LIMIT",
+        "kind": "pending", "direction": Direction.BUY, "lots": 0.32,
+        "price": model.position.stop_loss, "order_type": "BUY_LIMIT",
     }
 
     position = model.position
@@ -180,9 +271,10 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         bid=position.stop_loss,
         ask=position.stop_loss + 0.0002,
         candle_range_points=300,
+        previous_high=1.1000, previous_low=1.0700,
     )
     assert stop_actions[1] == {
-        "kind": "market", "direction": Direction.SELL, "lots": 0.32,
+        "kind": "market", "direction": Direction.BUY, "lots": 0.32,
     }
 
 
@@ -194,12 +286,16 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
         max_range_points=1000,
     )
 
-    first_actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=600)
+    first_actions = model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
     first_stop = model.position.stop_loss
     first_take_profit = model.position.take_profit
 
     unchanged_actions = model.on_tick(
-        bid=1.1000, ask=1.1002, candle_range_points=900,
+        bid=1.1010, ask=1.1012, candle_range_points=900,
+        previous_high=1.1000, previous_low=1.0100,
     )
 
     assert unchanged_actions == []
@@ -209,7 +305,8 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
 
     model.on_tick(bid=first_take_profit, ask=first_take_profit + 0.0002, candle_range_points=900)
     new_group_actions = model.on_tick(
-        bid=1.1000, ask=1.1002, candle_range_points=900,
+        bid=1.1010, ask=1.1012, candle_range_points=900,
+        previous_high=1.1000, previous_low=1.0100,
     )
 
     assert new_group_actions[0] == {

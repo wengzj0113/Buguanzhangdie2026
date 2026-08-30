@@ -18,6 +18,11 @@ class DistanceMode(Enum):
     CANDLE_RANGE = "candle_range"
 
 
+class OrderType(Enum):
+    FORWARD = "forward"
+    REVERSE = "reverse"
+
+
 def cycle_directions(initial_direction, cycle_mode):
     if cycle_mode is CycleMode.MODE_1:
         return ([Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY, Direction.SELL, Direction.SELL]
@@ -52,7 +57,8 @@ class Pending:
 
 class StrategyModel:
     def __init__(self, initial_direction, cycle_mode, initial_lots, multiplier, distance, point,
-                 distance_mode=DistanceMode.FIXED, min_range_points=500, max_range_points=1000):
+                 distance_mode=DistanceMode.FIXED, min_range_points=500, max_range_points=1000,
+                 order_type=OrderType.FORWARD):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
@@ -62,6 +68,7 @@ class StrategyModel:
         self.distance_mode = distance_mode
         self.min_range_points = min_range_points
         self.max_range_points = max_range_points
+        self.order_type = order_type
         self.position = None
         self.pending = None
         self.current_index = 0
@@ -105,13 +112,41 @@ class StrategyModel:
             "order_type": self.pending.order_type,
         }
 
-    def on_tick(self, bid, ask, candle_range_points=None):
+    def _breakout_direction(self, bid, ask, previous_high, previous_low):
+        if bid > previous_high:
+            return Direction.BUY
+        if ask < previous_low:
+            return Direction.SELL
+        return None
+
+    def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None):
         if self.position is None and self.pending is None:
             distance_points = self._distance(candle_range_points)
             if distance_points is None:
                 return []
             self.current_index = 0
-            direction = self.sequence[self.current_index]
+            if self.distance_mode is DistanceMode.CANDLE_RANGE:
+                if previous_high is None or previous_low is None:
+                    return []
+                breakout_direction = self._breakout_direction(
+                    bid, ask, previous_high, previous_low,
+                )
+                if breakout_direction is None:
+                    return []
+                direction = (
+                    breakout_direction
+                    if self.order_type is OrderType.FORWARD
+                    else (Direction.SELL if breakout_direction is Direction.BUY else Direction.BUY)
+                )
+                self.cycle_mode = (
+                    CycleMode.MODE_1
+                    if self.order_type is OrderType.FORWARD
+                    else CycleMode.MODE_2
+                )
+                self.initial_direction = direction
+                self.sequence = cycle_directions(direction, self.cycle_mode)
+            else:
+                direction = self.sequence[self.current_index]
             entry = ask if direction is Direction.BUY else bid
             self._open(direction, entry, self.initial_lots, distance_points)
             self._next_pending(bid, ask, distance_points)

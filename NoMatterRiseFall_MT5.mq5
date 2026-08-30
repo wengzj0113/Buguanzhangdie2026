@@ -23,9 +23,16 @@ enum DistanceMode
    DISTANCE_CANDLE_RANGE = 1
   };
 
+enum OrderTypeMode
+  {
+   ORDERTYPE_FORWARD = 0,
+   ORDERTYPE_REVERSE = 1
+  };
+
 input FirstDirection InpFirstDirection = FIRST_BUY;
 input CycleMode      InpCycleMode = CYCLE_MODE_1;
 input DistanceMode   InpDistanceMode = DISTANCE_FIXED;
+input OrderTypeMode  ordertype = ORDERTYPE_FORWARD;
 input double         InpInitialLots = 0.01;
 input double         InpReverseMultiplier = 2.0;
 input int            InpStopLossDistancePoints = 500;
@@ -43,6 +50,8 @@ int    g_cycle_index = 0;
 int    g_pending_index = -1;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
+int    g_group_stop_points = 0;
+int    g_group_take_profit_points = 0;
 
 string StatePrefix()
   {
@@ -56,6 +65,8 @@ void SaveState()
    GlobalVariableSet(prefix + ".index", (double)g_cycle_index);
    GlobalVariableSet(prefix + ".pending", (double)g_pending_index);
    GlobalVariableSet(prefix + ".meta", (double)(g_active_first_direction + g_active_cycle_mode * 2));
+   GlobalVariableSet(prefix + ".slpoints", (double)g_group_stop_points);
+   GlobalVariableSet(prefix + ".tppoints", (double)g_group_take_profit_points);
   }
 
 void ClearState()
@@ -64,6 +75,10 @@ void ClearState()
    GlobalVariableDel(prefix + ".index");
    GlobalVariableDel(prefix + ".pending");
    GlobalVariableDel(prefix + ".meta");
+   GlobalVariableDel(prefix + ".slpoints");
+   GlobalVariableDel(prefix + ".tppoints");
+   g_group_stop_points = 0;
+   g_group_take_profit_points = 0;
   }
 
 void LoadState()
@@ -83,6 +98,18 @@ void LoadState()
       g_cycle_index = saved_index;
       g_active_first_direction = saved_first;
       g_active_cycle_mode = saved_mode;
+      g_group_stop_points = 0;
+      g_group_take_profit_points = 0;
+      if(GlobalVariableCheck(prefix + ".slpoints") && GlobalVariableCheck(prefix + ".tppoints"))
+        {
+         const int saved_stop_points = (int)MathRound(GlobalVariableGet(prefix + ".slpoints"));
+         const int saved_take_profit_points = (int)MathRound(GlobalVariableGet(prefix + ".tppoints"));
+         if(saved_stop_points > 0 && saved_take_profit_points > 0)
+           {
+            g_group_stop_points = saved_stop_points;
+            g_group_take_profit_points = saved_take_profit_points;
+           }
+        }
      }
    if(GlobalVariableCheck(prefix + ".pending"))
       g_pending_index = (int)MathRound(GlobalVariableGet(prefix + ".pending"));
@@ -136,6 +163,21 @@ long PendingDirection(const long pending_type)
           ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
   }
 
+bool GetPreviousCandleRange(double &previous_high, double &previous_low,
+                            int &range_points)
+  {
+   previous_high = iHigh(_Symbol, _Period, 1);
+   previous_low = iLow(_Symbol, _Period, 1);
+   if(previous_high <= 0.0 || previous_low <= 0.0 || previous_high <= previous_low)
+      return false;
+
+   range_points = (int)MathRound((previous_high - previous_low) / _Point);
+   if(range_points < InpCandleMinRangePoints || range_points > InpCandleMaxRangePoints)
+      return false;
+
+   return true;
+  }
+
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(InpDistanceMode == DISTANCE_FIXED)
@@ -145,13 +187,10 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
       return stop_loss_points > 0 && take_profit_points > 0;
      }
 
-   const double previous_high = iHigh(_Symbol, _Period, 1);
-   const double previous_low = iLow(_Symbol, _Period, 1);
-   if(previous_high <= 0.0 || previous_low <= 0.0 || previous_high <= previous_low)
-      return false;
-
-   const int range_points = (int)MathRound((previous_high - previous_low) / _Point);
-   if(range_points < InpCandleMinRangePoints || range_points > InpCandleMaxRangePoints)
+   double previous_high = 0.0;
+   double previous_low = 0.0;
+   int range_points = 0;
+   if(!GetPreviousCandleRange(previous_high, previous_low, range_points))
       return false;
 
    stop_loss_points = range_points;
@@ -159,9 +198,33 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
    return true;
   }
 
+bool GetBreakoutDirection(const double previous_high, const double previous_low,
+                          long &first_direction)
+  {
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid > previous_high)
+     {
+      first_direction = ordertype == ORDERTYPE_FORWARD ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      return true;
+     }
+   if(ask < previous_low)
+     {
+      first_direction = ordertype == ORDERTYPE_FORWARD ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      return true;
+     }
+   return false;
+  }
+
 bool GetActiveDistancePoints(const double stop_loss, const double take_profit,
                             int &stop_loss_points, int &take_profit_points)
   {
+   if(g_group_stop_points > 0 && g_group_take_profit_points > 0)
+     {
+      stop_loss_points = g_group_stop_points;
+      take_profit_points = g_group_take_profit_points;
+      return true;
+     }
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && stop_loss > 0.0 && take_profit > 0.0)
      {
       const int active_range_points = (int)MathRound(MathAbs(take_profit - stop_loss)
@@ -488,19 +551,20 @@ void Manage()
         {
          int stop_loss_points = 0;
          int take_profit_points = 0;
-         if(!GetDistancePoints(stop_loss_points, take_profit_points))
+         if(!GetActiveDistancePoints(stop_loss, take_profit,
+                                     stop_loss_points, take_profit_points))
             return;
          SetStops(position_ticket, position_type, entry, stop_loss_points, take_profit_points);
-          const double calculated_stop = position_type == POSITION_TYPE_BUY
-                                         ? PriceNormalize(entry - stop_loss_points * _Point)
-                                         : PriceNormalize(entry + stop_loss_points * _Point);
-          const double calculated_take_profit = position_type == POSITION_TYPE_BUY
-                                                ? PriceNormalize(entry + take_profit_points * _Point)
-                                                : PriceNormalize(entry - take_profit_points * _Point);
+         const double calculated_stop = position_type == POSITION_TYPE_BUY
+                                        ? PriceNormalize(entry - stop_loss_points * _Point)
+                                        : PriceNormalize(entry + stop_loss_points * _Point);
+         const double calculated_take_profit = position_type == POSITION_TYPE_BUY
+                                               ? PriceNormalize(entry + take_profit_points * _Point)
+                                               : PriceNormalize(entry - take_profit_points * _Point);
          ulong existing_pending = 0;
          long existing_type = 0;
          double existing_volume = 0.0;
-          double existing_price = 0.0;
+         double existing_price = 0.0;
           if(!FindPending(existing_pending, existing_type, existing_volume, existing_price))
              PlaceNextPending(SequenceDirection(NextCycleIndex()), calculated_stop,
                               calculated_take_profit, volume);
@@ -553,17 +617,37 @@ void Manage()
    if(FindPending(pending_ticket, pending_type, pending_volume, pending_price))
       return;
 
+   int initial_stop_points = 0;
+   int initial_take_profit_points = 0;
+   long first_direction = ORDER_TYPE_BUY;
+   if(InpDistanceMode == DISTANCE_CANDLE_RANGE)
+     {
+      double previous_high = 0.0;
+      double previous_low = 0.0;
+      int range_points = 0;
+      if(!GetPreviousCandleRange(previous_high, previous_low, range_points)
+         || !GetBreakoutDirection(previous_high, previous_low, first_direction))
+         return;
+      initial_stop_points = range_points;
+      initial_take_profit_points = range_points;
+      g_active_first_direction = (int)first_direction;
+      g_active_cycle_mode = ordertype == ORDERTYPE_FORWARD ? CYCLE_MODE_1 : CYCLE_MODE_2;
+     }
+   else
+     {
+      g_active_first_direction = InpFirstDirection;
+      g_active_cycle_mode = InpCycleMode;
+      first_direction = InpFirstDirection == FIRST_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
+         return;
+     }
    g_had_position = false;
    g_cycle_index = 0;
    g_pending_index = -1;
-   g_active_first_direction = InpFirstDirection;
-   g_active_cycle_mode = InpCycleMode;
-   int initial_stop_points = 0;
-   int initial_take_profit_points = 0;
-   if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
-      return;
+   g_group_stop_points = initial_stop_points;
+   g_group_take_profit_points = initial_take_profit_points;
    SaveState();
-   if(OpenMarket(InpFirstDirection == FIRST_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL, InpInitialLots))
+   if(OpenMarket(first_direction, InpInitialLots))
       Manage();
   }
 
