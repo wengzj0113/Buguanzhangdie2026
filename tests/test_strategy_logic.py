@@ -1,6 +1,6 @@
 import pytest
 
-from strategy_logic import CycleMode, Direction, StrategyModel, cycle_directions
+from strategy_logic import CycleMode, Direction, DistanceMode, StrategyModel, cycle_directions
 
 
 def test_cycle_templates_cover_both_modes_and_first_directions():
@@ -96,6 +96,128 @@ def test_take_profit_ends_cycle_and_removes_reverse_pending():
     assert actions == [{"kind": "cancel_pending"}]
     assert model.position is None
     assert model.pending is None
+
+
+@pytest.mark.parametrize("range_points", [499, 1001])
+def test_candle_range_mode_skips_a_new_order_outside_inclusive_bounds(range_points):
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=range_points)
+
+    assert actions == []
+    assert model.position is None
+    assert model.pending is None
+
+
+@pytest.mark.parametrize("range_points", [500, 700, 1000])
+def test_candle_range_mode_accepts_boundary_and_middle_values(range_points):
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=range_points)
+
+    assert actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
+    assert model.position.stop_loss == pytest.approx(1.1002 - range_points * 0.0001)
+    assert model.position.take_profit == pytest.approx(1.1002 + range_points * 0.0001)
+
+
+def test_fixed_distance_mode_ignores_an_invalid_candle_range():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.FIXED,
+        min_range_points=500,
+        max_range_points=1000,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=300)
+
+    assert actions[0] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
+
+
+def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=600)
+    for _ in range(3):
+        pending = model.pending
+        model.fill_pending(pending.price)
+        model.on_tick(
+            bid=model.position.entry,
+            ask=model.position.entry + 0.0002,
+            candle_range_points=600,
+        )
+
+    pending = model.pending
+    model.fill_pending(pending.price)
+    actions = model.on_tick(
+        bid=model.position.entry,
+        ask=model.position.entry + 0.0002,
+        candle_range_points=300,
+    )
+
+    assert model.position.lots == pytest.approx(0.16)
+    assert actions[0] == {
+        "kind": "pending", "direction": Direction.SELL, "lots": 0.32,
+        "price": model.position.stop_loss, "order_type": "SELL_LIMIT",
+    }
+
+    position = model.position
+    stop_actions = model.on_tick(
+        bid=position.stop_loss,
+        ask=position.stop_loss + 0.0002,
+        candle_range_points=300,
+    )
+    assert stop_actions[1] == {
+        "kind": "market", "direction": Direction.SELL, "lots": 0.32,
+    }
+
+
+def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500,
+        max_range_points=1000,
+    )
+
+    first_actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=600)
+    first_stop = model.position.stop_loss
+    first_take_profit = model.position.take_profit
+
+    unchanged_actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=900,
+    )
+
+    assert unchanged_actions == []
+    assert model.position.stop_loss == pytest.approx(first_stop)
+    assert model.position.take_profit == pytest.approx(first_take_profit)
+    assert model.pending.distance_points == pytest.approx(600)
+
+    model.on_tick(bid=first_take_profit, ask=first_take_profit + 0.0002, candle_range_points=900)
+    new_group_actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=900,
+    )
+
+    assert new_group_actions[0] == {
+        "kind": "market", "direction": Direction.BUY, "lots": 0.01,
+    }
+    assert model.position.stop_loss == pytest.approx(1.1002 - 900 * 0.0001)
+    assert model.position.take_profit == pytest.approx(1.1002 + 900 * 0.0001)
+    assert model.pending.distance_points == pytest.approx(900)
 
 
 @pytest.mark.parametrize(

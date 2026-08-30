@@ -13,6 +13,11 @@ class CycleMode(Enum):
     MODE_3 = "mode3"
 
 
+class DistanceMode(Enum):
+    FIXED = "fixed"
+    CANDLE_RANGE = "candle_range"
+
+
 def cycle_directions(initial_direction, cycle_mode):
     if cycle_mode is CycleMode.MODE_1:
         return ([Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY, Direction.SELL, Direction.SELL]
@@ -42,39 +47,56 @@ class Pending:
     lots: float
     price: float
     order_type: str
+    distance_points: float
 
 
 class StrategyModel:
-    def __init__(self, initial_direction, cycle_mode, initial_lots, multiplier, distance, point):
+    def __init__(self, initial_direction, cycle_mode, initial_lots, multiplier, distance, point,
+                 distance_mode=DistanceMode.FIXED, min_range_points=500, max_range_points=1000):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
         self.multiplier = multiplier
         self.distance = distance
         self.point = point
+        self.distance_mode = distance_mode
+        self.min_range_points = min_range_points
+        self.max_range_points = max_range_points
         self.position = None
         self.pending = None
         self.current_index = 0
         self.sequence = cycle_directions(initial_direction, cycle_mode)
 
-    def _levels(self, direction, entry):
-        distance = self.distance * self.point
+    def _distance(self, candle_range_points):
+        if self.distance_mode is DistanceMode.FIXED:
+            return self.distance
+        if candle_range_points is None or not (self.min_range_points <= candle_range_points <= self.max_range_points):
+            return None
+        return candle_range_points
+
+    def _active_distance(self):
+        if self.distance_mode is DistanceMode.FIXED:
+            return self.distance
+        return abs(self.position.take_profit - self.position.stop_loss) / (2 * self.point)
+
+    def _levels(self, direction, entry, distance_points):
+        distance = distance_points * self.point
         if direction is Direction.BUY:
             return round(entry - distance, 10), round(entry + distance, 10)
         return round(entry + distance, 10), round(entry - distance, 10)
 
-    def _open(self, direction, entry, lots):
-        stop_loss, take_profit = self._levels(direction, entry)
+    def _open(self, direction, entry, lots, distance_points):
+        stop_loss, take_profit = self._levels(direction, entry, distance_points)
         self.position = Position(direction, entry, lots, stop_loss, take_profit)
 
-    def _next_pending(self, bid, ask):
+    def _next_pending(self, bid, ask, distance_points):
         direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
         price = self.position.stop_loss
         if direction is Direction.BUY:
             order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
         else:
             order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
-        self.pending = Pending(direction, self.position.lots * self.multiplier, price, order_type)
+        self.pending = Pending(direction, self.position.lots * self.multiplier, price, order_type, distance_points)
 
     def _pending_action(self):
         return {
@@ -83,13 +105,16 @@ class StrategyModel:
             "order_type": self.pending.order_type,
         }
 
-    def on_tick(self, bid, ask):
+    def on_tick(self, bid, ask, candle_range_points=None):
         if self.position is None and self.pending is None:
+            distance_points = self._distance(candle_range_points)
+            if distance_points is None:
+                return []
             self.current_index = 0
             direction = self.sequence[self.current_index]
             entry = ask if direction is Direction.BUY else bid
-            self._open(direction, entry, self.initial_lots)
-            self._next_pending(bid, ask)
+            self._open(direction, entry, self.initial_lots, distance_points)
+            self._next_pending(bid, ask, distance_points)
             return [
                 {"kind": "market", "direction": direction, "lots": self.initial_lots},
                 self._pending_action(),
@@ -107,15 +132,17 @@ class StrategyModel:
         if ((self.position.direction is Direction.BUY and bid <= self.position.stop_loss)
                 or (self.position.direction is Direction.SELL and ask >= self.position.stop_loss)):
             old_direction = self.position.direction
-            next_direction = Direction.SELL if old_direction is Direction.BUY else Direction.BUY
             next_direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
             next_entry = bid if next_direction is Direction.SELL else ask
             next_lots = self.position.lots * self.multiplier
+            next_distance = self.pending.distance_points if self.pending else self._active_distance()
             self.position = None
             self.pending = None
             self.current_index = (self.current_index + 1) % len(self.sequence)
-            self._open(next_direction, next_entry, next_lots)
-            self._next_pending(bid, ask)
+            if next_distance is None:
+                return [{"kind": "close", "direction": old_direction}]
+            self._open(next_direction, next_entry, next_lots, next_distance)
+            self._next_pending(bid, ask, next_distance)
             return [
                 {"kind": "close", "direction": old_direction},
                 {"kind": "market", "direction": next_direction, "lots": next_lots},
@@ -123,7 +150,8 @@ class StrategyModel:
             ]
 
         if self.pending is None:
-            self._next_pending(bid, ask)
+            distance_points = self._active_distance()
+            self._next_pending(bid, ask, distance_points)
             return [self._pending_action()]
 
         return []
@@ -132,4 +160,4 @@ class StrategyModel:
         pending = self.pending
         self.pending = None
         self.current_index = (self.current_index + 1) % len(self.sequence)
-        self._open(pending.direction, entry_price, pending.lots)
+        self._open(pending.direction, entry_price, pending.lots, pending.distance_points)

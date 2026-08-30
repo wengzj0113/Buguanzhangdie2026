@@ -15,12 +15,21 @@ enum CycleMode
    CYCLE_MODE_3 = 2
   };
 
+enum DistanceMode
+  {
+   DISTANCE_FIXED = 0,
+   DISTANCE_CANDLE_RANGE = 1
+  };
+
 input FirstDirection InpFirstDirection = FIRST_BUY;
 input CycleMode      InpCycleMode = CYCLE_MODE_1;
+input DistanceMode   InpDistanceMode = DISTANCE_FIXED;
 input double         InpInitialLots = 0.01;
 input double         InpReverseMultiplier = 2.0;
 input int            InpStopLossDistancePoints = 500;
 input int            InpTakeProfitDistancePoints = 500;
+input int            InpCandleMinRangePoints = 500;
+input int            InpCandleMaxRangePoints = 1000;
 input int            InpMagicNumber = 20260830;
 input string         InpOrderComment = "NoMatterRiseFall";
 
@@ -117,6 +126,46 @@ int PendingDirection(const int pending_type)
    return (pending_type == OP_BUYSTOP || pending_type == OP_BUYLIMIT) ? OP_BUY : OP_SELL;
   }
 
+bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
+  {
+   if(InpDistanceMode == DISTANCE_FIXED)
+     {
+      stop_loss_points = InpStopLossDistancePoints;
+      take_profit_points = InpTakeProfitDistancePoints;
+      return stop_loss_points > 0 && take_profit_points > 0;
+     }
+
+   const double previous_high = iHigh(Symbol(), Period(), 1);
+   const double previous_low = iLow(Symbol(), Period(), 1);
+   if(previous_high <= 0.0 || previous_low <= 0.0 || previous_high <= previous_low)
+      return false;
+
+   const int range_points = (int)MathRound((previous_high - previous_low) / Point);
+   if(range_points < InpCandleMinRangePoints || range_points > InpCandleMaxRangePoints)
+      return false;
+
+   stop_loss_points = range_points;
+   take_profit_points = range_points;
+   return true;
+  }
+
+bool GetActiveDistancePoints(const double stop_loss, const double take_profit,
+                            int &stop_loss_points, int &take_profit_points)
+  {
+   if(InpDistanceMode == DISTANCE_CANDLE_RANGE && stop_loss > 0.0 && take_profit > 0.0)
+     {
+      const int active_range_points = (int)MathRound(MathAbs(take_profit - stop_loss)
+                                                     / (2.0 * Point));
+      if(active_range_points > 0)
+        {
+         stop_loss_points = active_range_points;
+         take_profit_points = active_range_points;
+         return true;
+        }
+     }
+   return GetDistancePoints(stop_loss_points, take_profit_points);
+  }
+
 int LotDigits()
   {
    double step = MarketInfo(Symbol(), MODE_LOTSTEP);
@@ -201,10 +250,11 @@ void DeleteAllPending()
      }
   }
 
-void SetStops(const int ticket, const int type, const double entry)
+void SetStops(const int ticket, const int type, const double entry,
+              const int stop_loss_points, const int take_profit_points)
   {
-   const double distance_sl = InpStopLossDistancePoints * Point;
-   const double distance_tp = InpTakeProfitDistancePoints * Point;
+   const double distance_sl = stop_loss_points * Point;
+   const double distance_tp = take_profit_points * Point;
    double stop_loss = 0.0;
    double take_profit = 0.0;
    if(type == OP_BUY)
@@ -241,16 +291,22 @@ bool OpenMarket(const int type, const double requested_volume)
    return true;
   }
 
-bool PlaceNextPending(const int next_direction, const double stop_loss, const double current_volume)
+bool PlaceNextPending(const int next_direction, const double stop_loss,
+                      const double take_profit, const double current_volume)
   {
    if(stop_loss <= 0.0 || current_volume <= 0.0)
+      return false;
+
+   int stop_loss_points = 0;
+   int take_profit_points = 0;
+   if(!GetActiveDistancePoints(stop_loss, take_profit, stop_loss_points, take_profit_points))
       return false;
 
    RefreshRates();
    const double volume = VolumeNormalize(current_volume * InpReverseMultiplier);
    const double entry = PriceNormalize(stop_loss);
-   const double distance_sl = InpStopLossDistancePoints * Point;
-   const double distance_tp = InpTakeProfitDistancePoints * Point;
+   const double distance_sl = stop_loss_points * Point;
+   const double distance_tp = take_profit_points * Point;
    double pending_sl = 0.0;
    double pending_tp = 0.0;
    const int pending_type = PendingTypeForDirection(next_direction, entry);
@@ -304,11 +360,16 @@ bool PastLastTakeProfit()
                                          : Ask <= g_last_take_profit;
   }
 
-bool Transition(const int position_ticket, const int position_type, const double volume)
+bool Transition(const int position_ticket, const int position_type, const double volume,
+                const double stop_loss, const double take_profit)
   {
    RefreshRates();
    const int next_index = NextCycleIndex();
    const int next_type = SequenceDirection(next_index);
+   int next_stop_points = 0;
+   int next_take_profit_points = 0;
+   const bool can_open_next = GetActiveDistancePoints(stop_loss, take_profit,
+                                                      next_stop_points, next_take_profit_points);
    const double close_price = position_type == OP_BUY ? Bid : Ask;
    DeleteAllPending();
    if(!OrderSelect(position_ticket, SELECT_BY_TICKET, MODE_TRADES)
@@ -320,8 +381,21 @@ bool Transition(const int position_ticket, const int position_type, const double
    g_cycle_index = next_index;
    g_pending_index = -1;
    SaveState();
+   if(!can_open_next)
+      return true;
    if(!OpenMarket(next_type, volume * InpReverseMultiplier))
       return false;
+   int next_ticket = -1;
+   int next_position_type = OP_BUY;
+   double next_volume = 0.0;
+   double next_entry = 0.0;
+   double next_stop_loss = 0.0;
+   double next_take_profit = 0.0;
+   if(!FindPosition(next_ticket, next_position_type, next_volume, next_entry,
+                    next_stop_loss, next_take_profit))
+      return false;
+   SetStops(next_ticket, next_position_type, next_entry,
+            next_stop_points, next_take_profit_points);
    Manage();
    return true;
   }
@@ -367,22 +441,30 @@ void Manage()
            {
             DeleteAllPending();
             g_pending_index = -1;
-            PlaceNextPending(expected_direction, stop_loss, volume);
+            PlaceNextPending(expected_direction, stop_loss, take_profit, volume);
            }
         }
 
       if(stop_loss <= 0.0 || take_profit <= 0.0)
         {
-         SetStops(position_ticket, position_type, entry);
+         int stop_loss_points = 0;
+         int take_profit_points = 0;
+         if(!GetDistancePoints(stop_loss_points, take_profit_points))
+            return;
+         SetStops(position_ticket, position_type, entry, stop_loss_points, take_profit_points);
          const double calculated_stop = position_type == OP_BUY
-                                        ? PriceNormalize(entry - InpStopLossDistancePoints * Point)
-                                        : PriceNormalize(entry + InpStopLossDistancePoints * Point);
+                                        ? PriceNormalize(entry - stop_loss_points * Point)
+                                        : PriceNormalize(entry + stop_loss_points * Point);
+         const double calculated_take_profit = position_type == OP_BUY
+                                               ? PriceNormalize(entry + take_profit_points * Point)
+                                               : PriceNormalize(entry - take_profit_points * Point);
          int existing_pending = -1;
          int existing_type = OP_SELLSTOP;
          double existing_volume = 0.0;
          double existing_price = 0.0;
          if(!FindPending(existing_pending, existing_type, existing_volume, existing_price))
-            PlaceNextPending(SequenceDirection(NextCycleIndex()), calculated_stop, volume);
+            PlaceNextPending(SequenceDirection(NextCycleIndex()), calculated_stop,
+                             calculated_take_profit, volume);
          return;
         }
 
@@ -403,7 +485,7 @@ void Manage()
 
       if(StopReached(position_type, stop_loss))
         {
-         Transition(position_ticket, position_type, volume);
+         Transition(position_ticket, position_type, volume, stop_loss, take_profit);
          return;
         }
 
@@ -412,7 +494,7 @@ void Manage()
       double pending_volume = 0.0;
       double pending_price = 0.0;
       if(!FindPending(pending_ticket, pending_type, pending_volume, pending_price))
-         PlaceNextPending(SequenceDirection(NextCycleIndex()), stop_loss, volume);
+         PlaceNextPending(SequenceDirection(NextCycleIndex()), stop_loss, take_profit, volume);
       return;
      }
 
@@ -438,6 +520,10 @@ void Manage()
    g_pending_index = -1;
    g_active_first_direction = InpFirstDirection;
    g_active_cycle_mode = InpCycleMode;
+   int initial_stop_points = 0;
+   int initial_take_profit_points = 0;
+   if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
+      return;
    SaveState();
    if(OpenMarket(InpFirstDirection == FIRST_BUY ? OP_BUY : OP_SELL, InpInitialLots))
       Manage();
@@ -446,7 +532,8 @@ void Manage()
 int OnInit()
   {
    if(InpInitialLots <= 0.0 || InpReverseMultiplier <= 0.0
-      || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0)
+      || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0
+      || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints)
       return INIT_PARAMETERS_INCORRECT;
    g_active_first_direction = InpFirstDirection;
    g_active_cycle_mode = InpCycleMode;
