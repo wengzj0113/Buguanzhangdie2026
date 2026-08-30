@@ -1,6 +1,9 @@
 import pytest
 
-from strategy_logic import CycleMode, Direction, DistanceMode, OrderType, StrategyModel, cycle_directions
+from strategy_logic import (
+    CycleMode, Direction, DistanceMode, OrderType, StrategyModel, TakeProfitMode,
+    cycle_directions,
+)
 
 
 def test_cycle_templates_cover_both_modes_and_first_directions():
@@ -38,13 +41,13 @@ def test_mode_one_buy_uses_sell_stop_then_sell_limit_for_the_two_sell_steps():
 
     assert first_actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
     assert first_actions[1] == {
-        "kind": "pending", "direction": Direction.SELL, "lots": 0.02,
+        "kind": "pending", "direction": Direction.SELL, "lots": 0.01,
         "price": 1.0502, "order_type": "SELL_STOP",
     }
     assert second_actions[0] == {"kind": "close", "direction": Direction.BUY}
-    assert second_actions[1] == {"kind": "market", "direction": Direction.SELL, "lots": 0.02}
+    assert second_actions[1] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
     assert second_actions[2] == {
-        "kind": "pending", "direction": Direction.SELL, "lots": 0.04,
+        "kind": "pending", "direction": Direction.SELL, "lots": 0.02,
         "price": 1.1002, "order_type": "SELL_LIMIT",
     }
 
@@ -76,15 +79,186 @@ def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
     assert model.current_index == 0
 
 
-def test_custom_multiplier_is_applied_to_each_new_order():
-    model = StrategyModel(Direction.SELL, CycleMode.MODE_1, 0.03, 3.0, 500, 0.0001)
+def test_grid_multiplier_is_applied_to_the_next_group_grid_lot():
+    model = StrategyModel(Direction.SELL, CycleMode.MODE_1, 0.03, 3.0, 500, 0.0001,
+                          grid_count=2)
 
     first_actions = model.on_tick(bid=1.1000, ask=1.1002)
+    model.on_tick(bid=1.1250, ask=1.1252)
+    model.fill_grid_pending()
     next_actions = model.on_tick(bid=1.1500, ask=1.1502)
 
-    assert first_actions[1]["lots"] == 0.09
-    assert next_actions[1]["lots"] == 0.09
-    assert next_actions[2]["lots"] == 0.27
+    assert first_actions[1]["lots"] == 0.03
+    assert next_actions[1]["lots"] == pytest.approx(0.06)
+    assert model.grid_lots == pytest.approx(0.09)
+
+
+def test_only_a_post_stop_group_uses_the_initial_lot_multiplier():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2, initial_lot_multiplier=1.5,
+    )
+
+    first_actions = model.on_tick(bid=1.1000, ask=1.1002)
+
+    assert first_actions[0] == {
+        "kind": "market", "direction": Direction.BUY, "lots": pytest.approx(0.01),
+    }
+    assert first_actions[1]["lots"] == pytest.approx(0.015)
+
+    first_stop = model.position.stop_loss
+    next_actions = model.on_tick(bid=first_stop, ask=first_stop + 0.0002)
+
+    assert next_actions[1] == {
+        "kind": "market", "direction": Direction.SELL, "lots": pytest.approx(0.015),
+    }
+
+
+def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=5,
+    )
+
+    first_actions = model.on_tick(bid=1.1000, ask=1.1002)
+    assert first_actions[0]["lots"] == pytest.approx(0.01)
+    assert first_actions[1]["lots"] == pytest.approx(0.01)
+    assert first_actions[2] == {
+        "kind": "grid_pending", "direction": Direction.BUY,
+        "lots": 0.01, "price": 1.0902,
+        "order_type": "BUY_LIMIT", "level": 1,
+    }
+
+    grid_actions = model.fill_grid_pending()
+
+    assert grid_actions[0] == {
+        "kind": "grid",
+        "direction": Direction.BUY,
+        "lots": 0.01,
+        "price": 1.0902,
+    }
+    assert model.position.take_profit == pytest.approx(1.1402)
+    assert model.pending.lots == pytest.approx(0.02)
+    assert model.grid_pending.level == 2
+    assert model.grid_pending.price == pytest.approx(1.0802)
+    assert model.grid_pending.lots == pytest.approx(0.01)
+
+
+def test_linear_buy_tp_follows_adverse_move_and_does_not_retrace():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        take_profit_mode=TakeProfitMode.LINEAR,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    assert model.position.take_profit == pytest.approx(1.1502)
+
+    model.on_tick(bid=1.0950, ask=1.0952)
+    assert model.position.take_profit == pytest.approx(1.1452)
+
+    model.on_tick(bid=1.0980, ask=1.0982)
+    assert model.position.take_profit == pytest.approx(1.1452)
+
+
+def test_linear_sell_tp_follows_adverse_move_and_does_not_retrace():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        take_profit_mode=TakeProfitMode.LINEAR,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    assert model.position.take_profit == pytest.approx(1.0500)
+
+    model.on_tick(bid=1.1050, ask=1.1052)
+    assert model.position.take_profit == pytest.approx(1.0550)
+
+    model.on_tick(bid=1.1020, ask=1.1022)
+    assert model.position.take_profit == pytest.approx(1.0550)
+
+
+def test_grid_take_profit_stays_fixed_until_grid_fill():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=5, take_profit_mode=TakeProfitMode.GRID,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.on_tick(bid=1.0950, ask=1.0952)
+    assert model.position.take_profit == pytest.approx(1.1502)
+
+    model.fill_grid_pending()
+    assert model.position.take_profit == pytest.approx(1.1402)
+
+
+def test_losing_group_initial_lots_accumulate_and_grid_lots_double():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=5,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.fill_grid_pending()
+    first_group_stop = model.position.stop_loss
+    second_group_actions = model.on_tick(
+        bid=first_group_stop, ask=first_group_stop + 0.0002,
+    )
+
+    assert second_group_actions[1] == {
+        "kind": "market", "direction": Direction.SELL, "lots": 0.02,
+    }
+    assert model.grid_lots == pytest.approx(0.02)
+
+    model.fill_grid_pending()
+    second_group_stop = model.position.stop_loss
+    third_group_actions = model.on_tick(
+        bid=second_group_stop - 0.0002, ask=second_group_stop,
+    )
+
+    assert third_group_actions[1] == {
+        "kind": "market", "direction": Direction.SELL,
+        "lots": pytest.approx(0.06),
+    }
+    assert model.grid_lots == pytest.approx(0.04)
+
+
+def test_grid_count_is_number_of_intervals_and_outer_boundary_still_stops_group():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    assert model.grid_pending.level == 1
+    grid_actions = model.fill_grid_pending()
+    assert grid_actions[0]["kind"] == "grid"
+    assert model.grid_pending is None
+    assert model.current_index == 0
+
+    stop_actions = model.on_tick(
+        bid=model.position.stop_loss,
+        ask=model.position.stop_loss + 0.0002,
+    )
+    assert stop_actions[0] == {"kind": "close", "direction": Direction.BUY}
+    assert stop_actions[1]["kind"] == "market"
+    assert stop_actions[1]["direction"] is Direction.SELL
+
+
+def test_take_profit_resets_loss_accumulation_for_the_next_cycle():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    first_stop = model.position.stop_loss
+    model.on_tick(bid=first_stop, ask=first_stop + 0.0002)
+    second_take_profit = model.position.take_profit
+    model.on_tick(bid=second_take_profit - 0.0002, ask=second_take_profit)
+
+    new_actions = model.on_tick(bid=1.1000, ask=1.1002)
+    assert new_actions[0] == {
+        "kind": "market", "direction": Direction.BUY, "lots": 0.01,
+    }
 
 
 def test_take_profit_ends_cycle_and_removes_reverse_pending():
@@ -132,8 +306,8 @@ def test_candle_range_mode_accepts_boundary_and_middle_values(range_points):
     )
 
     assert actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
-    assert model.position.stop_loss == pytest.approx(1.1002 - range_points * 0.0001)
-    assert model.position.take_profit == pytest.approx(1.1002 + range_points * 0.0001)
+    assert model.position.stop_loss == pytest.approx(1.1012 - range_points * 0.0001)
+    assert model.position.take_profit == pytest.approx(1.1012 + range_points * 0.0001)
 
 
 def test_fixed_distance_mode_ignores_an_invalid_candle_range():
@@ -260,11 +434,12 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         previous_high=1.1000, previous_low=1.0700,
     )
 
-    assert model.position.lots == pytest.approx(0.16)
-    assert actions[0] == {
-        "kind": "pending", "direction": Direction.BUY, "lots": 0.32,
-        "price": model.position.stop_loss, "order_type": "BUY_LIMIT",
-    }
+    assert model.position.lots == pytest.approx(0.08)
+    assert actions == []
+    assert model.pending.direction is Direction.SELL
+    assert model.pending.lots == pytest.approx(0.16)
+    assert model.pending.price == pytest.approx(model.position.stop_loss)
+    assert model.pending.order_type == "SELL_LIMIT"
 
     position = model.position
     stop_actions = model.on_tick(
@@ -274,7 +449,7 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         previous_high=1.1000, previous_low=1.0700,
     )
     assert stop_actions[1] == {
-        "kind": "market", "direction": Direction.BUY, "lots": 0.32,
+        "kind": "market", "direction": Direction.SELL, "lots": 0.16,
     }
 
 
@@ -312,8 +487,8 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
     assert new_group_actions[0] == {
         "kind": "market", "direction": Direction.BUY, "lots": 0.01,
     }
-    assert model.position.stop_loss == pytest.approx(1.1002 - 900 * 0.0001)
-    assert model.position.take_profit == pytest.approx(1.1002 + 900 * 0.0001)
+    assert model.position.stop_loss == pytest.approx(1.1012 - 900 * 0.0001)
+    assert model.position.take_profit == pytest.approx(1.1012 + 900 * 0.0001)
     assert model.pending.distance_points == pytest.approx(900)
 
 
@@ -348,7 +523,7 @@ def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cyc
 
     expected = cycle_directions(initial_direction, cycle_mode)
     assert [direction for direction, _ in opened] == expected
-    assert [lots for _, lots in opened] == pytest.approx([0.01, 0.02, 0.04, 0.08, 0.16, 0.32])
+    assert [lots for _, lots in opened] == pytest.approx([0.01, 0.01, 0.02, 0.04, 0.08, 0.16])
     expected_pending_types = []
     for current, following in zip(expected, expected[1:] + expected[:1]):
         if current is Direction.BUY and following is Direction.BUY:

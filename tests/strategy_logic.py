@@ -23,6 +23,11 @@ class OrderType(Enum):
     REVERSE = "reverse"
 
 
+class TakeProfitMode(Enum):
+    GRID = "grid"
+    LINEAR = "linear"
+
+
 def cycle_directions(initial_direction, cycle_mode):
     if cycle_mode is CycleMode.MODE_1:
         return ([Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY, Direction.SELL, Direction.SELL]
@@ -53,12 +58,15 @@ class Pending:
     price: float
     order_type: str
     distance_points: float
+    kind: str = "reverse"
+    level: int = 0
 
 
 class StrategyModel:
     def __init__(self, initial_direction, cycle_mode, initial_lots, multiplier, distance, point,
                  distance_mode=DistanceMode.FIXED, min_range_points=500, max_range_points=1000,
-                 order_type=OrderType.FORWARD):
+                 order_type=OrderType.FORWARD, grid_count=0,
+                 take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
@@ -69,10 +77,23 @@ class StrategyModel:
         self.min_range_points = min_range_points
         self.max_range_points = max_range_points
         self.order_type = order_type
+        self.grid_count = grid_count
+        self.take_profit_mode = take_profit_mode
+        self.initial_lot_multiplier = initial_lot_multiplier
         self.position = None
         self.pending = None
+        self.grid_pending = None
         self.current_index = 0
         self.sequence = cycle_directions(initial_direction, cycle_mode)
+        self.cumulative_loss_lots = 0.0
+        self.previous_grid_lots = None
+        self.grid_lots = 0.0
+        self.group_total_lots = 0.0
+        self.grid_filled_levels = 0
+        self.group_anchor_entry = None
+        self.group_stop_points = None
+        self.group_take_profit_points = None
+        self.linear_extreme = None
 
     def _distance(self, candle_range_points):
         if self.distance_mode is DistanceMode.FIXED:
@@ -82,9 +103,9 @@ class StrategyModel:
         return candle_range_points
 
     def _active_distance(self):
-        if self.distance_mode is DistanceMode.FIXED:
-            return self.distance
-        return abs(self.position.take_profit - self.position.stop_loss) / (2 * self.point)
+        if self.group_take_profit_points is not None:
+            return self.group_take_profit_points
+        return self.distance
 
     def _levels(self, direction, entry, distance_points):
         distance = distance_points * self.point
@@ -92,9 +113,42 @@ class StrategyModel:
             return round(entry - distance, 10), round(entry + distance, 10)
         return round(entry + distance, 10), round(entry - distance, 10)
 
-    def _open(self, direction, entry, lots, distance_points):
+    def _open(self, direction, entry, lots, distance_points, grid_lots=None):
+        self.group_stop_points = distance_points
+        self.group_take_profit_points = distance_points
+        self.group_anchor_entry = entry
+        self.linear_extreme = entry
+        self.grid_filled_levels = 0
+        self.grid_pending = None
+        self.group_total_lots = lots
+        if grid_lots is not None:
+            self.grid_lots = grid_lots
+        elif self.previous_grid_lots is None:
+            self.grid_lots = lots
+        else:
+            self.grid_lots = self.previous_grid_lots * self.multiplier
         stop_loss, take_profit = self._levels(direction, entry, distance_points)
         self.position = Position(direction, entry, lots, stop_loss, take_profit)
+
+    def _update_linear_take_profit(self, bid, ask):
+        if self.take_profit_mode is not TakeProfitMode.LINEAR or self.position is None:
+            return False
+        reference = ask if self.position.direction is Direction.BUY else bid
+        if self.position.direction is Direction.BUY:
+            if reference >= self.linear_extreme:
+                return False
+            self.linear_extreme = reference
+            self.position.take_profit = round(
+                self.linear_extreme + self.group_take_profit_points * self.point, 10,
+            )
+        else:
+            if reference <= self.linear_extreme:
+                return False
+            self.linear_extreme = reference
+            self.position.take_profit = round(
+                self.linear_extreme - self.group_take_profit_points * self.point, 10,
+            )
+        return True
 
     def _next_pending(self, bid, ask, distance_points):
         direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
@@ -103,7 +157,34 @@ class StrategyModel:
             order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
         else:
             order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
-        self.pending = Pending(direction, self.position.lots * self.multiplier, price, order_type, distance_points)
+        next_group_lots = (self.cumulative_loss_lots + self.group_total_lots) * self.initial_lot_multiplier
+        self.pending = Pending(direction, next_group_lots, price, order_type, distance_points)
+
+    def _grid_pending_action(self):
+        return {
+            "kind": "grid_pending", "direction": self.grid_pending.direction,
+            "lots": self.grid_pending.lots, "price": self.grid_pending.price,
+            "order_type": self.grid_pending.order_type,
+            "level": self.grid_pending.level,
+        }
+
+    def _ensure_grid_pending(self, bid, ask):
+        if self.grid_count < 2 or self.grid_filled_levels >= self.grid_count - 1:
+            self.grid_pending = None
+            return None
+        if self.grid_pending is not None:
+            return self.grid_pending
+        level = self.grid_filled_levels + 1
+        price = self._grid_level(level)
+        if self.position.direction is Direction.BUY:
+            order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
+        else:
+            order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
+        self.grid_pending = Pending(
+            self.position.direction, self.grid_lots, price, order_type,
+            self.group_stop_points, kind="grid", level=level,
+        )
+        return self.grid_pending
 
     def _pending_action(self):
         return {
@@ -111,6 +192,52 @@ class StrategyModel:
             "lots": self.pending.lots, "price": self.pending.price,
             "order_type": self.pending.order_type,
         }
+
+    def _grid_level(self, level):
+        distance = self.group_stop_points * self.point * level / self.grid_count
+        if self.position.direction is Direction.BUY:
+            return round(self.group_anchor_entry - distance, 10)
+        return round(self.group_anchor_entry + distance, 10)
+
+    def fill_grid_pending(self, entry_price=None, bid=None, ask=None):
+        pending = self.grid_pending
+        if pending is None:
+            return []
+        self.grid_pending = None
+        self.grid_filled_levels = pending.level
+        self.group_total_lots += self.grid_lots
+        self.position = Position(
+            self.position.direction,
+            self.position.entry,
+            self.group_total_lots,
+            self.position.stop_loss,
+            self.position.take_profit,
+        )
+        entry = pending.price if entry_price is None else entry_price
+        if bid is None:
+            bid = entry - 0.0002 if self.position.direction is Direction.BUY else entry
+        if ask is None:
+            ask = entry if self.position.direction is Direction.BUY else entry + 0.0002
+        if self.take_profit_mode is TakeProfitMode.GRID:
+            _, moved_take_profit = self._levels(
+                self.position.direction, entry, self.group_take_profit_points,
+            )
+            self.position.take_profit = moved_take_profit
+        else:
+            self._update_linear_take_profit(bid, ask)
+        self._next_pending(bid, ask, self.group_stop_points)
+        self._ensure_grid_pending(bid, ask)
+        return [{
+            "kind": "grid", "direction": self.position.direction,
+            "lots": self.grid_lots, "price": entry,
+        }]
+
+    def _start_next_group(self, direction, entry, distance_points):
+        self.cumulative_loss_lots += self.group_total_lots
+        self.previous_grid_lots = self.grid_lots
+        self.current_index = (self.current_index + 1) % len(self.sequence)
+        next_lots = self.cumulative_loss_lots * self.initial_lot_multiplier
+        self._open(direction, entry, next_lots, distance_points)
 
     def _breakout_direction(self, bid, ask, previous_high, previous_low):
         if bid > previous_high:
@@ -148,20 +275,27 @@ class StrategyModel:
             else:
                 direction = self.sequence[self.current_index]
             entry = ask if direction is Direction.BUY else bid
-            self._open(direction, entry, self.initial_lots, distance_points)
+            opening_lots = self.initial_lots
+            self._open(direction, entry, opening_lots, distance_points)
             self._next_pending(bid, ask, distance_points)
-            return [
-                {"kind": "market", "direction": direction, "lots": self.initial_lots},
+            actions = [
+                {"kind": "market", "direction": direction, "lots": opening_lots},
                 self._pending_action(),
             ]
+            if self._ensure_grid_pending(bid, ask) is not None:
+                actions.append(self._grid_pending_action())
+            return actions
 
         if self.position is None:
             return []
+
+        self._update_linear_take_profit(bid, ask)
 
         if ((self.position.direction is Direction.BUY and bid >= self.position.take_profit)
                 or (self.position.direction is Direction.SELL and ask <= self.position.take_profit)):
             self.position = None
             self.pending = None
+            self.grid_pending = None
             return [{"kind": "cancel_pending"}]
 
         if ((self.position.direction is Direction.BUY and bid <= self.position.stop_loss)
@@ -169,30 +303,41 @@ class StrategyModel:
             old_direction = self.position.direction
             next_direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
             next_entry = bid if next_direction is Direction.SELL else ask
-            next_lots = self.position.lots * self.multiplier
             next_distance = self.pending.distance_points if self.pending else self._active_distance()
-            self.position = None
-            self.pending = None
-            self.current_index = (self.current_index + 1) % len(self.sequence)
             if next_distance is None:
+                self.position = None
+                self.pending = None
                 return [{"kind": "close", "direction": old_direction}]
-            self._open(next_direction, next_entry, next_lots, next_distance)
+            self._start_next_group(next_direction, next_entry, next_distance)
             self._next_pending(bid, ask, next_distance)
-            return [
+            actions = [
                 {"kind": "close", "direction": old_direction},
-                {"kind": "market", "direction": next_direction, "lots": next_lots},
+                {"kind": "market", "direction": next_direction, "lots": self.position.lots},
                 self._pending_action(),
             ]
+            if self._ensure_grid_pending(bid, ask) is not None:
+                actions.append(self._grid_pending_action())
+            return actions
 
-        if self.pending is None:
+        created_pending = self.pending is None
+        if created_pending:
             distance_points = self._active_distance()
             self._next_pending(bid, ask, distance_points)
-            return [self._pending_action()]
+        self._ensure_grid_pending(bid, ask)
+        return [self._pending_action()] if created_pending else []
 
         return []
 
     def fill_pending(self, entry_price):
         pending = self.pending
         self.pending = None
-        self.current_index = (self.current_index + 1) % len(self.sequence)
-        self._open(pending.direction, entry_price, pending.lots, pending.distance_points)
+        self._start_next_group(pending.direction, entry_price, pending.distance_points)
+        self._next_pending(
+            entry_price - 0.0002 if pending.direction is Direction.BUY else entry_price,
+            entry_price if pending.direction is Direction.BUY else entry_price + 0.0002,
+            pending.distance_points,
+        )
+        self._ensure_grid_pending(
+            entry_price - 0.0002 if pending.direction is Direction.BUY else entry_price,
+            entry_price if pending.direction is Direction.BUY else entry_price + 0.0002,
+        )
