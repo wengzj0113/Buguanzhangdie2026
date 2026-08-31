@@ -5,8 +5,8 @@ import pytest
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
     ExposureSnapshot, OrderType, ParallelStrategyModel, PendingRecord,
-    StrategyModel, TakeProfitMode, exposure_guard, normalize_pending_records,
-    cycle_directions,
+    PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
+    normalize_pending_records, recover_prepared_transition, cycle_directions,
 )
 
 
@@ -992,12 +992,52 @@ def test_duplicate_grid_pending_without_tracked_ticket_keeps_lowest_ticket():
     assert result.delete_tickets == [22]
 
 
+def test_pending_reconciliation_keeps_matching_order_and_does_not_touch_other_category():
+    orders = [
+        PendingRecord(10, "reverse", Direction.BUY, 0.06, 4436.69),
+        PendingRecord(12, "reverse", Direction.SELL, 0.06, 4436.69),
+        PendingRecord(20, "grid", Direction.BUY, 0.04, 4437.69),
+    ]
+
+    result = normalize_pending_records(
+        orders,
+        kind="reverse",
+        expected_direction=Direction.SELL,
+        expected_lots=0.06,
+        expected_price=4436.69,
+    )
+
+    assert result.keep_ticket == 12
+    assert result.delete_tickets == [10]
+
+
 def test_duplicate_base_positions_pause_new_risk_and_lot_growth():
     decision = exposure_guard(ExposureSnapshot(base_positions=2, duplicate_grid_levels=0))
 
     assert decision.pause_new_orders is True
     assert decision.cancel_pending is True
     assert decision.accumulate_loss_lots is False
+
+
+def test_prepared_transition_reuses_existing_result_after_restart():
+    transition = PreparedTransition(101, Direction.SELL, 0.26)
+
+    result = recover_prepared_transition(
+        transition, [{"direction": Direction.SELL, "lots": 0.26}],
+    )
+
+    assert result == {"phase": "complete", "market_orders": []}
+
+
+def test_prepared_transition_sends_exactly_one_order_when_result_is_absent():
+    transition = PreparedTransition(101, Direction.SELL, 0.26)
+
+    result = recover_prepared_transition(transition, [])
+
+    assert result["phase"] == "complete"
+    assert result["market_orders"] == [{
+        "direction": Direction.SELL, "lots": 0.26, "transition_id": 101,
+    }]
 
 
 @pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
@@ -1008,10 +1048,26 @@ def test_dedup_source_contract(source_name):
     assert "ReleaseExecutionOwnership" in source
     assert "NormalizeSingleGroupPending" in source
     assert "HasDuplicateSingleGroupExposure" in source
+    assert "ResumePreparedTransition" in source
+    assert '".transitionphase"' in source
+    assert '".transitionid"' in source
     assert "if(!AcquireExecutionOwnership())" in source
     assert "ReleaseExecutionOwnership();" in source
-    assert "if(!NormalizeSingleGroupPending(false)" in source
+    assert "NormalizeSingleGroupPending(false," in source
+    assert "NormalizeSingleGroupPending(true," in source
     assert "if(HasDuplicateSingleGroupExposure())" in source
+
+    ensure_next = source.split("void EnsureNextPending", 1)[1].split("bool Transition", 1)[0]
+    assert "if(!NormalizeSingleGroupPending(false," in ensure_next
+    assert "DeleteAllPending();" not in ensure_next
+
+    ensure_grid = source.split("void EnsureGridPending", 1)[1].split(
+        "void EnsureNextPending", 1,
+    )[0]
+    assert "if(!NormalizeSingleGroupPending(true," in ensure_grid
+
+    if source_name.endswith("MT5.mq5"):
+        assert "retcode == TRADE_RETCODE_DONE" in source
 
 
 def test_korder_type_zero_limits_parallel_initial_trigger_to_one_per_k0():

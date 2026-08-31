@@ -59,15 +59,30 @@ class PendingNormalization:
     delete_tickets: list[int]
 
 
-def normalize_pending_records(records, tracked_ticket=None, tracked_ticket_filled=False):
+def normalize_pending_records(records, tracked_ticket=None, tracked_ticket_filled=False,
+                              kind=None, expected_direction=None, expected_lots=None,
+                              expected_price=None):
+    candidates = [record for record in records if kind is None or record.kind == kind]
     if tracked_ticket_filled:
         return PendingNormalization(
             tracked_ticket,
-            sorted(record.ticket for record in records),
+            sorted(record.ticket for record in candidates),
         )
-    if not records:
+    if not candidates:
         return PendingNormalization(None, [])
-    tickets = {record.ticket for record in records}
+    if expected_direction is not None:
+        matching = [
+            record for record in candidates
+            if record.direction is expected_direction
+            and record.lots == expected_lots
+            and record.price == expected_price
+        ]
+        keep_ticket = min((record.ticket for record in matching), default=None)
+        return PendingNormalization(
+            keep_ticket,
+            sorted(record.ticket for record in candidates if record.ticket != keep_ticket),
+        )
+    tickets = {record.ticket for record in candidates}
     keep_ticket = tracked_ticket if tracked_ticket in tickets else min(tickets)
     return PendingNormalization(
         keep_ticket,
@@ -95,6 +110,31 @@ def exposure_guard(snapshot):
         cancel_pending=duplicate_exposure,
         accumulate_loss_lots=not duplicate_exposure,
     )
+
+
+@dataclass(frozen=True)
+class PreparedTransition:
+    transition_id: int
+    direction: Direction
+    lots: float
+
+
+def recover_prepared_transition(transition, positions):
+    matching = [
+        position for position in positions
+        if position["direction"] is transition.direction
+        and position["lots"] == transition.lots
+    ]
+    if matching:
+        return {"phase": "complete", "market_orders": []}
+    return {
+        "phase": "complete",
+        "market_orders": [{
+            "direction": transition.direction,
+            "lots": transition.lots,
+            "transition_id": transition.transition_id,
+        }],
+    }
 
 
 def cycle_directions(initial_direction, cycle_mode):

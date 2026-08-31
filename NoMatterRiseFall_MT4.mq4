@@ -47,6 +47,13 @@ enum ReversePendingStatus
    REVERSE_PENDING_CANCELED = 3
   };
 
+enum TransitionPhase
+  {
+   TRANSITION_NONE = 0,
+   TRANSITION_PREPARED = 1,
+   TRANSITION_COMPLETE = 2
+  };
+
 // 首单方向：做多或做空
 input FirstDirection 首单方向 = FIRST_BUY;
 // 固定距离模式下使用的循环模式
@@ -114,6 +121,8 @@ int    g_reversal_count = 0;
 int    g_pending_ticket = -1;
 int    g_execution_lock_handle = INVALID_HANDLE;
 bool   g_duplicate_exposure_logged = false;
+int    g_transition_phase = TRANSITION_NONE;
+long   g_transition_id = 0;
 datetime g_last_candle_entry_bar_time = 0;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
@@ -158,16 +167,17 @@ string SanitizeExecutionLockPart(string value)
 
 string ExecutionLockFileName()
   {
-   return "NMR_lock_" + SanitizeExecutionLockPart(AccountServer())
-          + "_" + IntegerToString(AccountNumber())
-          + "_" + SanitizeExecutionLockPart(Symbol())
-          + "_" + IntegerToString(InpMagicNumber) + ".lck";
+   string name = "NMR_lock_" + SanitizeExecutionLockPart(AccountServer())
+                 + "_" + IntegerToString(AccountNumber())
+                 + "_" + SanitizeExecutionLockPart(Symbol())
+                 + "_" + IntegerToString(InpMagicNumber);
+   if(IsTesting())
+      name += "_tester_" + IntegerToString((int)ChartID());
+   return name + ".lck";
   }
 
 bool AcquireExecutionOwnership()
   {
-   if(IsTesting())
-      return true;
    if(g_execution_lock_handle != INVALID_HANDLE)
       return true;
 
@@ -214,6 +224,8 @@ void SaveState()
    GlobalVariableSet(prefix + ".gridpendinglevel", g_grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".transitionphase", g_transition_phase);
+   GlobalVariableSet(prefix + ".transitionid", (double)g_transition_id);
   }
 
 void ClearState()
@@ -237,6 +249,8 @@ void ClearState()
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
    GlobalVariableDel(prefix + ".reset");
+   GlobalVariableDel(prefix + ".transitionphase");
+   GlobalVariableDel(prefix + ".transitionid");
    g_had_position = false;
    g_last_position_type = OP_BUY;
    g_last_take_profit = 0.0;
@@ -244,6 +258,8 @@ void ClearState()
    g_pending_index = -1;
    g_reversal_count = 0;
    g_pending_ticket = -1;
+   g_transition_phase = TRANSITION_NONE;
+   g_transition_id = 0;
    g_reset_pending = false;
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
@@ -269,6 +285,10 @@ void LoadState()
 
    if(GlobalVariableCheck(prefix + ".reset"))
       g_reset_pending = GlobalVariableGet(prefix + ".reset") > 0.5;
+   if(GlobalVariableCheck(prefix + ".transitionphase"))
+      g_transition_phase = (int)MathRound(GlobalVariableGet(prefix + ".transitionphase"));
+   if(GlobalVariableCheck(prefix + ".transitionid"))
+      g_transition_id = (long)MathRound(GlobalVariableGet(prefix + ".transitionid"));
 
    const int saved_index = (int)MathRound(GlobalVariableGet(prefix + ".index"));
    const int saved_meta = (int)MathRound(GlobalVariableGet(prefix + ".meta"));
@@ -636,10 +656,11 @@ bool FindGridPending(int &ticket, int &type, double &volume, double &price)
    return false;
   }
 
-bool NormalizeSingleGroupPending(const bool grid)
+bool NormalizeSingleGroupPending(const bool grid, const int expected_direction,
+                                 const double expected_price,
+                                 const double expected_volume, int &keep_ticket)
   {
-   int lowest_ticket = -1;
-   bool tracked_ticket_active = false;
+   keep_ticket = -1;
    bool tracked_ticket_filled = false;
    if(!grid && g_pending_ticket > 0)
      {
@@ -650,20 +671,22 @@ bool NormalizeSingleGroupPending(const bool grid)
               && IsOurMarketOrder())
          tracked_ticket_filled = true;
      }
+   const double price_tolerance = Point * 0.5;
+   const double volume_tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
       if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurPendingOrder()
          || IsGridPendingComment() != grid)
          continue;
       const int candidate = OrderTicket();
-      if(lowest_ticket <= 0 || candidate < lowest_ticket)
-         lowest_ticket = candidate;
-      if(!grid && candidate == g_pending_ticket)
-         tracked_ticket_active = true;
+      if(!tracked_ticket_filled
+         && PendingDirection(OrderType()) == expected_direction
+         && MathAbs(OrderOpenPrice() - expected_price) <= price_tolerance
+         && MathAbs(OrderLots() - expected_volume) <= volume_tolerance
+         && (keep_ticket <= 0 || candidate < keep_ticket))
+         keep_ticket = candidate;
      }
 
-   const int keep_ticket = tracked_ticket_filled ? -1
-                           : (tracked_ticket_active ? g_pending_ticket : lowest_ticket);
    bool normalized = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
@@ -679,7 +702,11 @@ bool NormalizeSingleGroupPending(const bool grid)
         }
      }
 
-   if(!grid && keep_ticket > 0 && g_pending_ticket != keep_ticket)
+   if(!normalized)
+      return false;
+   if(!grid && tracked_ticket_filled)
+      return false;
+   if(!grid && g_pending_ticket != keep_ticket)
      {
       g_pending_ticket = keep_ticket;
       SaveState();
@@ -1123,15 +1150,27 @@ void EnsureGridPending(const int position_type)
   {
    if(InpGridCount < 2 || g_grid_filled_levels >= InpGridCount - 1)
       return;
+   const int expected_level = g_grid_filled_levels + 1;
+   const double expected_price = GridLevelPrice(position_type, expected_level);
+   const double expected_volume = VolumeNormalize(g_grid_lots);
    int grid_ticket = -1;
-   int grid_type = OP_BUY;
-   double grid_volume = 0.0;
-   double grid_price = 0.0;
-   if(FindGridPending(grid_ticket, grid_type, grid_volume, grid_price))
+   if(!NormalizeSingleGroupPending(true, position_type, expected_price,
+                                   expected_volume, grid_ticket))
       return;
-   if(g_grid_pending_level > 0)
+   if(grid_ticket > 0)
+     {
+      if(g_grid_pending_level != expected_level
+         || MathAbs(g_grid_pending_price - expected_price) > Point * 0.5)
+        {
+         g_grid_pending_level = expected_level;
+         g_grid_pending_price = expected_price;
+         SaveState();
+        }
       return;
-   PlaceGridPending(position_type, g_grid_filled_levels + 1);
+     }
+   g_grid_pending_level = 0;
+   g_grid_pending_price = 0.0;
+   PlaceGridPending(position_type, expected_level);
   }
 
 void EnsureNextPending(const double stop_loss, const double take_profit,
@@ -1140,27 +1179,14 @@ void EnsureNextPending(const double stop_loss, const double take_profit,
    if(g_reversal_count >= 最大反手次数)
       return;
 
-   int active_pending = -1;
-   int active_pending_type = OP_SELLSTOP;
-   double active_pending_volume = 0.0;
-   double active_pending_price = 0.0;
-   const bool has_active_pending = FindPending(active_pending, active_pending_type,
-                                               active_pending_volume, active_pending_price);
    const int expected_direction = SequenceDirection(NextCycleIndex());
    const double expected_volume = NextGroupLots(fallback_volume);
-   const double price_tolerance = Point * 0.5;
-   const double volume_tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
-   if(has_active_pending
-      && (PendingDirection(active_pending_type) != expected_direction
-          || MathAbs(active_pending_price - PriceNormalize(stop_loss)) > price_tolerance
-          || MathAbs(active_pending_volume - expected_volume) > volume_tolerance))
-     {
-      DeleteAllPending();
-      g_pending_index = -1;
-      PlaceNextPending(expected_direction, stop_loss, take_profit, fallback_volume);
+   const double expected_price = PriceNormalize(stop_loss);
+   int active_pending = -1;
+   if(!NormalizeSingleGroupPending(false, expected_direction, expected_price,
+                                   expected_volume, active_pending))
       return;
-     }
-   if(!has_active_pending)
+   if(active_pending <= 0)
       PlaceNextPending(expected_direction, stop_loss, take_profit, fallback_volume);
   }
 
@@ -1193,6 +1219,10 @@ bool Transition(const int position_type, const double volume,
    g_reversal_count++;
    g_cycle_index = next_index;
    g_pending_index = -1;
+   g_group_stop_points = next_stop_points;
+   g_group_take_profit_points = next_take_profit_points;
+   g_transition_phase = TRANSITION_PREPARED;
+   g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
    SaveState();
    if(!can_open_next)
       return true;
@@ -1215,11 +1245,59 @@ bool Transition(const int position_type, const double volume,
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    g_grid_lots = VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier);
-   g_group_stop_points = next_stop_points;
-   g_group_take_profit_points = next_take_profit_points;
    SetGroupStops(next_position_type);
+   g_transition_phase = TRANSITION_COMPLETE;
    SaveState();
    Manage();
+   return true;
+  }
+
+bool ResumePreparedTransition()
+  {
+   if(g_transition_phase != TRANSITION_PREPARED)
+      return true;
+
+   const int expected_direction = SequenceDirection(g_cycle_index);
+   const double expected_volume = VolumeNormalize(g_cumulative_loss_lots * 首单手数倍数);
+   int ticket = -1;
+   int position_type = OP_BUY;
+   double volume = 0.0;
+   double entry = 0.0;
+   double stop_loss = 0.0;
+   double take_profit = 0.0;
+   bool found = FindPosition(ticket, position_type, volume, entry, stop_loss, take_profit);
+   if(found)
+     {
+      const double total = TotalPositionLots(position_type);
+      const double tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
+      if(position_type != expected_direction || MathAbs(total - expected_volume) > tolerance)
+        {
+         Print("Transition recovery conflict, id=", g_transition_id,
+               ", expected_type=", expected_direction,
+               ", expected_volume=", expected_volume,
+               ", actual_type=", position_type, ", actual_volume=", total);
+         return false;
+        }
+     }
+   else
+     {
+      if(!OpenMarket(expected_direction, expected_volume))
+         return false;
+      if(!FindPosition(ticket, position_type, volume, entry, stop_loss, take_profit))
+         return false;
+     }
+
+   g_group_anchor_price = entry;
+   g_group_last_entry = entry;
+   g_group_linear_extreme = entry;
+   g_group_total_lots = TotalPositionLots(position_type);
+   g_grid_filled_levels = 0;
+   g_grid_pending_level = 0;
+   g_grid_pending_price = 0.0;
+   g_grid_lots = VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier);
+   SetGroupStops(position_type);
+   g_transition_phase = TRANSITION_COMPLETE;
+   SaveState();
    return true;
   }
 
@@ -1231,9 +1309,6 @@ void Manage()
       return;
      }
 
-   if(!NormalizeSingleGroupPending(false)
-      || !NormalizeSingleGroupPending(true))
-      return;
    if(HasDuplicateSingleGroupExposure())
      {
       DeleteAllPending();
@@ -1246,6 +1321,14 @@ void Manage()
       return;
      }
    g_duplicate_exposure_logged = false;
+
+   if(g_transition_phase == TRANSITION_PREPARED && !ResumePreparedTransition())
+      return;
+   if(g_transition_phase == TRANSITION_COMPLETE)
+     {
+      g_transition_phase = TRANSITION_NONE;
+      SaveState();
+     }
 
    int position_ticket = -1;
    int position_type = OP_BUY;
@@ -1301,6 +1384,8 @@ void Manage()
          g_grid_pending_level = 0;
          g_grid_pending_price = 0.0;
          g_grid_lots = VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier);
+         g_transition_phase = TRANSITION_COMPLETE;
+         g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
         }
       volume = TotalPositionLots(position_type);
       if(g_group_anchor_price <= 0.0)
