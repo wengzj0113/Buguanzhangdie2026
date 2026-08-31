@@ -1300,8 +1300,11 @@ bool ReconcileOrphanSingleGroupPending()
    if(g_group_stop_points <= 0 || g_group_take_profit_points <= 0
       || g_group_anchor_price <= 0.0)
      {
-      Print("Orphan pending orders detected without recoverable group state; new entries remain paused.");
-      return false;
+      Print("Orphan pending orders detected without recoverable group state; deleting them and restarting next tick.");
+      if(!DeleteAllPending())
+         return false;
+      ClearState();
+      return true;
      }
 
    const long current_direction = SequenceDirection(g_cycle_index);
