@@ -112,6 +112,8 @@ int    g_cycle_index = 0;
 int    g_pending_index = -1;
 int    g_reversal_count = 0;
 int    g_pending_ticket = -1;
+int    g_execution_lock_handle = INVALID_HANDLE;
+bool   g_duplicate_exposure_logged = false;
 datetime g_last_candle_entry_bar_time = 0;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
@@ -137,6 +139,57 @@ string StatePrefix()
   {
    return "NMR." + IntegerToString(AccountNumber())
           + "." + Symbol() + "." + IntegerToString(InpMagicNumber);
+  }
+
+string SanitizeExecutionLockPart(string value)
+  {
+   StringReplace(value, "\\", "_");
+   StringReplace(value, "/", "_");
+   StringReplace(value, ":", "_");
+   StringReplace(value, "*", "_");
+   StringReplace(value, "?", "_");
+   StringReplace(value, "\"", "_");
+   StringReplace(value, "<", "_");
+   StringReplace(value, ">", "_");
+   StringReplace(value, "|", "_");
+   StringReplace(value, " ", "_");
+   return value;
+  }
+
+string ExecutionLockFileName()
+  {
+   return "NMR_lock_" + SanitizeExecutionLockPart(AccountServer())
+          + "_" + IntegerToString(AccountNumber())
+          + "_" + SanitizeExecutionLockPart(Symbol())
+          + "_" + IntegerToString(InpMagicNumber) + ".lck";
+  }
+
+bool AcquireExecutionOwnership()
+  {
+   if(IsTesting())
+      return true;
+   if(g_execution_lock_handle != INVALID_HANDLE)
+      return true;
+
+   ResetLastError();
+   g_execution_lock_handle = FileOpen(ExecutionLockFileName(),
+                                      FILE_COMMON | FILE_BIN | FILE_READ | FILE_WRITE);
+   if(g_execution_lock_handle == INVALID_HANDLE)
+     {
+      Print("Execution ownership unavailable for account=", AccountNumber(),
+            ", symbol=", Symbol(), ", magic=", InpMagicNumber,
+            "; another EA instance is already managing this scope. error=", GetLastError());
+      return false;
+     }
+   return true;
+  }
+
+void ReleaseExecutionOwnership()
+  {
+   if(g_execution_lock_handle == INVALID_HANDLE)
+      return;
+   FileClose(g_execution_lock_handle);
+   g_execution_lock_handle = INVALID_HANDLE;
   }
 
 void SaveState()
@@ -583,8 +636,101 @@ bool FindGridPending(int &ticket, int &type, double &volume, double &price)
    return false;
   }
 
+bool NormalizeSingleGroupPending(const bool grid)
+  {
+   int lowest_ticket = -1;
+   bool tracked_ticket_active = false;
+   bool tracked_ticket_filled = false;
+   if(!grid && g_pending_ticket > 0)
+     {
+      if(OrderSelect(g_pending_ticket, SELECT_BY_TICKET, MODE_TRADES)
+         && IsOurMarketOrder())
+         tracked_ticket_filled = true;
+      else if(OrderSelect(g_pending_ticket, SELECT_BY_TICKET, MODE_HISTORY)
+              && IsOurMarketOrder())
+         tracked_ticket_filled = true;
+     }
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurPendingOrder()
+         || IsGridPendingComment() != grid)
+         continue;
+      const int candidate = OrderTicket();
+      if(lowest_ticket <= 0 || candidate < lowest_ticket)
+         lowest_ticket = candidate;
+      if(!grid && candidate == g_pending_ticket)
+         tracked_ticket_active = true;
+     }
+
+   const int keep_ticket = tracked_ticket_filled ? -1
+                           : (tracked_ticket_active ? g_pending_ticket : lowest_ticket);
+   bool normalized = true;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurPendingOrder()
+         || IsGridPendingComment() != grid || OrderTicket() == keep_ticket)
+         continue;
+      const int candidate = OrderTicket();
+      if(!OrderDelete(candidate, clrRed))
+        {
+         Print("Duplicate pending delete failed, ticket=", candidate,
+               ", error=", GetLastError());
+         normalized = false;
+        }
+     }
+
+   if(!grid && keep_ticket > 0 && g_pending_ticket != keep_ticket)
+     {
+      g_pending_ticket = keep_ticket;
+      SaveState();
+     }
+   return normalized;
+  }
+
+bool HasDuplicateSingleGroupExposure()
+  {
+   int base_positions = 0;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurMarketOrder())
+         continue;
+      if(StringFind(OrderComment(), ".Grid", 0) < 0)
+        {
+         base_positions++;
+         if(base_positions > 1)
+            return true;
+        }
+     }
+
+   const double price_tolerance = Point * 0.5;
+   const double volume_tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
+   for(int left = OrdersTotal() - 1; left >= 0; left--)
+     {
+      if(!OrderSelect(left, SELECT_BY_POS, MODE_TRADES) || !IsOurMarketOrder()
+         || StringFind(OrderComment(), ".Grid", 0) < 0)
+         continue;
+      const int left_ticket = OrderTicket();
+      const int left_type = OrderType();
+      const double left_price = OrderOpenPrice();
+      const double left_volume = OrderLots();
+      for(int right = left - 1; right >= 0; right--)
+        {
+         if(!OrderSelect(right, SELECT_BY_POS, MODE_TRADES) || !IsOurMarketOrder()
+            || StringFind(OrderComment(), ".Grid", 0) < 0
+            || OrderTicket() == left_ticket)
+            continue;
+         if(OrderType() == left_type
+            && MathAbs(OrderOpenPrice() - left_price) <= price_tolerance
+            && MathAbs(OrderLots() - left_volume) <= volume_tolerance)
+            return true;
+        }
+     }
+   return false;
+  }
+
 bool DeleteAllPending()
   {
+   const int tracked_ticket = g_pending_ticket;
    bool deleted = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
@@ -601,7 +747,11 @@ bool DeleteAllPending()
    int active_type = OP_BUY;
    double active_volume = 0.0;
    double active_price = 0.0;
-   if(!FindPending(active_ticket, active_type, active_volume, active_price))
+   if(FindPending(active_ticket, active_type, active_volume, active_price))
+      g_pending_ticket = active_ticket;
+   else if(tracked_ticket > 0
+           && OrderSelect(tracked_ticket, SELECT_BY_TICKET, MODE_HISTORY)
+           && IsOurPendingOrder())
       g_pending_ticket = -1;
    return deleted && !HasOurPending();
   }
@@ -1032,6 +1182,10 @@ bool Transition(const int position_type, const double volume,
                                                       next_stop_points, next_take_profit_points);
    if(!DeleteAllPending())
       return false;
+   if(GetReversePendingStatus() == REVERSE_PENDING_FILLED)
+      return false;
+   if(HasDuplicateSingleGroupExposure())
+      return false;
    g_cumulative_loss_lots += g_group_total_lots > 0.0 ? g_group_total_lots : volume;
    g_previous_grid_lots = g_grid_lots;
    if(!CloseAllPositions(position_type))
@@ -1076,6 +1230,22 @@ void Manage()
       ProcessReset();
       return;
      }
+
+   if(!NormalizeSingleGroupPending(false)
+      || !NormalizeSingleGroupPending(true))
+      return;
+   if(HasDuplicateSingleGroupExposure())
+     {
+      DeleteAllPending();
+      if(!g_duplicate_exposure_logged)
+        {
+         Print("Duplicate single-group exposure detected: pending orders canceled and new orders paused. "
+               "Resolve duplicate positions manually before restarting this strategy scope.");
+         g_duplicate_exposure_logged = true;
+        }
+      return;
+     }
+   g_duplicate_exposure_logged = false;
 
    int position_ticket = -1;
    int position_type = OP_BUY;
@@ -1236,7 +1406,7 @@ void Manage()
    int pending_type = OP_SELLSTOP;
    double pending_volume = 0.0;
    double pending_price = 0.0;
-   if(FindPending(pending_ticket, pending_type, pending_volume, pending_price))
+   if(HasOurPending())
       return;
    if(!IsInitialEntryAllowed())
       return;
@@ -2078,6 +2248,8 @@ int OnInit()
        || (Korder_type != KORDER_ONCE_PER_BAR && Korder_type != KORDER_REPEAT_PER_BAR)
       || g_start_operation_minutes < 0 || g_end_operation_minutes < 0)
       return INIT_PARAMETERS_INCORRECT;
+   if(!AcquireExecutionOwnership())
+      return INIT_FAILED;
    g_active_first_direction = InpFirstDirection;
    g_active_cycle_mode = InpCycleMode;
    LoadState();
@@ -2088,8 +2260,15 @@ int OnInit()
 
 void OnTick()
   {
+   if(!AcquireExecutionOwnership())
+      return;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
       ManageMultipleCandleGroups();
    else
       Manage();
+  }
+
+void OnDeinit(const int reason)
+  {
+   ReleaseExecutionOwnership();
   }

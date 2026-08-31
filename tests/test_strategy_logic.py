@@ -1,8 +1,11 @@
+from pathlib import Path
+
 import pytest
 
 from strategy_logic import (
-    CycleMode, Direction, DistanceMode, OrderType, ParallelStrategyModel,
-    StrategyModel, TakeProfitMode,
+    CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
+    ExposureSnapshot, OrderType, ParallelStrategyModel, PendingRecord,
+    StrategyModel, TakeProfitMode, exposure_guard, normalize_pending_records,
     cycle_directions,
 )
 
@@ -932,6 +935,83 @@ def test_parallel_group_stop_deletes_unfilled_pending_before_market_reversal():
                                 "group_id": group.group_id}
     assert group_actions[2]["kind"] == "market"
     assert group_actions[2]["direction"] is Direction.SELL
+
+
+def test_same_scope_allows_only_one_execution_owner():
+    registry = ExecutionOwnershipRegistry()
+    scope = (111, "XAUUSD", 20260830)
+
+    assert registry.acquire(scope, "chart-a") is True
+    assert registry.acquire(scope, "chart-b") is False
+    registry.release(scope, "chart-a")
+    assert registry.acquire(scope, "chart-b") is True
+
+
+def test_different_magic_numbers_have_independent_execution_owners():
+    registry = ExecutionOwnershipRegistry()
+
+    assert registry.acquire((111, "XAUUSD", 1), "chart-a") is True
+    assert registry.acquire((111, "XAUUSD", 2), "chart-b") is True
+
+
+def test_duplicate_reverse_pending_keeps_tracked_ticket_and_deletes_rest():
+    orders = [
+        PendingRecord(12, "reverse", Direction.SELL, 0.06, 4436.69),
+        PendingRecord(10, "reverse", Direction.SELL, 0.06, 4436.69),
+    ]
+
+    result = normalize_pending_records(orders, tracked_ticket=12)
+
+    assert result.keep_ticket == 12
+    assert result.delete_tickets == [10]
+
+
+def test_filled_tracked_reverse_deletes_all_still_active_duplicates():
+    orders = [
+        PendingRecord(12, "reverse", Direction.SELL, 0.06, 4436.69),
+        PendingRecord(10, "reverse", Direction.SELL, 0.06, 4436.69),
+    ]
+
+    result = normalize_pending_records(
+        orders, tracked_ticket=9, tracked_ticket_filled=True,
+    )
+
+    assert result.keep_ticket == 9
+    assert result.delete_tickets == [10, 12]
+
+
+def test_duplicate_grid_pending_without_tracked_ticket_keeps_lowest_ticket():
+    orders = [
+        PendingRecord(22, "grid", Direction.BUY, 0.04, 4437.69),
+        PendingRecord(20, "grid", Direction.BUY, 0.04, 4437.69),
+    ]
+
+    result = normalize_pending_records(orders)
+
+    assert result.keep_ticket == 20
+    assert result.delete_tickets == [22]
+
+
+def test_duplicate_base_positions_pause_new_risk_and_lot_growth():
+    decision = exposure_guard(ExposureSnapshot(base_positions=2, duplicate_grid_levels=0))
+
+    assert decision.pause_new_orders is True
+    assert decision.cancel_pending is True
+    assert decision.accumulate_loss_lots is False
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_dedup_source_contract(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "AcquireExecutionOwnership" in source
+    assert "ReleaseExecutionOwnership" in source
+    assert "NormalizeSingleGroupPending" in source
+    assert "HasDuplicateSingleGroupExposure" in source
+    assert "if(!AcquireExecutionOwnership())" in source
+    assert "ReleaseExecutionOwnership();" in source
+    assert "if(!NormalizeSingleGroupPending(false)" in source
+    assert "if(HasDuplicateSingleGroupExposure())" in source
 
 
 def test_korder_type_zero_limits_parallel_initial_trigger_to_one_per_k0():

@@ -115,6 +115,8 @@ int    g_cycle_index = 0;
 int    g_pending_index = -1;
 int    g_reversal_count = 0;
 ulong  g_pending_ticket = 0;
+int    g_execution_lock_handle = INVALID_HANDLE;
+bool   g_duplicate_exposure_logged = false;
 datetime g_last_candle_entry_bar_time = 0;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
@@ -140,6 +142,57 @@ string StatePrefix()
   {
    return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
           + "." + _Symbol + "." + IntegerToString((long)InpMagicNumber);
+  }
+
+string SanitizeExecutionLockPart(string value)
+  {
+   StringReplace(value, "\\", "_");
+   StringReplace(value, "/", "_");
+   StringReplace(value, ":", "_");
+   StringReplace(value, "*", "_");
+   StringReplace(value, "?", "_");
+   StringReplace(value, "\"", "_");
+   StringReplace(value, "<", "_");
+   StringReplace(value, ">", "_");
+   StringReplace(value, "|", "_");
+   StringReplace(value, " ", "_");
+   return value;
+  }
+
+string ExecutionLockFileName()
+  {
+   return "NMR_lock_" + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
+          + "_" + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "_" + SanitizeExecutionLockPart(_Symbol)
+          + "_" + IntegerToString((long)InpMagicNumber) + ".lck";
+  }
+
+bool AcquireExecutionOwnership()
+  {
+   if(MQLInfoInteger(MQL_TESTER))
+      return true;
+   if(g_execution_lock_handle != INVALID_HANDLE)
+      return true;
+
+   ResetLastError();
+   g_execution_lock_handle = FileOpen(ExecutionLockFileName(),
+                                      FILE_COMMON | FILE_BIN | FILE_READ | FILE_WRITE);
+   if(g_execution_lock_handle == INVALID_HANDLE)
+     {
+      PrintFormat("Execution ownership unavailable for account=%I64d, symbol=%s, magic=%I64u; "
+                  "another EA instance is already managing this scope. error=%d",
+                  AccountInfoInteger(ACCOUNT_LOGIN), _Symbol, InpMagicNumber, GetLastError());
+      return false;
+     }
+   return true;
+  }
+
+void ReleaseExecutionOwnership()
+  {
+   if(g_execution_lock_handle == INVALID_HANDLE)
+      return;
+   FileClose(g_execution_lock_handle);
+   g_execution_lock_handle = INVALID_HANDLE;
   }
 
 void SaveState()
@@ -626,8 +679,102 @@ bool FindGridPending(ulong &ticket, long &type, double &volume, double &price)
    return false;
   }
 
+bool NormalizeSingleGroupPending(const bool grid)
+  {
+   ulong lowest_ticket = 0;
+   bool tracked_ticket_active = false;
+   bool tracked_ticket_filled = false;
+   if(!grid && g_pending_ticket > 0 && HistoryOrderSelect(g_pending_ticket))
+      tracked_ticket_filled = HistoryOrderGetInteger(g_pending_ticket, ORDER_STATE)
+                              == ORDER_STATE_FILLED;
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+         || IsGridPendingComment(OrderGetString(ORDER_COMMENT)) != grid)
+         continue;
+      if(lowest_ticket == 0 || candidate < lowest_ticket)
+         lowest_ticket = candidate;
+      if(!grid && candidate == g_pending_ticket)
+         tracked_ticket_active = true;
+     }
+
+   const ulong keep_ticket = tracked_ticket_filled ? 0
+                             : (tracked_ticket_active ? g_pending_ticket : lowest_ticket);
+   bool normalized = true;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != InpMagicNumber
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+         || IsGridPendingComment(OrderGetString(ORDER_COMMENT)) != grid)
+         continue;
+      if(!g_trade.OrderDelete(candidate))
+        {
+         PrintFormat("Duplicate pending delete failed, ticket=%I64u, retcode=%u, %s",
+                     candidate, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+         normalized = false;
+        }
+     }
+
+   if(!grid && keep_ticket > 0 && g_pending_ticket != keep_ticket)
+     {
+      g_pending_ticket = keep_ticket;
+      SaveState();
+     }
+   return normalized;
+  }
+
+bool HasDuplicateSingleGroupExposure()
+  {
+   int base_positions = 0;
+   for(int index = 0; index < PositionsTotal(); index++)
+     {
+      const ulong ticket = PositionGetTicket(index);
+      if(!IsOurPosition(ticket))
+         continue;
+      if(!IsGridPendingComment(PositionGetString(POSITION_COMMENT)))
+        {
+         base_positions++;
+         if(base_positions > 1)
+            return true;
+        }
+     }
+
+   const double price_tolerance = _Point * 0.5;
+   const double volume_tolerance = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
+   for(int left = 0; left < PositionsTotal(); left++)
+     {
+      const ulong left_ticket = PositionGetTicket(left);
+      if(!IsOurPosition(left_ticket)
+         || !IsGridPendingComment(PositionGetString(POSITION_COMMENT)))
+         continue;
+      const long left_type = PositionGetInteger(POSITION_TYPE);
+      const double left_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double left_volume = PositionGetDouble(POSITION_VOLUME);
+      for(int right = left + 1; right < PositionsTotal(); right++)
+        {
+         const ulong right_ticket = PositionGetTicket(right);
+         if(!IsOurPosition(right_ticket)
+            || !IsGridPendingComment(PositionGetString(POSITION_COMMENT)))
+            continue;
+         if(PositionGetInteger(POSITION_TYPE) == left_type
+            && MathAbs(PositionGetDouble(POSITION_PRICE_OPEN) - left_price) <= price_tolerance
+            && MathAbs(PositionGetDouble(POSITION_VOLUME) - left_volume) <= volume_tolerance)
+            return true;
+        }
+     }
+   return false;
+  }
+
 bool DeleteAllPending()
   {
+   const ulong tracked_ticket = g_pending_ticket;
    bool deleted = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
@@ -650,8 +797,15 @@ bool DeleteAllPending()
    long active_type = 0;
    double active_volume = 0.0;
    double active_price = 0.0;
-   if(!FindPending(active_ticket, active_type, active_volume, active_price))
-      g_pending_ticket = 0;
+   if(FindPending(active_ticket, active_type, active_volume, active_price))
+      g_pending_ticket = active_ticket;
+   else if(tracked_ticket > 0 && HistoryOrderSelect(tracked_ticket))
+     {
+      const long tracked_state = HistoryOrderGetInteger(tracked_ticket, ORDER_STATE);
+      if(tracked_state == ORDER_STATE_CANCELED || tracked_state == ORDER_STATE_EXPIRED
+         || tracked_state == ORDER_STATE_REJECTED)
+         g_pending_ticket = 0;
+     }
    return deleted && !HasOurPending();
   }
 
@@ -1121,6 +1275,10 @@ bool Transition(const long position_type, const double volume,
                                                       next_stop_points, next_take_profit_points);
    if(!DeleteAllPending())
       return false;
+   if(GetReversePendingStatus() == REVERSE_PENDING_FILLED)
+      return false;
+   if(HasDuplicateSingleGroupExposure())
+      return false;
    g_cumulative_loss_lots += g_group_total_lots > 0.0 ? g_group_total_lots : volume;
    g_previous_grid_lots = g_grid_lots;
    if(!CloseAllPositions(position_type))
@@ -1166,6 +1324,22 @@ void Manage()
       ProcessReset();
       return;
      }
+
+   if(!NormalizeSingleGroupPending(false)
+      || !NormalizeSingleGroupPending(true))
+      return;
+   if(HasDuplicateSingleGroupExposure())
+     {
+      DeleteAllPending();
+      if(!g_duplicate_exposure_logged)
+        {
+         Print("Duplicate single-group exposure detected: pending orders canceled and new orders paused. "
+               "Resolve duplicate positions manually before restarting this strategy scope.");
+         g_duplicate_exposure_logged = true;
+        }
+      return;
+     }
+   g_duplicate_exposure_logged = false;
 
    ulong position_ticket = 0;
    long position_type = POSITION_TYPE_BUY;
@@ -1329,7 +1503,7 @@ void Manage()
    long pending_type = 0;
    double pending_volume = 0.0;
    double pending_price = 0.0;
-   if(FindPending(pending_ticket, pending_type, pending_volume, pending_price))
+   if(HasOurPending())
       return;
    if(!IsInitialEntryAllowed())
       return;
@@ -2240,6 +2414,9 @@ int OnInit()
       || g_start_operation_minutes < 0 || g_end_operation_minutes < 0)
       return INIT_PARAMETERS_INCORRECT;
 
+   if(!AcquireExecutionOwnership())
+      return INIT_FAILED;
+
    g_active_first_direction = InpFirstDirection;
    g_active_cycle_mode = InpCycleMode;
    LoadState();
@@ -2252,8 +2429,15 @@ int OnInit()
 
 void OnTick()
   {
+   if(!AcquireExecutionOwnership())
+      return;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
       ManageMultipleCandleGroups();
    else
       Manage();
+  }
+
+void OnDeinit(const int reason)
+  {
+   ReleaseExecutionOwnership();
   }

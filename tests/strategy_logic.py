@@ -28,6 +28,75 @@ class TakeProfitMode(Enum):
     LINEAR = "linear"
 
 
+class ExecutionOwnershipRegistry:
+    def __init__(self):
+        self._owners = {}
+
+    def acquire(self, scope, owner):
+        current = self._owners.get(scope)
+        if current is not None and current != owner:
+            return False
+        self._owners[scope] = owner
+        return True
+
+    def release(self, scope, owner):
+        if self._owners.get(scope) == owner:
+            del self._owners[scope]
+
+
+@dataclass(frozen=True)
+class PendingRecord:
+    ticket: int
+    kind: str
+    direction: Direction
+    lots: float
+    price: float
+
+
+@dataclass(frozen=True)
+class PendingNormalization:
+    keep_ticket: int | None
+    delete_tickets: list[int]
+
+
+def normalize_pending_records(records, tracked_ticket=None, tracked_ticket_filled=False):
+    if tracked_ticket_filled:
+        return PendingNormalization(
+            tracked_ticket,
+            sorted(record.ticket for record in records),
+        )
+    if not records:
+        return PendingNormalization(None, [])
+    tickets = {record.ticket for record in records}
+    keep_ticket = tracked_ticket if tracked_ticket in tickets else min(tickets)
+    return PendingNormalization(
+        keep_ticket,
+        sorted(ticket for ticket in tickets if ticket != keep_ticket),
+    )
+
+
+@dataclass(frozen=True)
+class ExposureSnapshot:
+    base_positions: int
+    duplicate_grid_levels: int
+
+
+@dataclass(frozen=True)
+class ExposureDecision:
+    pause_new_orders: bool
+    cancel_pending: bool
+    accumulate_loss_lots: bool
+
+
+def exposure_guard(snapshot):
+    duplicate_exposure = snapshot.base_positions > 1 or snapshot.duplicate_grid_levels > 0
+    return ExposureDecision(
+        pause_new_orders=duplicate_exposure,
+        cancel_pending=duplicate_exposure,
+        accumulate_loss_lots=not duplicate_exposure,
+    )
+
+
 def cycle_directions(initial_direction, cycle_mode):
     if cycle_mode is CycleMode.MODE_1:
         return ([Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY, Direction.SELL, Direction.SELL]
