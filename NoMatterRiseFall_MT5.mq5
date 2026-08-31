@@ -1319,11 +1319,15 @@ bool Transition(const long position_type, const double volume,
    g_pending_index = -1;
    g_group_stop_points = next_stop_points;
    g_group_take_profit_points = next_take_profit_points;
+   if(!can_open_next)
+     {
+      g_transition_phase = TRANSITION_NONE;
+      SaveState();
+      return true;
+     }
    g_transition_phase = TRANSITION_PREPARED;
    g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
    SaveState();
-   if(!can_open_next)
-      return true;
     const double next_group_lots = VolumeNormalize(g_cumulative_loss_lots * 首单手数倍数);
    if(!OpenMarket(next_type, next_group_lots))
       return false;
