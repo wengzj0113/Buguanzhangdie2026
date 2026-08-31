@@ -49,6 +49,8 @@ input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID;
 input double         首单手数 = 0.01;
 // 首单手数倍数；订单组止损后下一组首单手数乘此倍数
 input double         首单手数倍数 = 1.0;
+// 止损后最多切换到下一订单组的次数；达到后清理并重新开始
+input int            最大反手次数 = 5;
 // 止损区间分成的格数；内部格数为总格数减一
 input int            网格数量 = 2;
 // 下一订单组网格手数相对上一组的倍数
@@ -65,6 +67,10 @@ input int            K线最大高度 = 1000;
 input ulong          订单识别编号 = 20260830;
 // 订单注释；网格单会自动追加网格标记
 input string         订单注释 = "不管涨跌";
+// 允许开首单的开始时间，使用平台服务器时间，格式为 时:分
+input string         开始时间 = "08:00";
+// 允许开首单的结束时间，使用平台服务器时间，格式为 时:分
+input string         结束时间 = "23:00";
 
 // 内部兼容映射：以下名称不显示在参数设置中，仅用于保持既有逻辑代码兼容。
 #define InpFirstDirection 首单方向
@@ -88,6 +94,7 @@ long   g_last_position_type = POSITION_TYPE_BUY;
 double g_last_take_profit = 0.0;
 int    g_cycle_index = 0;
 int    g_pending_index = -1;
+int    g_reversal_count = 0;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
 int    g_group_stop_points = 0;
@@ -102,6 +109,9 @@ double g_group_linear_extreme = 0.0;
 int    g_grid_filled_levels = 0;
 int    g_grid_pending_level = 0;
 double g_grid_pending_price = 0.0;
+bool   g_reset_pending = false;
+int    g_start_operation_minutes = 0;
+int    g_end_operation_minutes = 24 * 60;
 
 string StatePrefix()
   {
@@ -114,6 +124,7 @@ void SaveState()
    const string prefix = StatePrefix();
    GlobalVariableSet(prefix + ".index", (double)g_cycle_index);
    GlobalVariableSet(prefix + ".pending", (double)g_pending_index);
+   GlobalVariableSet(prefix + ".reversals", (double)g_reversal_count);
    GlobalVariableSet(prefix + ".meta", (double)(g_active_first_direction + g_active_cycle_mode * 2));
    GlobalVariableSet(prefix + ".slpoints", (double)g_group_stop_points);
    GlobalVariableSet(prefix + ".tppoints", (double)g_group_take_profit_points);
@@ -127,6 +138,7 @@ void SaveState()
    GlobalVariableSet(prefix + ".gridlevel", (double)g_grid_filled_levels);
    GlobalVariableSet(prefix + ".gridpendinglevel", (double)g_grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
+   GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
   }
 
 void ClearState()
@@ -134,6 +146,7 @@ void ClearState()
    const string prefix = StatePrefix();
    GlobalVariableDel(prefix + ".index");
    GlobalVariableDel(prefix + ".pending");
+   GlobalVariableDel(prefix + ".reversals");
    GlobalVariableDel(prefix + ".meta");
    GlobalVariableDel(prefix + ".slpoints");
    GlobalVariableDel(prefix + ".tppoints");
@@ -147,6 +160,14 @@ void ClearState()
    GlobalVariableDel(prefix + ".gridlevel");
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
+   GlobalVariableDel(prefix + ".reset");
+   g_had_position = false;
+   g_last_position_type = POSITION_TYPE_BUY;
+   g_last_take_profit = 0.0;
+   g_cycle_index = 0;
+   g_pending_index = -1;
+   g_reversal_count = 0;
+   g_reset_pending = false;
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
    g_cumulative_loss_lots = 0.0;
@@ -166,6 +187,9 @@ void LoadState()
    const string prefix = StatePrefix();
    if(!GlobalVariableCheck(prefix + ".index") || !GlobalVariableCheck(prefix + ".meta"))
       return;
+
+   if(GlobalVariableCheck(prefix + ".reset"))
+      g_reset_pending = GlobalVariableGet(prefix + ".reset") > 0.5;
 
    const int saved_index = (int)MathRound(GlobalVariableGet(prefix + ".index"));
    const int saved_meta = (int)MathRound(GlobalVariableGet(prefix + ".meta"));
@@ -193,6 +217,8 @@ void LoadState()
      }
    if(GlobalVariableCheck(prefix + ".pending"))
       g_pending_index = (int)MathRound(GlobalVariableGet(prefix + ".pending"));
+   if(GlobalVariableCheck(prefix + ".reversals"))
+      g_reversal_count = (int)MathRound(GlobalVariableGet(prefix + ".reversals"));
    if(GlobalVariableCheck(prefix + ".cumlots"))
       g_cumulative_loss_lots = GlobalVariableGet(prefix + ".cumlots");
    if(GlobalVariableCheck(prefix + ".prevgridlots"))
@@ -223,6 +249,32 @@ int PriceDigits()
 double PriceNormalize(const double price)
   {
    return NormalizeDouble(price, PriceDigits());
+  }
+
+int ParseTimeMinutes(const string value)
+  {
+   const int separator = StringFind(value, ":");
+   if(separator <= 0 || separator >= StringLen(value) - 1)
+      return -1;
+   const int hour = (int)StringToInteger(StringSubstr(value, 0, separator));
+   const int minute = (int)StringToInteger(StringSubstr(value, separator + 1));
+   if(hour < 0 || hour > 23 || minute < 0 || minute > 59)
+      return -1;
+   return hour * 60 + minute;
+  }
+
+bool IsInitialEntryAllowed()
+  {
+   MqlDateTime current_time;
+   TimeToStruct(TimeCurrent(), current_time);
+   const int current_minutes = current_time.hour * 60 + current_time.min;
+   if(g_start_operation_minutes == g_end_operation_minutes)
+      return true;
+   if(g_start_operation_minutes < g_end_operation_minutes)
+      return current_minutes >= g_start_operation_minutes
+             && current_minutes < g_end_operation_minutes;
+   return current_minutes >= g_start_operation_minutes
+          || current_minutes < g_end_operation_minutes;
   }
 
 long SequenceDirection(const int index)
@@ -424,6 +476,32 @@ bool CloseAllPositions(const long position_type)
    return closed;
   }
 
+bool HasOurPosition()
+  {
+   for(int index = 0; index < PositionsTotal(); index++)
+      if(IsOurPosition(PositionGetTicket(index)))
+         return true;
+   return false;
+  }
+
+bool CloseAllOurPositions()
+  {
+   bool closed = true;
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(!IsOurPosition(candidate))
+         continue;
+      if(!g_trade.PositionClose(candidate))
+        {
+         PrintFormat("Position close during reset failed, ticket=%I64u, retcode=%u, %s",
+                     candidate, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+         closed = false;
+        }
+     }
+   return closed && !HasOurPosition();
+  }
+
 bool IsReversePendingType(const long order_type)
   {
    return order_type == ORDER_TYPE_BUY_STOP || order_type == ORDER_TYPE_BUY_LIMIT
@@ -495,6 +573,66 @@ void DeleteAllPending()
                         ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
         }
      }
+  }
+
+bool HasOurPending()
+  {
+   ulong ticket = 0;
+   long type = 0;
+   double volume = 0.0;
+   double price = 0.0;
+   if(FindPending(ticket, type, volume, price))
+      return true;
+   if(FindGridPending(ticket, type, volume, price))
+      return true;
+   return false;
+  }
+
+void BeginFullReset(const string reason)
+  {
+   Print(reason);
+   g_reset_pending = true;
+   g_had_position = false;
+   g_last_position_type = POSITION_TYPE_BUY;
+   g_last_take_profit = 0.0;
+   g_cycle_index = 0;
+   g_pending_index = -1;
+   g_reversal_count = 0;
+   g_group_stop_points = 0;
+   g_group_take_profit_points = 0;
+   g_cumulative_loss_lots = 0.0;
+   g_previous_grid_lots = 0.0;
+   g_grid_lots = 0.0;
+   g_group_total_lots = 0.0;
+   g_group_anchor_price = 0.0;
+   g_group_last_entry = 0.0;
+   g_group_linear_extreme = 0.0;
+   g_grid_filled_levels = 0;
+   g_grid_pending_level = 0;
+   g_grid_pending_price = 0.0;
+   SaveState();
+   DeleteAllPending();
+   if(CloseAllOurPositions() && !HasOurPending())
+      ClearState();
+  }
+
+void BeginResetAfterNoMoney()
+  {
+   BeginFullReset("Insufficient funds: clearing all EA positions and pending orders, then restarting from the next tick.");
+  }
+
+void BeginResetAfterMaxReversals()
+  {
+   BeginFullReset("Maximum reversal count reached: clearing all EA positions and pending orders, then restarting from the next tick.");
+  }
+
+bool ProcessReset()
+  {
+   DeleteAllPending();
+   if(!CloseAllOurPositions() || HasOurPosition() || HasOurPending())
+      return false;
+   ClearState();
+   return true;
   }
 
 void SetStops(const ulong position_ticket, const long type, const double entry,
@@ -625,10 +763,13 @@ bool OpenMarket(const long order_type, const double requested_volume)
    else if(order_type == ORDER_TYPE_SELL)
       sent = g_trade.Sell(volume, _Symbol, 0.0, 0.0, 0.0, InpOrderComment);
 
-   if(!sent)
+   const uint retcode = g_trade.ResultRetcode();
+   if(!sent || retcode == TRADE_RETCODE_NO_MONEY)
      {
       PrintFormat("Market order failed, retcode=%u, %s",
-                  g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+                  retcode, g_trade.ResultRetcodeDescription());
+      if(retcode == TRADE_RETCODE_NO_MONEY)
+         BeginResetAfterNoMoney();
       return false;
      }
    return true;
@@ -647,7 +788,7 @@ double NextGroupLots(const double fallback_volume)
 bool PlaceNextPending(const long next_direction, const double stop_loss,
                       const double take_profit, const double current_volume)
   {
-   if(stop_loss <= 0.0 || current_volume <= 0.0)
+   if(g_reversal_count >= 最大反手次数 || stop_loss <= 0.0 || current_volume <= 0.0)
       return false;
 
    int stop_loss_points = 0;
@@ -829,6 +970,9 @@ void EnsureGridPending(const long position_type)
 void EnsureNextPending(const long position_type, const double stop_loss,
                        const double take_profit, const double fallback_volume)
   {
+   if(g_reversal_count >= 最大反手次数)
+      return;
+
    ulong active_pending = 0;
    long active_pending_type = 0;
    double active_pending_volume = 0.0;
@@ -856,6 +1000,12 @@ void EnsureNextPending(const long position_type, const double stop_loss,
 bool Transition(const long position_type, const double volume,
                 const double stop_loss, const double take_profit)
   {
+   if(g_reversal_count >= 最大反手次数)
+     {
+      BeginResetAfterMaxReversals();
+      return false;
+     }
+
    const int next_index = NextCycleIndex();
    const long next_type = SequenceDirection(next_index);
    int next_stop_points = 0;
@@ -867,6 +1017,7 @@ bool Transition(const long position_type, const double volume,
    g_previous_grid_lots = g_grid_lots;
    if(!CloseAllPositions(position_type))
       return false;
+   g_reversal_count++;
    g_cycle_index = next_index;
    g_pending_index = -1;
    SaveState();
@@ -902,6 +1053,12 @@ bool Transition(const long position_type, const double volume,
 
 void Manage()
   {
+   if(g_reset_pending)
+     {
+      ProcessReset();
+      return;
+     }
+
    ulong position_ticket = 0;
    long position_type = POSITION_TYPE_BUY;
    double volume = 0.0;
@@ -926,6 +1083,12 @@ void Manage()
          HandleGridFill(position_type, previous_group_total_lots);
       if(pending_filled)
         {
+         if(g_reversal_count >= 最大反手次数)
+           {
+            BeginResetAfterMaxReversals();
+            return;
+           }
+         g_reversal_count++;
          g_cumulative_loss_lots += previous_group_total_lots;
          g_previous_grid_lots = previous_grid_lots;
          g_cycle_index = g_pending_index;
@@ -1029,6 +1192,8 @@ void Manage()
    double pending_price = 0.0;
    if(FindPending(pending_ticket, pending_type, pending_volume, pending_price))
       return;
+   if(!IsInitialEntryAllowed())
+      return;
 
    int initial_stop_points = 0;
    int initial_take_profit_points = 0;
@@ -1085,10 +1250,14 @@ void Manage()
 
 int OnInit()
   {
+   g_start_operation_minutes = ParseTimeMinutes(开始时间);
+   g_end_operation_minutes = ParseTimeMinutes(结束时间);
    if(InpInitialLots <= 0.0 || 首单手数倍数 <= 0.0
       || InpGridCount < 0 || InpGridLotMultiplier <= 0.0
       || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0
-      || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints)
+      || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
+      || 最大反手次数 < 0
+      || g_start_operation_minutes < 0 || g_end_operation_minutes < 0)
       return INIT_PARAMETERS_INCORRECT;
 
    g_active_first_direction = InpFirstDirection;

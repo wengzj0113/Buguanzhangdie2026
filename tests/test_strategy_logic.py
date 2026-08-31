@@ -53,7 +53,10 @@ def test_mode_one_buy_uses_sell_stop_then_sell_limit_for_the_two_sell_steps():
 
 
 def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
-    model = StrategyModel(Direction.BUY, CycleMode.MODE_2, 0.01, 2.0, 500, 0.0001)
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_2, 0.01, 2.0, 500, 0.0001,
+        max_reversals=6,
+    )
     directions = []
 
     actions = model.on_tick(bid=1.1000, ask=1.1002)
@@ -112,6 +115,36 @@ def test_only_a_post_stop_group_uses_the_initial_lot_multiplier():
     assert next_actions[1] == {
         "kind": "market", "direction": Direction.SELL, "lots": pytest.approx(0.015),
     }
+
+
+def test_initial_entry_is_allowed_only_inside_the_configured_time_window():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        start_minute=8 * 60, end_minute=23 * 60,
+    )
+
+    assert model.on_tick(bid=1.1000, ask=1.1002, now_minute=7 * 60 + 59) == []
+    actions = model.on_tick(bid=1.1000, ask=1.1002, now_minute=8 * 60)
+
+    assert actions[0] == {
+        "kind": "market", "direction": Direction.BUY, "lots": pytest.approx(0.01),
+    }
+
+
+def test_existing_position_can_switch_groups_outside_the_initial_entry_window():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        start_minute=8 * 60, end_minute=23 * 60,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002, now_minute=8 * 60)
+    stop_price = model.position.stop_loss
+    actions = model.on_tick(
+        bid=stop_price, ask=stop_price + 0.0002, now_minute=23 * 60 + 30,
+    )
+
+    assert actions[1]["kind"] == "market"
+    assert actions[1]["direction"] is Direction.SELL
 
 
 def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot():
@@ -504,7 +537,10 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
     ],
 )
 def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cycle_mode):
-    model = StrategyModel(initial_direction, cycle_mode, 0.01, 2.0, 500, 0.0001)
+    model = StrategyModel(
+        initial_direction, cycle_mode, 0.01, 2.0, 500, 0.0001,
+        max_reversals=6,
+    )
     opened = []
     pending_types = []
 
@@ -535,3 +571,188 @@ def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cyc
         else:
             expected_pending_types.append("SELL_STOP")
     assert pending_types == expected_pending_types
+
+
+def test_no_money_closes_group_resets_state_and_restarts_on_next_tick():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        market_order_failures=1,
+    )
+
+    first = model.on_tick(bid=1.1000, ask=1.1002)
+    assert first == [{"kind": "no_money"}]
+    assert model.position is None
+    assert model.pending is None
+    assert model.cumulative_loss_lots == pytest.approx(0.0)
+    assert model.current_index == 0
+
+    second = model.on_tick(bid=1.1000, ask=1.1002)
+    assert second[0] == {
+        "kind": "market", "direction": Direction.BUY, "lots": pytest.approx(0.01),
+    }
+
+
+def test_no_money_after_stop_starts_a_fresh_base_lot_group():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        initial_lot_multiplier=2.0, grid_count=5,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.market_order_failures = 1
+    stop_price = model.position.stop_loss
+
+    failed = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+
+    assert failed == [{"kind": "no_money"}]
+    assert model.position is None
+    assert model.pending is None
+    assert model.grid_pending is None
+    assert model.cumulative_loss_lots == pytest.approx(0.0)
+
+    restarted = model.on_tick(bid=1.1000, ask=1.1002)
+    assert restarted[0]["lots"] == pytest.approx(0.01)
+
+
+def test_no_money_dynamic_mode_rechecks_current_breakout_after_reset():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_2, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500, max_range_points=1000,
+        order_type=OrderType.FORWARD,
+        market_order_failures=1,
+    )
+
+    waiting = model.on_tick(
+        bid=1.0700, ask=1.0702, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+    assert waiting == []
+
+    failed = model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+    assert failed == [{"kind": "no_money"}]
+
+    no_breakout = model.on_tick(
+        bid=1.0700, ask=1.0702, candle_range_points=700,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+    assert no_breakout == []
+
+    restarted = model.on_tick(
+        bid=1.1010, ask=1.1012, candle_range_points=700,
+        previous_high=1.1000, previous_low=1.0400,
+    )
+    assert restarted[0]["kind"] == "market"
+    assert model.group_stop_points == pytest.approx(700)
+
+
+def test_no_money_reset_does_not_open_again_on_the_same_tick():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        market_order_failures=1,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+
+    assert [action["kind"] for action in actions] == ["no_money"]
+
+
+def test_no_money_reset_uses_fixed_mode_time_window_for_the_new_cycle():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        start_minute=8 * 60, end_minute=23 * 60,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002, now_minute=8 * 60)
+    model.market_order_failures = 1
+    stop_price = model.position.stop_loss
+
+    failed = model.on_tick(
+        bid=stop_price, ask=stop_price + 0.0002,
+        now_minute=23 * 60 + 30,
+    )
+    assert failed == [{"kind": "no_money"}]
+
+    outside_window = model.on_tick(
+        bid=1.1000, ask=1.1002, now_minute=23 * 60 + 30,
+    )
+    assert outside_window == []
+
+    restarted = model.on_tick(
+        bid=1.1000, ask=1.1002, now_minute=8 * 60,
+    )
+    assert restarted[0]["lots"] == pytest.approx(0.01)
+
+
+def test_max_reversals_five_allows_five_switches_then_resets():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        max_reversals=5,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+
+    for expected_count in range(1, 6):
+        stop_price = model.position.stop_loss
+        actions = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+        assert actions[1]["kind"] == "market"
+        assert model.reversal_count == expected_count
+
+    stop_price = model.position.stop_loss
+    actions = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+    assert actions == [{"kind": "reset_max_reversals"}]
+    assert model.position is None
+    assert model.pending is None
+    assert model.reversal_count == 0
+    assert model.cumulative_loss_lots == pytest.approx(0.0)
+
+
+def test_zero_max_reversals_resets_after_the_first_group_stop():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        max_reversals=0,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    stop_price = model.position.stop_loss
+
+    actions = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+
+    assert actions == [{"kind": "reset_max_reversals"}]
+    assert model.position is None
+    assert model.pending is None
+
+
+def test_max_reversals_counts_reverse_pending_fills_before_reset():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        max_reversals=2,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+
+    for expected_count in (1, 2):
+        pending_price = model.pending.price
+        model.fill_pending(pending_price)
+        assert model.reversal_count == expected_count
+
+    assert model.pending is None
+    stop_price = model.position.stop_loss
+    actions = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+
+    assert actions == [{"kind": "reset_max_reversals"}]
+    assert model.position is None
+    assert model.reversal_count == 0
+
+
+def test_new_cycle_after_max_reversals_uses_base_lot_on_next_tick():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        max_reversals=0, initial_lot_multiplier=2.0,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    stop_price = model.position.stop_loss
+    model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+
+    assert actions[0]["kind"] == "market"
+    assert actions[0]["lots"] == pytest.approx(0.01)

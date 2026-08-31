@@ -27,7 +27,7 @@
 - Modify: `tests/strategy_logic.py:65-340`
 - Modify: `tests/test_strategy_logic.py:1-340`
 
-- [ ] **Step 1: 扩展测试模型以注入市价单资金不足**
+- [x] **Step 1: 扩展测试模型以注入市价单资金不足**
 
 在`StrategyModel.__init__`增加`market_order_failures=0`，保存为`self.market_order_failures`；新增：
 
@@ -42,7 +42,7 @@ def _try_open(self, direction, entry, lots, distance_points):
 
 让首单分支和止损切换分支都先调用`_try_open`，失败时返回`{"kind": "no_money"}`并进入清仓状态；测试模型的清仓状态必须在下一次`on_tick`前完成，并且清仓完成的Tick只返回清理动作。
 
-- [ ] **Step 2: 写入资金不足后的清仓重启测试**
+- [x] **Step 2: 写入资金不足后的清仓重启测试**
 
 在`tests/test_strategy_logic.py`加入至少以下测试：
 
@@ -131,7 +131,7 @@ def test_no_money_reset_does_not_open_again_on_the_same_tick():
     assert [action["kind"] for action in actions] == ["no_money"]
 ```
 
-- [ ] **Step 3: 运行新增测试，确认它们先失败**
+- [x] **Step 3: 运行新增测试，确认它们先失败**
 
 Run:
 
@@ -147,7 +147,7 @@ Expected: FAIL，因为当前模型没有资金不足注入、清仓状态和重
 
 - Modify: `NoMatterRiseFall_MT5.mq5:89-222, 400-456, 514-530`
 
-- [ ] **Step 1: 增加清仓状态字段和持久化键**
+- [x] **Step 1: 增加清仓状态字段和持久化键**
 
 增加：
 
@@ -157,7 +157,7 @@ bool g_reset_pending = false;
 
 在`SaveState()`写入`StatePrefix() + ".reset"`；在`LoadState()`读取它；在`ClearState()`删除该键并将运行时字段恢复为false。旧版本不存在该全局变量时按false处理。
 
-- [ ] **Step 2: 增加全量持仓和挂单检查函数**
+- [x] **Step 2: 增加全量持仓和挂单检查函数**
 
 新增两个职责单一的函数：
 
@@ -186,7 +186,7 @@ bool HasOurPending()
 
 新增不区分多空的`CloseAllOurPositions()`，遍历当前品种和Magic Number匹配的所有持仓并关闭；返回值必须同时确认关闭调用成功且`HasOurPosition()`为false。
 
-- [ ] **Step 3: 增加统一清仓处理函数**
+- [x] **Step 3: 增加统一清仓处理函数**
 
 新增：
 
@@ -235,11 +235,11 @@ bool ProcessReset()
 
 - Modify: `NoMatterRiseFall_MT5.mq5:648-667, 888-1118`
 
-- [ ] **Step 1: 增加MT5资金不足错误码判断**
+- [x] **Step 1: 增加MT5资金不足错误码判断**
 
 在`OpenMarket()`保存`g_trade.ResultRetcode()`到局部变量；失败时如果等于`TRADE_RETCODE_NO_MONEY`，调用`BeginResetAfterNoMoney()`，然后返回false。日志同时保留retcode和文字描述。
 
-- [ ] **Step 2: 在`Manage()`最前面优先处理清仓状态**
+- [x] **Step 2: 在`Manage()`最前面优先处理清仓状态**
 
 在任何`FindPosition()`、`PastLastTakeProfit()`、时间判断和K线突破判断之前加入：
 
@@ -253,11 +253,11 @@ if(g_reset_pending)
 
 这样清仓未完成时不会触发新首单；清仓完成的Tick也直接结束。
 
-- [ ] **Step 3: 保持Transition的原订单组清理流程并让资金不足触发全量重置**
+- [x] **Step 3: 保持Transition的原订单组清理流程并让资金不足触发全量重置**
 
 `Transition()`仍先使用当前订单组已经确定的距离计算下一组，并在切换前删除挂单、关闭当前持仓。下一组市价单失败时由`OpenMarket()`统一触发全量重置；不得再调用新的K线突破分支或保留累计手数。
 
-- [ ] **Step 4: 确认新首单分支使用基础手数**
+- [x] **Step 4: 确认新首单分支使用基础手数**
 
 重置后`g_cumulative_loss_lots`为0，因此现有表达式：
 
@@ -269,7 +269,7 @@ const double initial_lots = g_cumulative_loss_lots > 0.0
 
 必须走`InpInitialLots`分支。不得在重置路径中复用旧循环索引、旧网格手数或旧订单组距离。
 
-- [ ] **Step 5: 运行MT5相关Python测试，确认绿色**
+- [x] **Step 5: 运行MT5相关Python测试，确认绿色**
 
 Run:
 
@@ -285,19 +285,19 @@ Expected: 新增资金不足测试全部通过。
 
 - Modify: `NoMatterRiseFall_MT4.mq4:80-215, 385-499, 614-630, 822-1072`
 
-- [ ] **Step 1: 增加MT4清仓字段、持久化和全量扫描**
+- [x] **Step 1: 增加MT4清仓字段、持久化和全量扫描**
 
 与MT5保持相同的`g_reset_pending`语义；使用MT4订单轮询实现`HasOurPosition()`、`HasOurPending()`和不区分多空的`CloseAllOurPositions()`，只处理`OrderSymbol()==Symbol()`且`OrderMagicNumber()==InpMagicNumber`的订单。
 
-- [ ] **Step 2: 记录OrderSend错误码并识别资金不足**
+- [x] **Step 2: 记录OrderSend错误码并识别资金不足**
 
 `OpenMarket()`在`OrderSend()`返回负数时先保存`const int error = GetLastError();`，再打印错误。错误等于`ERR_NOT_ENOUGH_MONEY`（134）时调用MT4版`BeginResetAfterNoMoney()`。
 
-- [ ] **Step 3: 在MT4的`Manage()`入口处理清仓状态**
+- [x] **Step 3: 在MT4的`Manage()`入口处理清仓状态**
 
 与MT5一致，清仓状态优先级高于持仓管理、止盈判断、时间判断和K线突破判断；清仓完成当前Tick返回，下一Tick才进入首单流程。
 
-- [ ] **Step 4: 运行Python模型测试，确保MT4/MT5共享行为契约**
+- [x] **Step 4: 运行Python模型测试，确保MT4/MT5共享行为契约**
 
 Run:
 
@@ -315,11 +315,11 @@ Expected: 全部原有测试和新增测试通过。
 - Modify: `tests/strategy_logic.py`
 - Modify: `tests/test_strategy_logic.py`
 
-- [ ] **Step 1: 更新中文参数和策略说明**
+- [x] **Step 1: 更新中文参数和策略说明**
 
 在README中明确：资金不足不会等待资金恢复；本EA订单会被全部清理；清仓完成当前Tick不新开单；下一Tick按照固定距离或K线模式重新执行首单；新周期使用基础首单手数。
 
-- [ ] **Step 2: 补充边界测试**
+- [x] **Step 2: 补充边界测试**
 
 覆盖以下边界：
 
@@ -330,7 +330,7 @@ Expected: 全部原有测试和新增测试通过。
 - K线模式没有突破时继续等待，突破后使用当时有效K线高度；
 - 清仓后的首单不继承旧循环索引和累计亏损手数。
 
-- [ ] **Step 3: 检查变更范围**
+- [x] **Step 3: 检查变更范围**
 
 Run:
 
@@ -350,7 +350,7 @@ Expected: 无空白错误；变更仅涉及资金不足清仓功能、测试和�
 - Verify: `NoMatterRiseFall_MT5.ex5`
 - Verify: `NoMatterRiseFall_MT4.ex4`
 
-- [ ] **Step 1: 运行完整Python验证**
+- [x] **Step 1: 运行完整Python验证**
 
 Run:
 
@@ -361,7 +361,7 @@ python -m py_compile tests/strategy_logic.py tests/test_strategy_logic.py
 
 Expected: pytest无失败，py_compile退出码为0。
 
-- [ ] **Step 2: 使用MetaEditor分别编译MT5和MT4**
+- [x] **Step 2: 使用MetaEditor分别编译MT5和MT4**
 
 Run:
 

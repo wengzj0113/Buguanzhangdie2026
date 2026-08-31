@@ -66,7 +66,9 @@ class StrategyModel:
     def __init__(self, initial_direction, cycle_mode, initial_lots, multiplier, distance, point,
                  distance_mode=DistanceMode.FIXED, min_range_points=500, max_range_points=1000,
                  order_type=OrderType.FORWARD, grid_count=0,
-                 take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0):
+                 take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0,
+                 start_minute=0, end_minute=24 * 60, market_order_failures=0,
+                 max_reversals=5):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
@@ -80,10 +82,15 @@ class StrategyModel:
         self.grid_count = grid_count
         self.take_profit_mode = take_profit_mode
         self.initial_lot_multiplier = initial_lot_multiplier
+        self.start_minute = start_minute
+        self.end_minute = end_minute
+        self.market_order_failures = market_order_failures
+        self.max_reversals = max_reversals
         self.position = None
         self.pending = None
         self.grid_pending = None
         self.current_index = 0
+        self.reversal_count = 0
         self.sequence = cycle_directions(initial_direction, cycle_mode)
         self.cumulative_loss_lots = 0.0
         self.previous_grid_lots = None
@@ -101,6 +108,13 @@ class StrategyModel:
         if candle_range_points is None or not (self.min_range_points <= candle_range_points <= self.max_range_points):
             return None
         return candle_range_points
+
+    def _is_initial_entry_allowed(self, now_minute):
+        if now_minute is None or self.start_minute == self.end_minute:
+            return True
+        if self.start_minute < self.end_minute:
+            return self.start_minute <= now_minute < self.end_minute
+        return now_minute >= self.start_minute or now_minute < self.end_minute
 
     def _active_distance(self):
         if self.group_take_profit_points is not None:
@@ -130,6 +144,32 @@ class StrategyModel:
         stop_loss, take_profit = self._levels(direction, entry, distance_points)
         self.position = Position(direction, entry, lots, stop_loss, take_profit)
 
+    def _try_open(self, direction, entry, lots, distance_points):
+        if self.market_order_failures > 0:
+            self.market_order_failures -= 1
+            return False
+        self._open(direction, entry, lots, distance_points)
+        return True
+
+    def _reset_after_no_money(self):
+        self.position = None
+        self.pending = None
+        self.grid_pending = None
+        self.current_index = 0
+        self.reversal_count = 0
+        self.cumulative_loss_lots = 0.0
+        self.previous_grid_lots = None
+        self.grid_lots = 0.0
+        self.group_total_lots = 0.0
+        self.grid_filled_levels = 0
+        self.group_anchor_entry = None
+        self.group_stop_points = None
+        self.group_take_profit_points = None
+        self.linear_extreme = None
+
+    def _reset_after_max_reversals(self):
+        self._reset_after_no_money()
+
     def _update_linear_take_profit(self, bid, ask):
         if self.take_profit_mode is not TakeProfitMode.LINEAR or self.position is None:
             return False
@@ -151,6 +191,9 @@ class StrategyModel:
         return True
 
     def _next_pending(self, bid, ask, distance_points):
+        if self.reversal_count >= self.max_reversals:
+            self.pending = None
+            return None
         direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
         price = self.position.stop_loss
         if direction is Direction.BUY:
@@ -236,8 +279,12 @@ class StrategyModel:
         self.cumulative_loss_lots += self.group_total_lots
         self.previous_grid_lots = self.grid_lots
         self.current_index = (self.current_index + 1) % len(self.sequence)
+        self.reversal_count += 1
         next_lots = self.cumulative_loss_lots * self.initial_lot_multiplier
-        self._open(direction, entry, next_lots, distance_points)
+        if not self._try_open(direction, entry, next_lots, distance_points):
+            self._reset_after_no_money()
+            return False
+        return True
 
     def _breakout_direction(self, bid, ask, previous_high, previous_low):
         if bid > previous_high:
@@ -246,8 +293,11 @@ class StrategyModel:
             return Direction.SELL
         return None
 
-    def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None):
+    def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None,
+                now_minute=None):
         if self.position is None and self.pending is None:
+            if not self._is_initial_entry_allowed(now_minute):
+                return []
             distance_points = self._distance(candle_range_points)
             if distance_points is None:
                 return []
@@ -276,12 +326,13 @@ class StrategyModel:
                 direction = self.sequence[self.current_index]
             entry = ask if direction is Direction.BUY else bid
             opening_lots = self.initial_lots
-            self._open(direction, entry, opening_lots, distance_points)
+            if not self._try_open(direction, entry, opening_lots, distance_points):
+                self._reset_after_no_money()
+                return [{"kind": "no_money"}]
             self._next_pending(bid, ask, distance_points)
-            actions = [
-                {"kind": "market", "direction": direction, "lots": opening_lots},
-                self._pending_action(),
-            ]
+            actions = [{"kind": "market", "direction": direction, "lots": opening_lots}]
+            if self.pending is not None:
+                actions.append(self._pending_action())
             if self._ensure_grid_pending(bid, ask) is not None:
                 actions.append(self._grid_pending_action())
             return actions
@@ -301,6 +352,9 @@ class StrategyModel:
         if ((self.position.direction is Direction.BUY and bid <= self.position.stop_loss)
                 or (self.position.direction is Direction.SELL and ask >= self.position.stop_loss)):
             old_direction = self.position.direction
+            if self.reversal_count >= self.max_reversals:
+                self._reset_after_max_reversals()
+                return [{"kind": "reset_max_reversals"}]
             next_direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
             next_entry = bid if next_direction is Direction.SELL else ask
             next_distance = self.pending.distance_points if self.pending else self._active_distance()
@@ -308,23 +362,25 @@ class StrategyModel:
                 self.position = None
                 self.pending = None
                 return [{"kind": "close", "direction": old_direction}]
-            self._start_next_group(next_direction, next_entry, next_distance)
+            if not self._start_next_group(next_direction, next_entry, next_distance):
+                return [{"kind": "no_money"}]
             self._next_pending(bid, ask, next_distance)
             actions = [
                 {"kind": "close", "direction": old_direction},
                 {"kind": "market", "direction": next_direction, "lots": self.position.lots},
-                self._pending_action(),
             ]
+            if self.pending is not None:
+                actions.append(self._pending_action())
             if self._ensure_grid_pending(bid, ask) is not None:
                 actions.append(self._grid_pending_action())
             return actions
 
-        created_pending = self.pending is None
+        created_pending = self.pending is None and self.reversal_count < self.max_reversals
         if created_pending:
             distance_points = self._active_distance()
             self._next_pending(bid, ask, distance_points)
         self._ensure_grid_pending(bid, ask)
-        return [self._pending_action()] if created_pending else []
+        return [self._pending_action()] if created_pending and self.pending is not None else []
 
         return []
 
