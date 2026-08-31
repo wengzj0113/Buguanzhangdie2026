@@ -1054,7 +1054,9 @@ bool OpenMarket(const long order_type, const double requested_volume)
       sent = g_trade.Sell(volume, _Symbol, 0.0, 0.0, 0.0, InpOrderComment);
 
    const uint retcode = g_trade.ResultRetcode();
-   if(!sent || retcode == TRADE_RETCODE_NO_MONEY)
+   const bool completed = retcode == TRADE_RETCODE_DONE
+                          || retcode == TRADE_RETCODE_DONE_PARTIAL;
+   if(!sent || !completed)
      {
       PrintFormat("Market order failed, retcode=%u, %s",
                   retcode, g_trade.ResultRetcodeDescription());
@@ -1118,10 +1120,12 @@ bool PlaceNextPending(const long next_direction, const double stop_loss,
                                   ORDER_TIME_GTC, 0, InpOrderComment);
      }
 
-   if(!sent)
+   const uint retcode = g_trade.ResultRetcode();
+   if(!sent || (retcode != TRADE_RETCODE_DONE && retcode != TRADE_RETCODE_PLACED)
+      || g_trade.ResultOrder() == 0)
      {
       PrintFormat("Reverse pending failed, retcode=%u, %s",
-                  g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+                  retcode, g_trade.ResultRetcodeDescription());
       return false;
      }
    g_pending_ticket = g_trade.ResultOrder();
@@ -1203,10 +1207,12 @@ bool PlaceGridPending(const long position_type, const int level)
          sent = g_trade.SellLimit(volume, entry, _Symbol, stop_loss, take_profit,
                                   ORDER_TIME_GTC, 0, grid_comment);
      }
-   if(!sent)
+   const uint retcode = g_trade.ResultRetcode();
+   if(!sent || (retcode != TRADE_RETCODE_DONE && retcode != TRADE_RETCODE_PLACED)
+      || g_trade.ResultOrder() == 0)
      {
       PrintFormat("Grid pending failed, retcode=%u, %s",
-                  g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+                  retcode, g_trade.ResultRetcodeDescription());
       return false;
      }
    g_grid_pending_level = level;
@@ -1287,6 +1293,42 @@ void EnsureNextPending(const long position_type, const double stop_loss,
       return;
    if(active_pending == 0)
       PlaceNextPending(expected_direction, stop_loss, take_profit, fallback_volume);
+  }
+
+bool ReconcileOrphanSingleGroupPending()
+  {
+   if(g_group_stop_points <= 0 || g_group_take_profit_points <= 0
+      || g_group_anchor_price <= 0.0)
+     {
+      Print("Orphan pending orders detected without recoverable group state; new entries remain paused.");
+      return false;
+     }
+
+   const long current_direction = SequenceDirection(g_cycle_index);
+   const long reverse_direction = g_pending_index >= 0
+                                  ? SequenceDirection(g_pending_index)
+                                  : SequenceDirection(NextCycleIndex());
+   const double reverse_price = GroupStopPrice(current_direction);
+   const double reverse_volume = NextGroupLots(g_group_total_lots > 0.0
+                                                ? g_group_total_lots : InpInitialLots);
+   ulong reverse_ticket = 0;
+   if(!NormalizeSingleGroupPending(false, reverse_direction, reverse_price,
+                                   reverse_volume, reverse_ticket))
+      return false;
+
+   ulong grid_ticket = 0;
+   if(InpGridCount >= 2 && g_grid_filled_levels < InpGridCount - 1)
+     {
+      const int level = g_grid_filled_levels + 1;
+      const double grid_price = GridLevelPrice(current_direction, level);
+      const double grid_volume = VolumeNormalize(g_grid_lots);
+      if(!NormalizeSingleGroupPending(true, current_direction, grid_price,
+                                      grid_volume, grid_ticket))
+         return false;
+     }
+   else if(!NormalizeSingleGroupPending(true, current_direction, 0.0, 0.0, grid_ticket))
+      return false;
+   return true;
   }
 
 bool Transition(const long position_type, const double volume,
@@ -1592,12 +1634,11 @@ void Manage()
       return;
      }
 
-   ulong pending_ticket = 0;
-   long pending_type = 0;
-   double pending_volume = 0.0;
-   double pending_price = 0.0;
    if(HasOurPending())
+     {
+      ReconcileOrphanSingleGroupPending();
       return;
+     }
    if(!IsInitialEntryAllowed())
       return;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && Korder_type == KORDER_ONCE_PER_BAR)

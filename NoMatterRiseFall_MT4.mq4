@@ -1190,6 +1190,42 @@ void EnsureNextPending(const double stop_loss, const double take_profit,
       PlaceNextPending(expected_direction, stop_loss, take_profit, fallback_volume);
   }
 
+bool ReconcileOrphanSingleGroupPending()
+  {
+   if(g_group_stop_points <= 0 || g_group_take_profit_points <= 0
+      || g_group_anchor_price <= 0.0)
+     {
+      Print("Orphan pending orders detected without recoverable group state; new entries remain paused.");
+      return false;
+     }
+
+   const int current_direction = SequenceDirection(g_cycle_index);
+   const int reverse_direction = g_pending_index >= 0
+                                 ? SequenceDirection(g_pending_index)
+                                 : SequenceDirection(NextCycleIndex());
+   const double reverse_price = GroupStopPrice(current_direction);
+   const double reverse_volume = NextGroupLots(g_group_total_lots > 0.0
+                                                ? g_group_total_lots : InpInitialLots);
+   int reverse_ticket = -1;
+   if(!NormalizeSingleGroupPending(false, reverse_direction, reverse_price,
+                                   reverse_volume, reverse_ticket))
+      return false;
+
+   int grid_ticket = -1;
+   if(InpGridCount >= 2 && g_grid_filled_levels < InpGridCount - 1)
+     {
+      const int level = g_grid_filled_levels + 1;
+      const double grid_price = GridLevelPrice(current_direction, level);
+      const double grid_volume = VolumeNormalize(g_grid_lots);
+      if(!NormalizeSingleGroupPending(true, current_direction, grid_price,
+                                      grid_volume, grid_ticket))
+         return false;
+     }
+   else if(!NormalizeSingleGroupPending(true, current_direction, 0.0, 0.0, grid_ticket))
+      return false;
+   return true;
+  }
+
 bool Transition(const int position_type, const double volume,
                 const double stop_loss, const double take_profit)
   {
@@ -1491,12 +1527,11 @@ void Manage()
       return;
      }
 
-   int pending_ticket = -1;
-   int pending_type = OP_SELLSTOP;
-   double pending_volume = 0.0;
-   double pending_price = 0.0;
    if(HasOurPending())
+     {
+      ReconcileOrphanSingleGroupPending();
       return;
+     }
    if(!IsInitialEntryAllowed())
       return;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && Korder_type == KORDER_ONCE_PER_BAR)

@@ -1049,6 +1049,7 @@ def test_dedup_source_contract(source_name):
     assert "NormalizeSingleGroupPending" in source
     assert "HasDuplicateSingleGroupExposure" in source
     assert "ResumePreparedTransition" in source
+    assert "ReconcileOrphanSingleGroupPending" in source
     assert '".transitionphase"' in source
     assert '".transitionid"' in source
     assert "if(!AcquireExecutionOwnership())" in source
@@ -1068,6 +1069,8 @@ def test_dedup_source_contract(source_name):
 
     if source_name.endswith("MT5.mq5"):
         assert "retcode == TRADE_RETCODE_DONE" in source
+        assert "TRADE_RETCODE_DONE_PARTIAL" in source
+        assert "TRADE_RETCODE_PLACED" in source
 
 
 def test_korder_type_zero_limits_parallel_initial_trigger_to_one_per_k0():
