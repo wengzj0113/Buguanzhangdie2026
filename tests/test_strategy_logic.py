@@ -1,7 +1,8 @@
 import pytest
 
 from strategy_logic import (
-    CycleMode, Direction, DistanceMode, OrderType, StrategyModel, TakeProfitMode,
+    CycleMode, Direction, DistanceMode, OrderType, ParallelStrategyModel,
+    StrategyModel, TakeProfitMode,
     cycle_directions,
 )
 
@@ -44,12 +45,27 @@ def test_mode_one_buy_uses_sell_stop_then_sell_limit_for_the_two_sell_steps():
         "kind": "pending", "direction": Direction.SELL, "lots": 0.01,
         "price": 1.0502, "order_type": "SELL_STOP",
     }
-    assert second_actions[0] == {"kind": "close", "direction": Direction.BUY}
-    assert second_actions[1] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
-    assert second_actions[2] == {
+    assert second_actions[0] == {"kind": "delete_pending"}
+    assert second_actions[1] == {"kind": "close", "direction": Direction.BUY}
+    assert second_actions[2] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
+    assert second_actions[3] == {
         "kind": "pending", "direction": Direction.SELL, "lots": 0.02,
         "price": 1.1002, "order_type": "SELL_LIMIT",
     }
+
+
+def test_stop_deletes_unfilled_reverse_pending_before_market_reversal():
+    model = StrategyModel(Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001)
+    model.on_tick(bid=1.1000, ask=1.1002)
+
+    stop_actions = model.on_tick(
+        bid=model.position.stop_loss,
+        ask=model.position.stop_loss + 0.0002,
+    )
+
+    assert stop_actions[0] == {"kind": "delete_pending"}
+    assert stop_actions[1] == {"kind": "close", "direction": Direction.BUY}
+    assert stop_actions[2]["kind"] == "market"
 
 
 def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
@@ -68,7 +84,7 @@ def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
         else:
             bid, ask = position.stop_loss - 0.0002, position.stop_loss
         actions = model.on_tick(bid=bid, ask=ask)
-        directions.append(actions[1]["direction"])
+        directions.append(actions[2]["direction"])
 
     assert directions == [
         Direction.BUY, Direction.SELL, Direction.BUY,
@@ -78,7 +94,7 @@ def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
 
     position = model.position
     actions = model.on_tick(bid=position.stop_loss, ask=position.stop_loss + 0.0002)
-    assert actions[1]["direction"] == Direction.BUY
+    assert actions[2]["direction"] == Direction.BUY
     assert model.current_index == 0
 
 
@@ -92,7 +108,7 @@ def test_grid_multiplier_is_applied_to_the_next_group_grid_lot():
     next_actions = model.on_tick(bid=1.1500, ask=1.1502)
 
     assert first_actions[1]["lots"] == 0.03
-    assert next_actions[1]["lots"] == pytest.approx(0.06)
+    assert next_actions[2]["lots"] == pytest.approx(0.06)
     assert model.grid_lots == pytest.approx(0.09)
 
 
@@ -112,7 +128,7 @@ def test_only_a_post_stop_group_uses_the_initial_lot_multiplier():
     first_stop = model.position.stop_loss
     next_actions = model.on_tick(bid=first_stop, ask=first_stop + 0.0002)
 
-    assert next_actions[1] == {
+    assert next_actions[2] == {
         "kind": "market", "direction": Direction.SELL, "lots": pytest.approx(0.015),
     }
 
@@ -143,8 +159,8 @@ def test_existing_position_can_switch_groups_outside_the_initial_entry_window():
         bid=stop_price, ask=stop_price + 0.0002, now_minute=23 * 60 + 30,
     )
 
-    assert actions[1]["kind"] == "market"
-    assert actions[1]["direction"] is Direction.SELL
+    assert actions[2]["kind"] == "market"
+    assert actions[2]["direction"] is Direction.SELL
 
 
 def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot():
@@ -236,7 +252,7 @@ def test_losing_group_initial_lots_accumulate_and_grid_lots_double():
         bid=first_group_stop, ask=first_group_stop + 0.0002,
     )
 
-    assert second_group_actions[1] == {
+    assert second_group_actions[2] == {
         "kind": "market", "direction": Direction.SELL, "lots": 0.02,
     }
     assert model.grid_lots == pytest.approx(0.02)
@@ -247,7 +263,7 @@ def test_losing_group_initial_lots_accumulate_and_grid_lots_double():
         bid=second_group_stop - 0.0002, ask=second_group_stop,
     )
 
-    assert third_group_actions[1] == {
+    assert third_group_actions[2] == {
         "kind": "market", "direction": Direction.SELL,
         "lots": pytest.approx(0.06),
     }
@@ -271,9 +287,10 @@ def test_grid_count_is_number_of_intervals_and_outer_boundary_still_stops_group(
         bid=model.position.stop_loss,
         ask=model.position.stop_loss + 0.0002,
     )
-    assert stop_actions[0] == {"kind": "close", "direction": Direction.BUY}
-    assert stop_actions[1]["kind"] == "market"
-    assert stop_actions[1]["direction"] is Direction.SELL
+    assert stop_actions[0] == {"kind": "delete_pending"}
+    assert stop_actions[1] == {"kind": "close", "direction": Direction.BUY}
+    assert stop_actions[2]["kind"] == "market"
+    assert stop_actions[2]["direction"] is Direction.SELL
 
 
 def test_take_profit_resets_loss_accumulation_for_the_next_cycle():
@@ -481,9 +498,65 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         candle_range_points=300,
         previous_high=1.1000, previous_low=1.0700,
     )
-    assert stop_actions[1] == {
+    assert stop_actions[2] == {
         "kind": "market", "direction": Direction.SELL, "lots": 0.16,
     }
+
+
+def test_candle_order_mode_zero_allows_only_one_initial_entry_per_current_candle():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.FORWARD,
+        korder_type=0,
+    )
+    first = model.on_tick(
+        bid=1.1002, ask=1.1004, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    model.on_tick(
+        bid=model.position.take_profit, ask=model.position.take_profit + 0.0002,
+        candle_range_points=600, previous_high=1.1000, previous_low=1.0400,
+        candle_id=10,
+    )
+
+    same_candle = model.on_tick(
+        bid=1.2000, ask=1.2002, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    next_candle = model.on_tick(
+        bid=1.2000, ask=1.2002, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=11,
+    )
+
+    assert first[0]["kind"] == "market"
+    assert same_candle == []
+    assert next_candle[0]["kind"] == "market"
+
+
+def test_candle_order_mode_one_allows_repeated_initial_entries_per_current_candle():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.FORWARD,
+        korder_type=1,
+    )
+    model.on_tick(
+        bid=1.1002, ask=1.1004, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    model.on_tick(
+        bid=model.position.take_profit, ask=model.position.take_profit + 0.0002,
+        candle_range_points=600, previous_high=1.1000, previous_low=1.0400,
+        candle_id=10,
+    )
+
+    repeated = model.on_tick(
+        bid=1.2000, ask=1.2002, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+
+    assert repeated[0]["kind"] == "market"
 
 
 def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
@@ -554,8 +627,8 @@ def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cyc
         else:
             bid, ask = position.stop_loss - 0.0002, position.stop_loss
         actions = model.on_tick(bid=bid, ask=ask)
-        opened.append((actions[1]["direction"], actions[1]["lots"]))
-        pending_types.append(actions[2]["order_type"])
+        opened.append((actions[2]["direction"], actions[2]["lots"]))
+        pending_types.append(actions[3]["order_type"])
 
     expected = cycle_directions(initial_direction, cycle_mode)
     assert [direction for direction, _ in opened] == expected
@@ -695,7 +768,7 @@ def test_max_reversals_five_allows_five_switches_then_resets():
     for expected_count in range(1, 6):
         stop_price = model.position.stop_loss
         actions = model.on_tick(bid=stop_price, ask=stop_price + 0.0002)
-        assert actions[1]["kind"] == "market"
+        assert actions[2]["kind"] == "market"
         assert model.reversal_count == expected_count
 
     stop_price = model.position.stop_loss
@@ -743,6 +816,21 @@ def test_max_reversals_counts_reverse_pending_fills_before_reset():
     assert model.reversal_count == 0
 
 
+def test_filled_reverse_pending_is_the_only_stop_transition_action():
+    model = StrategyModel(Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001)
+    model.on_tick(bid=1.1000, ask=1.1002)
+    pending_price = model.pending.price
+
+    actions = model.handle_stop_event(
+        bid=pending_price, ask=pending_price + 0.0002, pending_filled=True,
+    )
+
+    assert actions == [{
+        "kind": "pending_transition", "direction": Direction.SELL, "lots": 0.01,
+    }]
+    assert model.reversal_count == 1
+
+
 def test_new_cycle_after_max_reversals_uses_base_lot_on_next_tick():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
@@ -756,3 +844,105 @@ def test_new_cycle_after_max_reversals_uses_base_lot_on_next_tick():
 
     assert actions[0]["kind"] == "market"
     assert actions[0]["lots"] == pytest.approx(0.01)
+
+
+def dynamic_parallel_model(multiple, korder_type=0):
+    return ParallelStrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        min_range_points=500, max_range_points=1000,
+        order_type=OrderType.FORWARD, grid_count=2,
+        korder_type=korder_type, kline_enable_multiple=multiple,
+    )
+
+
+def parallel_breakout(model, candle_id, range_points, bid=1.1010, ask=1.1012):
+    return model.on_tick(
+        bid=bid, ask=ask, candle_range_points=range_points,
+        previous_high=1.1000, previous_low=1.0400,
+        candle_id=candle_id,
+    )
+
+
+def test_kline_multiple_zero_blocks_new_group_while_existing_group_is_active():
+    model = dynamic_parallel_model(0)
+    assert parallel_breakout(model, 10, 600)[0]["kind"] == "market"
+    assert parallel_breakout(model, 11, 900) == []
+    assert len(model.groups) == 1
+
+
+def test_kline_multiple_one_opens_independent_group_with_existing_group():
+    model = dynamic_parallel_model(1)
+    parallel_breakout(model, 10, 600)
+    actions = parallel_breakout(model, 11, 900)
+    assert actions[0]["kind"] == "market"
+    assert len(model.groups) == 2
+    assert [group.group_id for group in model.groups] == [1, 2]
+
+
+def test_parallel_groups_keep_different_candle_distances():
+    model = dynamic_parallel_model(1)
+    parallel_breakout(model, 10, 600)
+    parallel_breakout(model, 11, 900)
+    assert [group.group_stop_points for group in model.groups] == [600, 900]
+    assert [group.group_take_profit_points for group in model.groups] == [600, 900]
+
+
+def test_take_profit_of_one_group_does_not_close_other_group():
+    model = dynamic_parallel_model(1)
+    parallel_breakout(model, 10, 600)
+    parallel_breakout(model, 11, 900)
+    first, second = model.groups
+    actions = model.on_tick(
+        bid=first.position.take_profit,
+        ask=first.position.take_profit + 0.0002,
+        candle_id=11,
+    )
+    assert actions[0]["group_id"] == first.group_id
+    assert first.position is None
+    assert second.position is not None
+    assert second.pending is not None
+
+
+def test_parallel_groups_keep_reverse_and_grid_pending_separate():
+    model = dynamic_parallel_model(1)
+    parallel_breakout(model, 10, 600)
+    parallel_breakout(model, 11, 900)
+    first, second = model.groups
+    assert first.pending is not None and second.pending is not None
+    assert first.grid_pending is not None and second.grid_pending is not None
+    first_pending_price = first.pending.price
+    model.fill_pending(first.group_id, first_pending_price)
+    assert second.pending is not None
+    assert second.grid_pending is not None
+
+
+def test_parallel_group_stop_deletes_unfilled_pending_before_market_reversal():
+    model = dynamic_parallel_model(1)
+    parallel_breakout(model, 10, 600)
+    group = model.groups[0]
+    actions = model.on_tick(
+        bid=group.position.stop_loss,
+        ask=group.position.stop_loss + 0.0002,
+        candle_id=10,
+    )
+    group_actions = [action for action in actions if action["group_id"] == group.group_id]
+    assert group_actions[0]["kind"] == "delete_pending"
+    assert group_actions[1] == {"kind": "close", "direction": Direction.BUY,
+                                "group_id": group.group_id}
+    assert group_actions[2]["kind"] == "market"
+    assert group_actions[2]["direction"] is Direction.SELL
+
+
+def test_korder_type_zero_limits_parallel_initial_trigger_to_one_per_k0():
+    model = dynamic_parallel_model(1, korder_type=0)
+    parallel_breakout(model, 10, 600)
+    assert parallel_breakout(model, 10, 600) == []
+    assert len(model.groups) == 1
+
+
+def test_korder_type_one_allows_parallel_initial_triggers_on_same_k0():
+    model = dynamic_parallel_model(1, korder_type=1)
+    parallel_breakout(model, 10, 600)
+    assert parallel_breakout(model, 10, 600)[0]["kind"] == "market"
+    assert len(model.groups) == 2
