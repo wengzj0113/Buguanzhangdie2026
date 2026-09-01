@@ -44,6 +44,7 @@ class GuiStateModel:
         self.applied = dict(applied)
         self.draft = dict(applied)
         self.paused_new_initial_entry = False
+        self.should_force_market_order = False
         self.strategy_management_enabled = True
         self.pending_orders_are_preserved = True
         self._close_all_confirmation_requested = False
@@ -62,6 +63,10 @@ class GuiStateModel:
 
     def pause_new_initial_entry(self):
         self.paused_new_initial_entry = True
+
+    def resume_new_initial_entry(self):
+        self.paused_new_initial_entry = False
+        self.should_force_market_order = False
 
     def request_close_all(self):
         self._close_all_confirmation_requested = True

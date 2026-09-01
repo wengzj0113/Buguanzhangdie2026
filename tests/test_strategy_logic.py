@@ -1132,7 +1132,7 @@ def test_gui_draft_does_not_change_applied_config_until_apply():
     assert model.has_unapplied_changes is True
 
 
-def test_gui_pause_only_blocks_new_initial_entry():
+def test_gui_pause_and_resume_only_controls_new_initial_entry():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
     applied_before = dict(model.applied)
     draft_before = dict(model.draft)
@@ -1146,6 +1146,11 @@ def test_gui_pause_only_blocks_new_initial_entry():
     assert model.applied == applied_before
     assert model.draft == draft_before
     assert model.has_unapplied_changes is unapplied_before
+
+    model.resume_new_initial_entry()
+
+    assert model.paused_new_initial_entry is False
+    assert model.should_force_market_order is False
 
 
 def test_gui_close_all_requires_confirmation_and_reports_incomplete_cleanup():

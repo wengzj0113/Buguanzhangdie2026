@@ -234,6 +234,8 @@ bool GuiRenderActions();
 bool GuiRenderMinimizedBar();
 void GuiRenderIfNeeded();
 void GuiMarkDirty();
+bool GuiProcessPendingReset();
+bool GuiAllowsInitialEntry();
 
 string StatePrefix()
   {
@@ -1686,6 +1688,9 @@ bool HasOurPending()
 void BeginFullReset(const string reason)
   {
    Print(reason);
+   g_gui_run_state = GUI_RUN_CLEANING;
+   g_gui_notice = "清理中";
+   GuiMarkDirty();
    MultiClearAll();
    g_reset_pending = true;
    g_had_position = false;
@@ -2270,11 +2275,8 @@ bool ResumePreparedTransition()
 
 void Manage()
   {
-   if(g_reset_pending)
-     {
-      ProcessReset();
+   if(GuiProcessPendingReset())
       return;
-     }
 
    if(HasDuplicateSingleGroupExposure())
      {
@@ -2464,6 +2466,8 @@ void Manage()
       ReconcileOrphanSingleGroupPending();
       return;
      }
+   if(!GuiAllowsInitialEntry())
+      return;
    if(!IsInitialEntryAllowed())
       return;
    if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
@@ -3333,6 +3337,8 @@ bool MultiManageGroup(MultiGroupState &group)
 
 bool MultiTryOpenCandleGroup()
   {
+   if(!GuiAllowsInitialEntry())
+      return false;
    if(!IsInitialEntryAllowed())
       return false;
    double previous_high = 0.0;
@@ -3395,11 +3401,8 @@ bool MultiTryOpenCandleGroup()
 
 void ManageMultipleCandleGroups()
   {
-   if(g_reset_pending)
-     {
-      ProcessReset();
+   if(GuiProcessPendingReset())
       return;
-     }
    bool closed_group = false;
    for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
      {
@@ -3696,6 +3699,37 @@ void GuiMarkDirty()
    g_gui_dirty = true;
   }
 
+bool GuiAllowsInitialEntry()
+  {
+   return g_gui_run_state != GUI_RUN_PAUSED_INITIAL
+          && g_gui_run_state != GUI_RUN_CLEANING;
+  }
+
+bool GuiProcessPendingReset()
+  {
+   if(g_reset_pending)
+     {
+      const bool complete = ProcessReset();
+      g_gui_run_state = complete ? GUI_RUN_RUNNING : GUI_RUN_CLEANING;
+      g_gui_notice = complete ? "清理完成" : "清理中";
+      GuiMarkDirty();
+      return true;
+     }
+   if(g_gui_run_state == GUI_RUN_CLEANING)
+     {
+      if(!HasManagedExposureForMagic(g_gui_applied_config.magic_number))
+        {
+         g_gui_run_state = GUI_RUN_RUNNING;
+         g_gui_notice = "清理完成";
+        }
+      else
+         g_gui_notice = "清理中";
+      GuiMarkDirty();
+      return true;
+     }
+   return false;
+  }
+
 bool GuiRenderTitleBar()
   {
    bool ok = true;
@@ -3748,6 +3782,35 @@ bool GuiRenderNavigation()
                                "nav." + IntegerToString(index)))
          ok = false;
      }
+   return ok;
+  }
+
+bool GuiRenderCloseConfirmation(bool &ok)
+  {
+   const int x = 112;
+   const int y = 152;
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "confirm.panel",
+                                            x, y, 258, 154,
+                                            C'15,23,42', C'148,163,184'),
+                            "confirm.panel"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "confirm.title",
+                                          "确认清理", x + 14, y + 14, 220, 20,
+                                          clrWhite, 10), "confirm.title"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "confirm.text",
+                                          "将平仓并删除当前 EA 的全部挂单。\n此操作不可撤销。",
+                                          x + 14, y + 44, 226, 40,
+                                          C'191,219,254', 9), "confirm.text"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "confirm.cleanup",
+                                            "确认清理", x + 14, y + 104, 104, 28,
+                                            C'153,27,27', clrWhite), "confirm.cleanup"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "confirm.cancel",
+                                            "取消", x + 130, y + 104, 104, 28,
+                                            C'51,65,85', C'226,232,240'), "confirm.cancel"))
+      ok = false;
    return ok;
   }
 
@@ -3952,6 +4015,8 @@ bool GuiRenderContent()
         }
       GuiRenderNotice(x + 16, y + 292, ok);
      }
+   if(g_gui_close_confirm_open)
+      GuiRenderCloseConfirmation(ok);
    return ok;
   }
 
@@ -4186,6 +4251,48 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      {
       g_gui_full_window = true;
       GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "pause")
+     {
+      if(g_gui_run_state == GUI_RUN_PAUSED_INITIAL)
+        {
+         g_gui_run_state = GUI_RUN_RUNNING;
+         g_gui_notice = "已恢复；不会强制开首单";
+        }
+      else if(g_gui_run_state != GUI_RUN_CLEANING)
+        {
+         g_gui_run_state = GUI_RUN_PAUSED_INITIAL;
+         g_gui_notice = "已暂停新首单；现有持仓及挂单继续管理";
+        }
+      GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "close")
+     {
+      g_gui_close_confirm_open = true;
+      GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "confirm.cancel")
+     {
+      g_gui_close_confirm_open = false;
+      GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "confirm.cleanup")
+     {
+      if(!g_gui_close_confirm_open)
+         return;
+      g_gui_close_confirm_open = false;
+      g_gui_run_state = GUI_RUN_CLEANING;
+      g_gui_notice = "清理中";
+      GuiMarkDirty();
+      BeginFullReset("GUI requested clearing all EA positions and pending orders.");
       GuiRender();
       return;
      }
