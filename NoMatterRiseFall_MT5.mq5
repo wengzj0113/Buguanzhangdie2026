@@ -181,6 +181,7 @@ bool            g_gui_full_window = true;
 bool            g_gui_has_unapplied_changes = false;
 bool            g_gui_close_confirm_open = false;
 string          g_gui_notice = "";
+bool            g_gui_config_initialized = false;
 
 CTrade g_trade;
 bool   g_had_position = false;
@@ -214,6 +215,7 @@ int    g_start_operation_minutes = 0;
 int    g_end_operation_minutes = 24 * 60;
 
 void MultiClearAll();
+bool HasManagedExposure();
 
 string StatePrefix()
   {
@@ -436,6 +438,44 @@ int ParseTimeMinutes(const string value)
    return hour * 60 + minute;
   }
 
+bool IsFinitePositive(const double value)
+  {
+   return MathIsValidNumber(value) && value > 0.0;
+  }
+
+bool IsVolumeAligned(const double volume, const double minimum,
+                     const double maximum, const double step)
+  {
+   if(!IsFinitePositive(volume) || !IsFinitePositive(minimum)
+      || !IsFinitePositive(maximum) || !IsFinitePositive(step)
+      || minimum > maximum || volume < minimum || volume > maximum)
+      return false;
+   const double steps = (volume - minimum) / step;
+   return MathIsValidNumber(steps)
+          && MathAbs(steps - MathRound(steps)) <= 1e-6;
+  }
+
+bool HasManagedExposure()
+  {
+   for(int index = 0; index < PositionsTotal(); index++)
+     {
+      const ulong ticket = PositionGetTicket(index);
+      if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol
+         && (ulong)PositionGetInteger(POSITION_MAGIC)
+            == g_gui_applied_config.magic_number)
+         return true;
+     }
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong ticket = OrderGetTicket(index);
+      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol
+         && (ulong)OrderGetInteger(ORDER_MAGIC)
+            == g_gui_applied_config.magic_number)
+         return true;
+     }
+   return false;
+  }
+
 bool ValidateGuiConfig(const GuiConfig &config, string &error)
   {
    error = "";
@@ -478,26 +518,44 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       error = "Invalid take-profit mode.";
       return false;
      }
-   if(config.initial_lots <= 0.0 || config.initial_lots_multiplier <= 0.0)
+   if(!IsFinitePositive(config.initial_lots)
+      || !IsFinitePositive(config.initial_lots_multiplier)
+      || !IsFinitePositive(config.grid_lot_multiplier))
      {
-      error = "Initial lots and multiplier must be positive.";
+      error = "Lot values and multipliers must be finite and positive.";
       return false;
      }
    if(config.max_reversals < 0 || config.grid_count < 0
-      || config.grid_lot_multiplier <= 0.0)
+      || config.magic_number == 0)
      {
-      error = "Risk and grid settings are invalid.";
+      error = "Risk, grid, and magic/order-id settings are invalid.";
       return false;
      }
-   if(config.stop_loss_distance_points <= 0 || config.take_profit_distance_points <= 0)
+   const double volume_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   const double volume_max = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+   const double volume_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(!IsVolumeAligned(config.initial_lots, volume_min, volume_max, volume_step)
+      || !IsVolumeAligned(config.initial_lots * config.initial_lots_multiplier,
+                          volume_min, volume_max, volume_step)
+      || !IsVolumeAligned(config.initial_lots * config.grid_lot_multiplier,
+                          volume_min, volume_max, volume_step))
      {
-      error = "Fixed stop-loss and take-profit distances must be positive.";
+      error = "Lot values and multipliers must produce symbol-compatible volumes.";
       return false;
      }
-   if(config.candle_min_range_points <= 0
+   if(config.stop_loss_distance_points <= 0 || config.take_profit_distance_points <= 0
+      || config.candle_min_range_points <= 0
       || config.candle_max_range_points < config.candle_min_range_points)
      {
-      error = "Candle range limits are invalid.";
+      error = "Distance and candle range values are invalid.";
+      return false;
+     }
+   string comment = config.order_comment;
+   StringTrimLeft(comment);
+   StringTrimRight(comment);
+   if(StringLen(comment) == 0)
+     {
+      error = "Order comment must not be empty.";
       return false;
      }
    if(ParseTimeMinutes(config.start_time) < 0 || ParseTimeMinutes(config.end_time) < 0)
@@ -510,6 +568,12 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
 
 bool ApplyGuiConfig(const GuiConfig &config, string &error)
   {
+   if(g_gui_config_initialized && HasManagedExposure())
+     {
+      error = "Cannot apply GUI config while positions or pending orders are active.";
+      g_gui_notice = error;
+      return false;
+     }
    if(!ValidateGuiConfig(config, error))
      {
       g_gui_notice = error;
@@ -523,10 +587,11 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
    g_trade.SetExpertMagicNumber(config.magic_number);
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
+   g_gui_config_initialized = true;
    return true;
   }
 
-bool LoadConfigFromInputs()
+GuiConfig LoadConfigFromInputs()
   {
    GuiConfig config;
    config.first_direction = 首单方向;
@@ -550,13 +615,7 @@ bool LoadConfigFromInputs()
    config.start_time = 开始时间;
    config.end_time = 结束时间;
 
-   string error = "";
-   if(!ValidateGuiConfig(config, error))
-     {
-      g_gui_notice = error;
-      return false;
-     }
-   return ApplyGuiConfig(config, error);
+   return config;
   }
 
 bool IsInitialEntryAllowed()
@@ -2767,8 +2826,14 @@ void ManageMultipleCandleGroups()
 
 int OnInit()
   {
-   if(!LoadConfigFromInputs())
+   GuiConfig input_config = LoadConfigFromInputs();
+   string config_error = "";
+   if(!ValidateGuiConfig(input_config, config_error)
+      || !ApplyGuiConfig(input_config, config_error))
+     {
+      PrintFormat("Invalid GUI configuration: %s", config_error);
       return INIT_PARAMETERS_INCORRECT;
+     }
 
    if(!AcquireExecutionOwnership())
       return INIT_FAILED;
