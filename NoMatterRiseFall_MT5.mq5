@@ -215,11 +215,45 @@ int    g_start_operation_minutes = 0;
 int    g_end_operation_minutes = 24 * 60;
 
 void MultiClearAll();
+string SanitizeExecutionLockPart(string value);
 
 string StatePrefix()
   {
+   return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
+          + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + _Symbol + "." + IntegerToString((long)g_gui_applied_config.magic_number);
+  }
+
+string LegacyStatePrefix()
+  {
    return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
           + "." + _Symbol + "." + IntegerToString((long)g_gui_applied_config.magic_number);
+  }
+
+bool DisableLegacyStateFallback(string &error)
+  {
+   error = "";
+   const string key = StatePrefix() + ".legacy_disabled";
+   if(!GlobalVariableSet(key, 1.0))
+     {
+      error = "Failed to persist MT5 legacy-state migration marker: " + key;
+      Print(error);
+      return false;
+     }
+   return true;
+  }
+
+string StateReadPrefix()
+  {
+   const string current_prefix = StatePrefix();
+   if(GlobalVariableCheck(current_prefix + ".candleentrybar")
+      || GlobalVariableCheck(current_prefix + ".index")
+      || GlobalVariableCheck(current_prefix + ".meta")
+      || GlobalVariableCheck(current_prefix + ".transitionphase")
+      || GlobalVariableCheck(current_prefix + ".multi.nextid")
+      || GlobalVariableCheck(current_prefix + ".legacy_disabled"))
+      return current_prefix;
+   return LegacyStatePrefix();
   }
 
 string SanitizeExecutionLockPart(string value)
@@ -346,11 +380,14 @@ void ClearState()
    g_grid_filled_levels = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
+   string migration_error = "";
+   if(!DisableLegacyStateFallback(migration_error))
+      PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
   }
 
 void LoadState()
   {
-   const string prefix = StatePrefix();
+   const string prefix = StateReadPrefix();
    if(GlobalVariableCheck(prefix + ".candleentrybar"))
       g_last_candle_entry_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".candleentrybar"));
    if(!GlobalVariableCheck(prefix + ".index") || !GlobalVariableCheck(prefix + ".meta"))
@@ -413,6 +450,8 @@ void LoadState()
       g_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
    if(GlobalVariableCheck(prefix + ".gridpendingprice"))
       g_grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
+   if(prefix != StatePrefix())
+      SaveState();
   }
 
 int PriceDigits()
@@ -500,6 +539,11 @@ string ScopeRegistryKey(const ulong magic_number)
    return ScopeRegistryPrefix() + IntegerToString((long)magic_number);
   }
 
+string LegacyScopeRegistryKey(const ulong magic_number)
+  {
+   return LegacyScopeRegistryPrefix() + IntegerToString((long)magic_number);
+  }
+
 string StateScopePrefix()
   {
    return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
@@ -550,6 +594,24 @@ bool ParsePositiveMagicText(const string value, ulong &magic_number)
       return false;
    magic_number = (ulong)parsed;
    return true;
+  }
+
+bool HasPersistedStateForMagicPrefix(const string prefix, const ulong magic_number)
+  {
+   const string state_prefix = prefix + IntegerToString((long)magic_number);
+   return GlobalVariableCheck(state_prefix + ".candleentrybar")
+          || GlobalVariableCheck(state_prefix + ".index")
+          || GlobalVariableCheck(state_prefix + ".meta")
+          || GlobalVariableCheck(state_prefix + ".transitionphase")
+          || GlobalVariableCheck(state_prefix + ".multi.nextid");
+  }
+
+bool IsKnownScopeForMagic(const ulong magic_number)
+  {
+   return GlobalVariableCheck(ScopeRegistryKey(magic_number))
+          || GlobalVariableCheck(LegacyScopeRegistryKey(magic_number))
+          || HasPersistedStateForMagicPrefix(StateScopePrefix(), magic_number)
+          || HasPersistedStateForMagicPrefix(LegacyStateScopePrefix(), magic_number);
   }
 
 bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys,
@@ -610,16 +672,10 @@ bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
    return true;
   }
 
-bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
+bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
+                                      const ulong requested_magic, string &error)
   {
    int persisted_phase = TRANSITION_NONE;
-   if(LoadPersistedTransitionPhaseForMagic(requested_magic, persisted_phase))
-     {
-      error = "Cannot initialize magic/order id while a persisted transition is in flight.";
-      return false;
-     }
-
-   const string registry_prefix = ScopeRegistryPrefix();
    for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
      {
       const string name = GlobalVariableName(index);
@@ -640,6 +696,13 @@ bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
         }
      }
    return true;
+  }
+
+bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
+  {
+   return CheckKnownScopeTransitionsPrefix(ScopeRegistryPrefix(), requested_magic, error)
+          && CheckKnownScopeTransitionsPrefix(LegacyScopeRegistryPrefix(),
+                                              requested_magic, error);
   }
 
 bool RememberManagedScope(const ulong magic_number, string &error)
@@ -783,6 +846,8 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       g_gui_notice = error;
       return false;
      }
+   const bool allow_initial_scope_recovery = !g_gui_config_initialized
+                                             && IsKnownScopeForMagic(config.magic_number);
    if(g_gui_config_initialized
       && HasManagedExposureForMagic(g_gui_applied_config.magic_number))
      {
@@ -790,7 +855,8 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       g_gui_notice = error;
       return false;
      }
-   if(HasManagedExposureForMagic(config.magic_number))
+   if(!allow_initial_scope_recovery
+      && HasManagedExposureForMagic(config.magic_number))
      {
       error = "Cannot apply GUI config for the candidate magic/order id while positions or pending orders are active.";
       g_gui_notice = error;
@@ -2388,6 +2454,9 @@ void MultiClearAll()
    g_multi_last_trigger_bar = 0;
    g_multi_next_id = 1;
    GlobalVariableDel(StatePrefix() + ".multi.nextid");
+   string migration_error = "";
+   if(!DisableLegacyStateFallback(migration_error))
+      PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
   }
 
 void MultiRemoveGroup(const int index)
@@ -2485,13 +2554,20 @@ void MultiSaveGroup(const MultiGroupState &group)
 
 void MultiLoadGroups()
   {
-   const string next_key = StatePrefix() + ".multi.nextid";
+   const string current_prefix = StatePrefix();
+   string state_prefix = StateReadPrefix();
+   if(state_prefix == current_prefix
+      && !GlobalVariableCheck(current_prefix + ".multi.nextid")
+      && !GlobalVariableCheck(current_prefix + ".legacy_disabled")
+      && GlobalVariableCheck(LegacyStatePrefix() + ".multi.nextid"))
+      state_prefix = LegacyStatePrefix();
+   const string next_key = state_prefix + ".multi.nextid";
    if(!GlobalVariableCheck(next_key))
       return;
    g_multi_next_id = (int)MathMax(1.0, MathRound(GlobalVariableGet(next_key)));
    for(int id = 1; id < g_multi_next_id; id++)
      {
-      const string prefix = MultiStatePrefix(id);
+      const string prefix = state_prefix + ".multi." + IntegerToString(id);
       if(!GlobalVariableCheck(prefix + ".active")
          || GlobalVariableGet(prefix + ".active") < 0.5)
          continue;
@@ -2520,6 +2596,17 @@ void MultiLoadGroups()
       state.grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
       state.grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
       g_multi_groups[index] = state;
+     }
+   if(state_prefix != current_prefix)
+     {
+      for(int index = 0; index < ArraySize(g_multi_groups); index++)
+         MultiSaveGroup(g_multi_groups[index]);
+      const string current_next_key = current_prefix + ".multi.nextid";
+      if(!GlobalVariableSet(current_next_key, (double)g_multi_next_id))
+         PrintFormat("Failed to migrate MT5 multi-group next-id state: %s", current_next_key);
+      string migration_error = "";
+      if(!DisableLegacyStateFallback(migration_error))
+         PrintFormat("Failed to finalize legacy MT5 multi-group migration: %s", migration_error);
      }
   }
 
