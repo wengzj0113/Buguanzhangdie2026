@@ -1085,3 +1085,22 @@ def test_korder_type_one_allows_parallel_initial_triggers_on_same_k0():
     parallel_breakout(model, 10, 600)
     assert parallel_breakout(model, 10, 600)[0]["kind"] == "market"
     assert len(model.groups) == 2
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_candle_distance_mode_uses_user_selected_cycle_mode(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "g_active_cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
+    assert "state.cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
+    assert "g_active_cycle_mode = InpCycleMode" in source
+    assert "state.cycle_mode = InpCycleMode" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_cycle_mode_parameter_describes_each_direction_sequence(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "模式一：首单多=多空空多空空；首单空=空多多空多多" in source
+    assert "模式二：首单多=多空多空多多；首单空=空多空多空空" in source
+    assert "模式三：首单多=多空多多空多；首单空=空多空空多空" in source

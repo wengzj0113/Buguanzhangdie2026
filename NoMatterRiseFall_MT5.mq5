@@ -12,9 +12,9 @@ enum FirstDirection
 
 enum CycleMode
   {
-   CYCLE_MODE_1 = 0,  // 循环模式一
-   CYCLE_MODE_2 = 1,  // 循环模式二
-   CYCLE_MODE_3 = 2   // 循环模式三
+   CYCLE_MODE_1 = 0,  // 模式一：首单多=多空空多空空；首单空=空多多空多多
+   CYCLE_MODE_2 = 1,  // 模式二：首单多=多空多空多多；首单空=空多空多空空
+   CYCLE_MODE_3 = 2   // 模式三：首单多=多空多多空多；首单空=空多空空多空
   };
 
 enum DistanceMode
@@ -58,7 +58,7 @@ enum TransitionPhase
 
 // 首单方向：做多或做空
 input FirstDirection 首单方向 = FIRST_BUY;
-// 固定距离模式下使用的循环模式
+// 固定距离和K线高度模式均使用用户选择的循环模式
 input CycleMode      循环模式 = CYCLE_MODE_1;
 // 止盈止损距离来源：固定距离或上一根K线高度
 input DistanceMode   距离模式 = DISTANCE_FIXED;
@@ -1665,7 +1665,7 @@ void Manage()
       initial_stop_points = range_points;
       initial_take_profit_points = range_points;
       g_active_first_direction = (int)first_direction;
-      g_active_cycle_mode = ordertype == ORDERTYPE_FORWARD ? CYCLE_MODE_1 : CYCLE_MODE_2;
+      g_active_cycle_mode = InpCycleMode;
      }
    else
      {
@@ -2476,7 +2476,7 @@ bool MultiTryOpenCandleGroup()
    const int new_group_id = g_multi_next_id++;
    MultiResetState(state, new_group_id);
    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
-   state.cycle_mode = ordertype == ORDERTYPE_FORWARD ? CYCLE_MODE_1 : CYCLE_MODE_2;
+   state.cycle_mode = InpCycleMode;
    state.stop_points = range_points;
    state.take_profit_points = range_points;
    if(!MultiOpenMarket(state, first_direction, 首单手数))
