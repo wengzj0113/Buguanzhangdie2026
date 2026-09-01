@@ -55,6 +55,21 @@ def test_mt5_gui_initial_load_allows_recovery_of_active_scope():
     assert "HasManagedExposureForMagic(config.magic_number)" in first_line.group(1)
 
 
+def test_mt5_gui_keeps_editable_pages_stable_between_user_events():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    render_if_needed = re.search(
+        r"void GuiRenderIfNeeded\(\).*?\n\s*\}\n\nvoid GuiMarkDraftChanged",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert render_if_needed
+    body = render_if_needed.group(0)
+    assert "g_gui_page != GUI_PAGE_OVERVIEW" in body
+    assert "g_gui_dirty" in body
+    assert "return;" in body
+
+
 def test_cycle_templates_cover_both_modes_and_first_directions():
     assert cycle_directions(Direction.BUY, CycleMode.MODE_1) == [
         Direction.BUY, Direction.SELL, Direction.SELL,

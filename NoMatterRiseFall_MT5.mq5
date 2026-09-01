@@ -4120,6 +4120,8 @@ void GuiRenderIfNeeded()
   {
    if(!g_gui_objects_created)
       return;
+   if(g_gui_full_window && g_gui_page != GUI_PAGE_OVERVIEW && !g_gui_dirty)
+      return;
    const string snapshot = GuiBuildSnapshot();
    if(g_gui_dirty || snapshot != g_gui_last_snapshot)
       GuiRender();
