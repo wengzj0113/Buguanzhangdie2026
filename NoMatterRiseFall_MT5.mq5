@@ -579,6 +579,21 @@ bool LoadPersistedTransitionPhaseForMagic(const ulong magic_number, int &phase)
                                                    magic_number, phase);
   }
 
+bool HasCurrentServerPersistedTransition(const ulong magic_number)
+  {
+   int phase = TRANSITION_NONE;
+   return LoadPersistedTransitionPhaseForPrefix(StateScopePrefix(), magic_number, phase);
+  }
+
+bool HasBlockingCandidateTransition(const ulong magic_number)
+  {
+   if(HasCurrentServerPersistedTransition(magic_number))
+      return true;
+   int phase = TRANSITION_NONE;
+   return LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(), magic_number, phase)
+          && HasManagedExposureForMagic(magic_number);
+  }
+
 bool ParsePositiveMagicText(const string value, ulong &magic_number)
   {
    if(StringLen(value) == 0)
@@ -648,6 +663,12 @@ bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys
                  + " still has positions or pending orders.";
          return false;
         }
+      if(cleanup_registry)
+        {
+         int persisted_phase = TRANSITION_NONE;
+         if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase))
+            continue;
+        }
       if(cleanup_registry && !GlobalVariableDel(name))
         {
          error = "Failed to remove stale MT5 scope registry key: " + name;
@@ -687,8 +708,12 @@ bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
             StringSubstr(name, StringLen(registry_prefix)), known_magic)
          || known_magic == requested_magic)
          continue;
-      if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase)
-         && (!require_current_exposure || HasManagedExposureForMagic(known_magic)))
+      const bool has_transition = require_current_exposure
+                                  ? LoadPersistedTransitionPhaseForMagic(known_magic,
+                                                                         persisted_phase)
+                                    && HasManagedExposureForMagic(known_magic)
+                                  : HasCurrentServerPersistedTransition(known_magic);
+      if(has_transition)
         {
          error = "Cannot initialize magic/order id "
                  + IntegerToString((long)requested_magic)
@@ -733,6 +758,9 @@ bool ForgetManagedScopeIfFlat(const ulong magic_number, string &error)
    if(magic_number == 0 || HasManagedExposureForMagic(magic_number))
       return true;
    const string key = ScopeRegistryKey(magic_number);
+   int persisted_phase = TRANSITION_NONE;
+   if(LoadPersistedTransitionPhaseForMagic(magic_number, persisted_phase))
+      return true;
    if(!GlobalVariableCheck(key))
       return true;
    if(!GlobalVariableDel(key))
@@ -878,6 +906,12 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
    const bool previous_has_unapplied_changes = g_gui_has_unapplied_changes;
    const bool magic_changed = g_gui_config_initialized
                               && config.magic_number != previous_config.magic_number;
+   if(magic_changed && HasBlockingCandidateTransition(config.magic_number))
+     {
+      error = "Cannot apply GUI config for a magic/order id with a persisted transition in flight.";
+      g_gui_notice = error;
+      return false;
+     }
    if(magic_changed)
       ReleaseExecutionOwnership();
 
