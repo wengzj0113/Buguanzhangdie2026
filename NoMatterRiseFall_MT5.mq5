@@ -186,6 +186,11 @@ string          g_gui_object_prefix = "";
 string          g_gui_last_snapshot = "";
 bool            g_gui_dirty = true;
 bool            g_gui_objects_created = false;
+string          g_gui_dropdown_key = "";
+string          g_gui_edit_key = "";
+bool            g_gui_chart_overlay_state_saved = false;
+bool            g_gui_saved_trade_levels = true;
+bool            g_gui_saved_trade_history = true;
 string          g_gui_render_error = "";
 int             g_gui_render_error_code = 0;
 
@@ -234,6 +239,11 @@ bool GuiRenderActions();
 bool GuiRenderMinimizedBar();
 void GuiRenderIfNeeded();
 void GuiMarkDirty();
+bool GuiHandleDropdownClick(const string object_name);
+bool GuiHandleChartClick(const int x, const int y);
+bool GuiSyncEditValue(const string key);
+bool GuiPrepareChartForWindow();
+void GuiRestoreChartAfterWindow();
 bool GuiProcessPendingReset();
 bool GuiAllowsInitialEntry();
 
@@ -3441,11 +3451,30 @@ void ManageMultipleCandleGroups()
 
 string GuiObjectPrefix()
   {
+   return "NMR.g." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + SanitizeExecutionLockPart(_Symbol) + "."
+          + IntegerToString((long)g_gui_applied_config.magic_number) + ".";
+  }
+
+string GuiLegacyObjectPrefix()
+  {
    return "NMR.gui." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
           + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
           + "." + SanitizeExecutionLockPart(_Symbol) + "."
           + IntegerToString((long)g_gui_applied_config.magic_number) + ".";
   }
+
+color GuiColorBackground() { return C'7,11,18'; }
+color GuiColorPanel()      { return C'16,26,42'; }
+color GuiColorSurface()    { return C'22,36,58'; }
+color GuiColorInput()      { return C'11,21,37'; }
+color GuiColorBorder()     { return C'59,90,126'; }
+color GuiColorText()       { return C'237,245,255'; }
+color GuiColorMuted()      { return C'142,168,196'; }
+color GuiColorPrimary()    { return C'40,118,240'; }
+color GuiColorSuccess()    { return C'54,217,138'; }
+color GuiColorWarning()    { return C'231,189,103'; }
+color GuiColorDanger()     { return C'119,31,39'; }
 
 void GuiSetObjectBase(const string name, const int x, const int y,
                       const int width, const int height)
@@ -3471,6 +3500,7 @@ bool GuiCreatePanel(const string name, const int x, const int y,
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, background);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, border);
    ObjectSetInteger(0, name, OBJPROP_BORDER_TYPE, BORDER_FLAT);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 10);
    return true;
   }
 
@@ -3486,6 +3516,7 @@ bool GuiCreateText(const string name, const string text, const int x, const int 
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, font_size);
    ObjectSetInteger(0, name, OBJPROP_COLOR, text_color);
    ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 500);
    return true;
   }
 
@@ -3498,11 +3529,14 @@ bool GuiCreateButton(const string name, const string text, const int x, const in
    GuiSetObjectBase(name, x, y, width, height);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 10);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, background);
    ObjectSetInteger(0, name, OBJPROP_COLOR, text_color);
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'70,86,112');
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, 20);
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, GuiColorBorder());
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_SELECTED, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 1000);
    return true;
   }
 
@@ -3513,15 +3547,16 @@ bool GuiCreateEdit(const string name, const string text, const int x, const int 
       return false;
    GuiSetObjectBase(name, x, y, width, height);
    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
    ObjectSetString(0, name, OBJPROP_TEXT, text);
    ObjectSetString(0, name, OBJPROP_FONT, "Arial");
-   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 10);
    ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_LEFT);
    ObjectSetInteger(0, name, OBJPROP_READONLY, false);
-   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'15,23,42');
-   ObjectSetInteger(0, name, OBJPROP_COLOR, C'226,232,240');
-   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'100,116,139');
-   ObjectSetInteger(0, name, OBJPROP_ZORDER, 20);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, GuiColorInput());
+   ObjectSetInteger(0, name, OBJPROP_COLOR, GuiColorText());
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, GuiColorBorder());
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 1000);
    return true;
   }
 
@@ -3545,8 +3580,15 @@ string GuiPageText(const GuiPage page)
       case GUI_PAGE_DISTANCE: return "距离";
       case GUI_PAGE_GRID:     return "网格";
       case GUI_PAGE_RISK:     return "风控";
-      default:                return "总览";
-     }
+     default:                return "总览";
+    }
+  }
+
+string GuiSymbolPeriodText()
+  {
+   string period = EnumToString(_Period);
+   StringReplace(period, "PERIOD_", "");
+   return _Symbol + " · " + period;
   }
 
 string GuiRunStateText()
@@ -3599,28 +3641,157 @@ string GuiTakeProfitModeText(const TakeProfitMode value)
    return value == TAKE_PROFIT_LINEAR ? "线性移动" : "网格移动";
   }
 
+int GuiDropdownOptionCount(const string key)
+  {
+   if(key == "first_direction" || key == "distance_mode" || key == "order_type"
+      || key == "candle_order_mode" || key == "candle_enable_multiple"
+      || key == "take_profit_mode")
+      return 2;
+   if(key == "cycle_mode")
+      return 3;
+   return 0;
+  }
+
+string GuiDropdownOptionText(const string key, const int index)
+  {
+   if(key == "first_direction")
+      return index == 1 ? "SELL" : "BUY";
+   if(key == "cycle_mode")
+     {
+      if(index == 1)
+         return "模式2";
+      if(index == 2)
+         return "模式3";
+      return "模式1";
+     }
+   if(key == "distance_mode")
+      return index == 1 ? "K线高度" : "固定距离";
+   if(key == "order_type")
+      return index == 1 ? "逆向" : "正向";
+   if(key == "candle_order_mode")
+      return index == 1 ? "每根重复" : "每根一次";
+   if(key == "candle_enable_multiple")
+      return index == 1 ? "多组" : "单组";
+   if(key == "take_profit_mode")
+      return index == 1 ? "线性移动" : "网格移动";
+   return "";
+  }
+
+int GuiDropdownValueIndex(const string key)
+  {
+   if(key == "first_direction")
+      return g_gui_draft_config.first_direction == FIRST_SELL ? 1 : 0;
+   if(key == "cycle_mode")
+      return (int)g_gui_draft_config.cycle_mode;
+   if(key == "distance_mode")
+      return g_gui_draft_config.distance_mode == DISTANCE_CANDLE_RANGE ? 1 : 0;
+   if(key == "order_type")
+      return g_gui_draft_config.order_type == ORDERTYPE_REVERSE ? 1 : 0;
+   if(key == "candle_order_mode")
+      return g_gui_draft_config.candle_order_mode == KORDER_REPEAT_PER_BAR ? 1 : 0;
+   if(key == "candle_enable_multiple")
+      return g_gui_draft_config.candle_enable_multiple == 1 ? 1 : 0;
+   if(key == "take_profit_mode")
+      return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
+   return -1;
+  }
+
+bool GuiSetDropdownValue(const string key, const int index)
+  {
+   if(index < 0 || index >= GuiDropdownOptionCount(key))
+      return false;
+   if(key == "first_direction")
+      g_gui_draft_config.first_direction = index == 1 ? FIRST_SELL : FIRST_BUY;
+   else if(key == "cycle_mode")
+      g_gui_draft_config.cycle_mode = (CycleMode)index;
+   else if(key == "distance_mode")
+      g_gui_draft_config.distance_mode = index == 1 ? DISTANCE_CANDLE_RANGE : DISTANCE_FIXED;
+   else if(key == "order_type")
+      g_gui_draft_config.order_type = index == 1 ? ORDERTYPE_REVERSE : ORDERTYPE_FORWARD;
+   else if(key == "candle_order_mode")
+      g_gui_draft_config.candle_order_mode = index == 1 ? KORDER_REPEAT_PER_BAR : KORDER_ONCE_PER_BAR;
+   else if(key == "candle_enable_multiple")
+      g_gui_draft_config.candle_enable_multiple = index == 1 ? 1 : 0;
+   else if(key == "take_profit_mode")
+      g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
+   else
+      return false;
+   return true;
+  }
+
+bool GuiCreateDropdownOption(const string name, const string text, const int x, const int y,
+                             const int width, const int height, const bool selected)
+  {
+   const bool created = GuiCreateButton(name, text, x, y, width, height,
+                                        selected ? GuiColorPrimary() : GuiColorInput(),
+                                        GuiColorText());
+   if(created)
+      ObjectSetInteger(0, name, OBJPROP_ZORDER, 2000);
+   return created;
+  }
+
+bool GuiRenderDropdownField(const string key, const string label, const string value,
+                            const int x, const int y, bool &ok)
+  {
+   const int value_x = x + 166;
+   const int value_width = 236;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
+                                          label, x, y + 3, 156, 20,
+                                          GuiColorMuted(), 10),
+                            "field.label." + key))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "field." + key,
+                                            value + " ▾", value_x, y, value_width, 24,
+                                            GuiColorInput(), GuiColorText()),
+                            "field." + key))
+      ok = false;
+   if(g_gui_dropdown_key != key)
+      return true;
+   const int option_count = GuiDropdownOptionCount(key);
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "dropdown.panel." + key,
+                                            value_x, y + 24, value_width, option_count * 24,
+                                            GuiColorInput(), GuiColorBorder()),
+                            "dropdown.panel." + key))
+      ok = false;
+   const int selected_index = GuiDropdownValueIndex(key);
+   for(int index = 0; index < option_count; index++)
+     {
+      const string option_name = g_gui_object_prefix + "dropdown." + key + "."
+                                 + IntegerToString(index);
+      if(!GuiTrackCreateResult(GuiCreateDropdownOption(option_name,
+                                                       GuiDropdownOptionText(key, index),
+                                                       value_x, y + 24 + index * 24,
+                                                       value_width, 24,
+                                                       index == selected_index),
+                                "dropdown." + key + "." + IntegerToString(index)))
+         ok = false;
+     }
+   return true;
+  }
+
 bool GuiRenderLabelValue(const string key, const string label, const string value,
                          const int x, const int y, const bool editable,
                          const bool button_value, bool &ok)
   {
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
-                                          label, x, y + 3, 116, 20,
-                                          C'191,219,254', 9),
+                                          label, x, y + 3, 156, 20,
+                                          GuiColorMuted(), 10),
                             "field.label." + key))
       ok = false;
-   const int value_x = x + 122;
+   const int value_x = x + 166;
+   const int value_width = 236;
    bool created = false;
    if(editable)
       created = GuiCreateEdit(g_gui_object_prefix + "field." + key,
-                              value, value_x, y, 130, 24);
+                              value, value_x, y, value_width, 24);
    else if(button_value)
       created = GuiCreateButton(g_gui_object_prefix + "field." + key,
-                                value, value_x, y, 130, 24,
-                                C'15,23,42', C'226,232,240');
+                                value, value_x, y, value_width, 24,
+                                GuiColorInput(), GuiColorText());
    else
       created = GuiCreateText(g_gui_object_prefix + "field." + key, value,
-                              value_x + 4, y + 3, 126, 20,
-                              C'148,163,184', 9);
+                              value_x + 4, y + 3, value_width - 4, 20,
+                              GuiColorMuted(), 10);
    if(!GuiTrackCreateResult(created, "field." + key))
       ok = false;
    return created;
@@ -3635,7 +3806,7 @@ bool GuiRenderEditField(const string key, const string label, const string value
 bool GuiRenderEnumField(const string key, const string label, const string value,
                         const int x, const int y, bool &ok)
   {
-   return GuiRenderLabelValue(key, label, value, x, y, false, true, ok);
+   return GuiRenderDropdownField(key, label, value, x, y, ok);
   }
 
 bool GuiRenderReadOnlyField(const string key, const string label, const string value,
@@ -3651,7 +3822,7 @@ void GuiRenderNotice(const int x, const int y, bool &ok)
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "notice", g_gui_notice,
                                           x, y, 252, 30,
                                           g_gui_run_state == GUI_RUN_ERROR
-                                          ? C'248,113,113' : C'134,239,172', 8),
+                                          ? C'248,113,113' : GuiColorSuccess(), 9),
                             "notice"))
       ok = false;
   }
@@ -3751,20 +3922,29 @@ bool GuiRenderTitleBar()
    bool ok = true;
    const int x = 18;
    const int y = 18;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "title", x, y, 360, 42,
-                                            C'15,23,42', C'70,86,112'), "title"))
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "title", x, y, 520, 42,
+                                            GuiColorPanel(), GuiColorBorder()), "title"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.text", "不管涨跌 EA",
-                                          x + 14, y + 11, 180, 20, clrWhite, 11), "title.text"))
+                                          x + 14, y + 11, 160, 20, GuiColorText(), 11), "title.text"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.context",
+                                          GuiSymbolPeriodText(), x + 174, y + 12, 112, 18,
+                                          GuiColorMuted(), 9), "title.context"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.status",
-                                          "● " + GuiRunStateText(), x + 198, y + 12, 100, 18,
-                                          g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : C'52,211,153', 9),
+                                          "● " + GuiRunStateText(), x + 292, y + 12, 110, 18,
+                                          g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : GuiColorSuccess(), 9),
                             "title.status"))
       ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.dirty",
+                                          g_gui_has_unapplied_changes ? "· 未应用" : " ",
+                                          x + 402, y + 12, 74, 18,
+                                          GuiColorWarning(), 9), "title.dirty"))
+      ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "minimize", "—",
-                                            x + 322, y + 7, 28, 28,
-                                            C'30,41,66', C'191,219,254'), "minimize"))
+                                            x + 482, y + 7, 28, 28,
+                                            GuiColorSurface(), GuiColorMuted()), "minimize"))
       ok = false;
    return ok;
   }
@@ -3774,8 +3954,8 @@ bool GuiRenderNavigation()
    bool ok = true;
    const int x = 18;
    const int y = 60;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "navigation", x, y, 86, 342,
-                                            C'15,23,42', C'70,86,112'), "navigation"))
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "navigation", x, y, 86, 502,
+                                            GuiColorInput(), GuiColorBorder()), "navigation"))
       ok = false;
    const string pages[5] = {"总览", "开仓", "距离", "网格", "风控"};
    for(int index = 0; index < 5; index++)
@@ -3787,14 +3967,14 @@ bool GuiRenderNavigation()
         {
          if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "nav.bg." + IntegerToString(index),
                                                   x + 7, item_y - 4, 72, 36,
-                                                  C'37,99,235', C'37,99,235'),
+                                                  GuiColorPrimary(), GuiColorPrimary()),
                                   "nav.bg." + IntegerToString(index)))
             ok = false;
         }
       if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "nav." + IntegerToString(index),
                                                pages[index], x + 7, item_y, 72, 28,
-                                               selected ? C'37,99,235' : C'15,23,42',
-                                               selected ? clrWhite : C'191,219,254'),
+                                               selected ? GuiColorPrimary() : GuiColorInput(),
+                                               GuiColorText()),
                                "nav." + IntegerToString(index)))
          ok = false;
      }
@@ -3807,25 +3987,25 @@ bool GuiRenderCloseConfirmation(bool &ok)
    const int y = 152;
    if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "confirm.panel",
                                             x, y, 258, 154,
-                                            C'15,23,42', C'148,163,184'),
+                                            GuiColorPanel(), GuiColorBorder()),
                             "confirm.panel"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "confirm.title",
                                           "确认清理", x + 14, y + 14, 220, 20,
-                                          clrWhite, 10), "confirm.title"))
+                                          GuiColorText(), 10), "confirm.title"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "confirm.text",
                                           "将平仓并删除当前 EA 的全部挂单。\n此操作不可撤销。",
                                           x + 14, y + 44, 226, 40,
-                                          C'191,219,254', 9), "confirm.text"))
+                                          GuiColorText(), 10), "confirm.text"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "confirm.cleanup",
                                             "确认清理", x + 14, y + 104, 104, 28,
-                                            C'153,27,27', clrWhite), "confirm.cleanup"))
+                                            GuiColorDanger(), GuiColorText()), "confirm.cleanup"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "confirm.cancel",
                                             "取消", x + 130, y + 104, 104, 28,
-                                            C'51,65,85', C'226,232,240'), "confirm.cancel"))
+                                            GuiColorSurface(), GuiColorText()), "confirm.cancel"))
       ok = false;
    return ok;
   }
@@ -3835,16 +4015,28 @@ bool GuiRenderContent()
    bool ok = true;
    const int x = 104;
    const int y = 60;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "content", x, y, 274, 342,
-                                            C'30,41,66', C'70,86,112'), "content"))
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "content", x, y, 434, 502,
+                                            GuiColorSurface(), GuiColorBorder()), "content"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.page", GuiPageText(g_gui_page),
-                                          x + 16, y + 14, 120, 22, clrWhite, 11), "content.page"))
+                                          x + 16, y + 14, 120, 22, GuiColorText(), 11), "content.page"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "mode.toggle",
                                             g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
-                                            x + 164, y + 12, 92, 24,
-                                            C'15,23,42', C'191,219,254'), "mode.toggle"))
+                                            x + 326, y + 12, 92, 24,
+                                            GuiColorInput(), GuiColorText()), "mode.toggle"))
+      ok = false;
+   const string mode_hint = g_gui_has_unapplied_changes
+                            ? "有未应用修改：点击应用参数后生效"
+                            : (g_gui_display_mode == GUI_MODE_EXPERT
+                               ? "专家模式：显示完整运行状态与参数"
+                               : "简易模式：核心参数优先，全部参数仍可编辑");
+   const color mode_hint_color = g_gui_has_unapplied_changes
+                                 ? GuiColorWarning() : GuiColorMuted();
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "mode.hint",
+                                          mode_hint,
+                                          x + 16, y + 36, 400, 16,
+                                          mode_hint_color, 9), "mode.hint"))
       ok = false;
 
    if(g_gui_page == GUI_PAGE_OVERVIEW)
@@ -3857,34 +4049,65 @@ bool GuiRenderContent()
       if(!GuiRenderReadOnlyField("overview.direction", "首单方向",
                                  GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
                                                        ? FIRST_SELL : FIRST_BUY),
-                                 x + 16, y + 88, ok))
+                                 x + 16, y + 84, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.positions", "持仓",
                                  IntegerToString(snapshot.position_count),
-                                 x + 16, y + 118, ok))
+                                 x + 16, y + 110, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.orders", "挂单",
                                  IntegerToString(snapshot.pending_order_count),
-                                 x + 16, y + 148, ok))
+                                 x + 16, y + 136, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.profit", "浮盈",
                                  DoubleToString(snapshot.floating_profit, 2),
-                                 x + 16, y + 178, ok))
+                                 x + 16, y + 162, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.cycle", "订单组/循环",
-                                 IntegerToString(g_cycle_index), x + 16, y + 208, ok))
+                                 IntegerToString(g_cycle_index), x + 16, y + 188, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.reversal", "反手次数",
                                  IntegerToString(g_reversal_count) + "/"
                                  + IntegerToString(g_gui_applied_config.max_reversals),
-                                 x + 16, y + 238, ok))
+                                 x + 16, y + 214, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.direction.active", "当前方向",
                                  g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
                                                    ? "BUY" : "SELL") : "无持仓",
-                                 x + 16, y + 268, ok))
+                                 x + 16, y + 240, ok))
          ok = false;
-      GuiRenderNotice(x + 16, y + 292, ok);
+      if(!GuiRenderReadOnlyField("overview.cycle_mode", "循环模式",
+                                 GuiCycleModeText(g_gui_applied_config.cycle_mode),
+                                 x + 16, y + 266, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.distance_mode", "距离模式",
+                                 GuiDistanceModeText(g_gui_applied_config.distance_mode),
+                                 x + 16, y + 292, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.order_type", "开单方式",
+                                 GuiOrderTypeText(g_gui_applied_config.order_type),
+                                 x + 16, y + 318, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.initial_lots", "首单手数",
+                                 DoubleToString(g_gui_applied_config.initial_lots, 8),
+                                 x + 16, y + 344, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.grid_count", "网格数量",
+                                 IntegerToString(g_gui_applied_config.grid_count),
+                                 x + 16, y + 370, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.stops", "止损/止盈(点)",
+                                 IntegerToString(g_gui_applied_config.stop_loss_distance_points)
+                                 + "/"
+                                 + IntegerToString(g_gui_applied_config.take_profit_distance_points),
+                                 x + 16, y + 396, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.schedule", "运行时间",
+                                 g_gui_applied_config.start_time + " - "
+                                 + g_gui_applied_config.end_time,
+                                 x + 16, y + 422, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 454, ok);
      }
    else if(g_gui_page == GUI_PAGE_OPENING)
      {
@@ -3896,35 +4119,28 @@ bool GuiRenderContent()
       if(!GuiRenderEnumField("cycle_mode", "循环模式",
                              GuiCycleModeText(g_gui_draft_config.cycle_mode), x + 16, row, ok))
          ok = false;
-      if(g_gui_display_mode == GUI_MODE_EXPERT
-         && g_gui_draft_config.distance_mode == DISTANCE_CANDLE_RANGE)
-        {
-         row += 30;
-         if(!GuiRenderEnumField("order_type", "开单方式",
-                                GuiOrderTypeText(g_gui_draft_config.order_type), x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEnumField("candle_order_mode", "K线开单",
-                                GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEnumField("candle_enable_multiple", "多组开关",
-                                GuiMultipleText(g_gui_draft_config.candle_enable_multiple), x + 16, row, ok))
-            ok = false;
-        }
+      row += 30;
+      if(!GuiRenderEnumField("order_type", "开单方式",
+                             GuiOrderTypeText(g_gui_draft_config.order_type), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEnumField("candle_order_mode", "K线开单模式",
+                             GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEnumField("candle_enable_multiple", "K线多组",
+                             GuiMultipleText(g_gui_draft_config.candle_enable_multiple), x + 16, row, ok))
+         ok = false;
       row += 30;
       if(!GuiRenderEditField("initial_lots", "首单手数",
                              DoubleToString(g_gui_draft_config.initial_lots, 8), x + 16, row, ok))
          ok = false;
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
-        {
-         row += 30;
-         if(!GuiRenderEditField("initial_lots_multiplier", "首单倍数",
-                                DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
-                                x + 16, row, ok))
-            ok = false;
-        }
-      GuiRenderNotice(x + 16, y + 292, ok);
+      row += 30;
+      if(!GuiRenderEditField("initial_lots_multiplier", "首单手数倍数",
+                             DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
+                             x + 16, row, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 460, ok);
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
@@ -3933,83 +4149,65 @@ bool GuiRenderContent()
                              GuiDistanceModeText(g_gui_draft_config.distance_mode), x + 16, row, ok))
          ok = false;
       row += 30;
-      if(g_gui_draft_config.distance_mode == DISTANCE_FIXED)
-        {
-         if(!GuiRenderEditField("stop_loss_distance_points", "固定止损(点)",
-                                IntegerToString(g_gui_draft_config.stop_loss_distance_points),
-                                x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEditField("take_profit_distance_points", "固定止盈(点)",
-                                IntegerToString(g_gui_draft_config.take_profit_distance_points),
-                                x + 16, row, ok))
-            ok = false;
-        }
-      else
-        {
-         if(!GuiRenderEditField("candle_min_range_points", "K线最小(点)",
-                                IntegerToString(g_gui_draft_config.candle_min_range_points),
-                                x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEditField("candle_max_range_points", "K线最大(点)",
-                                IntegerToString(g_gui_draft_config.candle_max_range_points),
-                                x + 16, row, ok))
-            ok = false;
-        }
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
-        {
-         row += 30;
-         if(!GuiRenderEnumField("take_profit_mode", "止盈移动",
-                                GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), x + 16, row, ok))
-            ok = false;
-        }
-      GuiRenderNotice(x + 16, y + 292, ok);
+      if(!GuiRenderEditField("stop_loss_distance_points", "固定止损距离(点)",
+                             IntegerToString(g_gui_draft_config.stop_loss_distance_points),
+                             x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEditField("take_profit_distance_points", "固定止盈距离(点)",
+                             IntegerToString(g_gui_draft_config.take_profit_distance_points),
+                             x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEditField("candle_min_range_points", "K线最小高度(点)",
+                             IntegerToString(g_gui_draft_config.candle_min_range_points),
+                             x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEditField("candle_max_range_points", "K线最大高度(点)",
+                             IntegerToString(g_gui_draft_config.candle_max_range_points),
+                             x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
+                             GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), x + 16, row, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 460, ok);
      }
    else if(g_gui_page == GUI_PAGE_GRID)
      {
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
-        {
-         int row = y + 54;
-         if(!GuiRenderEditField("grid_count", "网格数量",
-                                IntegerToString(g_gui_draft_config.grid_count), x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEditField("grid_lot_multiplier", "网格倍数",
-                                DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
+      int row = y + 54;
+      if(!GuiRenderEditField("grid_count", "网格数量",
+                             IntegerToString(g_gui_draft_config.grid_count), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEditField("grid_lot_multiplier", "网格手数倍数",
+                             DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
+                             x + 16, row, ok))
+         ok = false;
+      row += 38;
+      if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
+                                IntegerToString(g_grid_filled_levels), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
+                                g_grid_pending_price > 0.0
+                                ? DoubleToString(g_grid_pending_price, _Digits) : "--",
                                 x + 16, row, ok))
-            ok = false;
-         row += 38;
-         if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
-                                   IntegerToString(g_grid_filled_levels), x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
-                                   g_grid_pending_price > 0.0
-                                   ? DoubleToString(g_grid_pending_price, _Digits) : "--",
-                                   x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
-                                   DoubleToString(g_group_total_lots, 2), x + 16, row, ok))
-            ok = false;
-        }
-      else
-         if(!GuiRenderReadOnlyField("grid.hidden", "网格参数", "专家模式可编辑",
-                                   x + 16, y + 64, ok))
-            ok = false;
-      GuiRenderNotice(x + 16, y + 292, ok);
+         ok = false;
+      row += 30;
+      if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
+                                DoubleToString(g_group_total_lots, 2), x + 16, row, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 460, ok);
      }
    else
      {
       int row = y + 54;
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
-        {
-         if(!GuiRenderEditField("max_reversals", "最大反手",
-                                IntegerToString(g_gui_draft_config.max_reversals), x + 16, row, ok))
-            ok = false;
-         row += 30;
-        }
+      if(!GuiRenderEditField("max_reversals", "最大反手次数",
+                             IntegerToString(g_gui_draft_config.max_reversals), x + 16, row, ok))
+         ok = false;
+      row += 30;
       if(!GuiRenderEditField("start_time", "开始时间",
                              g_gui_draft_config.start_time, x + 16, row, ok))
          ok = false;
@@ -4017,19 +4215,16 @@ bool GuiRenderContent()
       if(!GuiRenderEditField("end_time", "结束时间",
                              g_gui_draft_config.end_time, x + 16, row, ok))
          ok = false;
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
-        {
-         row += 30;
-         if(!GuiRenderEditField("magic_number", "订单编号",
-                                IntegerToString((long)g_gui_draft_config.magic_number),
-                                x + 16, row, ok))
-            ok = false;
-         row += 30;
-         if(!GuiRenderEditField("order_comment", "订单注释",
-                                g_gui_draft_config.order_comment, x + 16, row, ok))
-            ok = false;
-        }
-      GuiRenderNotice(x + 16, y + 292, ok);
+      row += 30;
+      if(!GuiRenderEditField("magic_number", "订单识别编号",
+                             IntegerToString((long)g_gui_draft_config.magic_number),
+                             x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEditField("order_comment", "订单注释",
+                             g_gui_draft_config.order_comment, x + 16, row, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 460, ok);
      }
    if(g_gui_close_confirm_open)
       GuiRenderCloseConfirmation(ok);
@@ -4040,16 +4235,16 @@ bool GuiRenderActions()
   {
    bool ok = true;
    const int x = 104;
-   const int y = 402;
+   const int y = 570;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "apply", "应用参数", x, y, 88, 28,
-                                             C'37,99,235', clrWhite), "apply"))
+                                             GuiColorPrimary(), GuiColorText()), "apply"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "pause",
                                              g_gui_run_state == GUI_RUN_PAUSED_INITIAL ? "继续" : "暂停",
-                                             x + 94, y, 72, 28, C'51,65,85', C'226,232,240'), "pause"))
+                                             x + 94, y, 72, 28, GuiColorSurface(), GuiColorText()), "pause"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "close", "平仓删挂单",
-                                             x + 172, y, 102, 28, C'153,27,27', clrWhite), "close"))
+                                             x + 172, y, 102, 28, GuiColorDanger(), GuiColorText()), "close"))
       ok = false;
    return ok;
   }
@@ -4059,17 +4254,17 @@ bool GuiRenderMinimizedBar()
    bool ok = true;
    const int x = 18;
    const int y = 18;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "minimized", x, y, 360, 34,
-                                            C'15,23,42', C'70,86,112'), "minimized"))
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "minimized", x, y, 520, 34,
+                                            GuiColorPanel(), GuiColorBorder()), "minimized"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "minimized.text",
                                           "不管涨跌 EA  ·  " + GuiRunStateText(),
-                                          x + 12, y + 8, 250, 18, C'226,232,240', 9),
+                                          x + 12, y + 8, 250, 18, GuiColorText(), 10),
                             "minimized.text"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "restore", "恢复",
-                                            x + 302, y + 4, 46, 26,
-                                            C'37,99,235', clrWhite), "restore"))
+                                            x + 462, y + 4, 46, 26,
+                                            GuiColorPrimary(), GuiColorText()), "restore"))
       ok = false;
    return ok;
   }
@@ -4084,8 +4279,8 @@ bool GuiRender()
    bool render_ok = true;
    if(g_gui_full_window)
      {
-      if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "window", 18, 18, 360, 420,
-                                              C'30,41,66', C'70,86,112'), "window"))
+      if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "window", 18, 18, 520, 580,
+                                              GuiColorBackground(), GuiColorBorder()), "window"))
          render_ok = false;
       if(!GuiRenderTitleBar())
          render_ok = false;
@@ -4134,12 +4329,26 @@ void GuiMarkDraftChanged()
    GuiMarkDirty();
   }
 
-bool GuiHandleEditEnd(const string object_name)
+bool GuiIsEditableFieldKey(const string key)
   {
-   const string field_prefix = g_gui_object_prefix + "field.";
-   if(StringFind(object_name, field_prefix) != 0)
+   return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "grid_count" || key == "grid_lot_multiplier"
+          || key == "stop_loss_distance_points"
+          || key == "take_profit_distance_points"
+          || key == "candle_min_range_points"
+          || key == "candle_max_range_points"
+          || key == "max_reversals" || key == "magic_number"
+          || key == "start_time" || key == "end_time"
+          || key == "order_comment";
+  }
+
+bool GuiSyncEditValue(const string key)
+  {
+   if(!GuiIsEditableFieldKey(key))
       return false;
-   const string key = StringSubstr(object_name, StringLen(field_prefix));
+   const string object_name = g_gui_object_prefix + "field." + key;
+   if(ObjectFind(0, object_name) < 0)
+      return false;
    const string value = ObjectGetString(0, object_name, OBJPROP_TEXT);
    if(key == "initial_lots")
       g_gui_draft_config.initial_lots = StringToDouble(value);
@@ -4172,35 +4381,152 @@ bool GuiHandleEditEnd(const string object_name)
       g_gui_draft_config.order_comment = value;
    else
       return false;
+   return true;
+  }
+
+bool GuiHandleEditEnd(const string object_name)
+  {
+   const string field_prefix = g_gui_object_prefix + "field.";
+   if(StringFind(object_name, field_prefix) != 0)
+      return false;
+   const string key = StringSubstr(object_name, StringLen(field_prefix));
+   if(!GuiSyncEditValue(key))
+      return false;
+   g_gui_edit_key = "";
    GuiMarkDraftChanged();
    return true;
   }
 
 bool GuiHandleEnumClick(const string object_name)
   {
-   if(object_name == g_gui_object_prefix + "field.first_direction")
-      g_gui_draft_config.first_direction = g_gui_draft_config.first_direction == FIRST_BUY
-                                            ? FIRST_SELL : FIRST_BUY;
-   else if(object_name == g_gui_object_prefix + "field.cycle_mode")
-      g_gui_draft_config.cycle_mode = (CycleMode)(((int)g_gui_draft_config.cycle_mode + 1) % 3);
-   else if(object_name == g_gui_object_prefix + "field.distance_mode")
-      g_gui_draft_config.distance_mode = g_gui_draft_config.distance_mode == DISTANCE_FIXED
-                                          ? DISTANCE_CANDLE_RANGE : DISTANCE_FIXED;
-   else if(object_name == g_gui_object_prefix + "field.order_type")
-      g_gui_draft_config.order_type = g_gui_draft_config.order_type == ORDERTYPE_FORWARD
-                                      ? ORDERTYPE_REVERSE : ORDERTYPE_FORWARD;
-   else if(object_name == g_gui_object_prefix + "field.candle_order_mode")
-      g_gui_draft_config.candle_order_mode = g_gui_draft_config.candle_order_mode == KORDER_ONCE_PER_BAR
-                                             ? KORDER_REPEAT_PER_BAR : KORDER_ONCE_PER_BAR;
-   else if(object_name == g_gui_object_prefix + "field.candle_enable_multiple")
-      g_gui_draft_config.candle_enable_multiple = g_gui_draft_config.candle_enable_multiple == 0 ? 1 : 0;
-   else if(object_name == g_gui_object_prefix + "field.take_profit_mode")
-      g_gui_draft_config.take_profit_mode = g_gui_draft_config.take_profit_mode == TAKE_PROFIT_GRID
-                                             ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
-   else
+   const string field_prefix = g_gui_object_prefix + "field.";
+   if(StringFind(object_name, field_prefix) != 0)
       return false;
+   const string key = StringSubstr(object_name, StringLen(field_prefix));
+   if(GuiDropdownOptionCount(key) == 0)
+      return false;
+   g_gui_dropdown_key = g_gui_dropdown_key == key ? "" : key;
+   GuiMarkDirty();
+   return true;
+  }
+
+bool GuiHandleDropdownClick(const string object_name)
+  {
+   const string dropdown_prefix = g_gui_object_prefix + "dropdown.";
+   if(StringFind(object_name, dropdown_prefix) != 0)
+      return false;
+   const string payload = StringSubstr(object_name, StringLen(dropdown_prefix));
+   const int separator = StringFind(payload, ".");
+   if(separator <= 0)
+      return false;
+   const string key = StringSubstr(payload, 0, separator);
+   const int index = (int)StringToInteger(StringSubstr(payload, separator + 1));
+   if(!GuiSetDropdownValue(key, index))
+      return false;
+   g_gui_dropdown_key = "";
    GuiMarkDraftChanged();
    return true;
+  }
+
+bool GuiHandleChartClick(const int x, const int y)
+  {
+   if(!g_gui_full_window || g_gui_close_confirm_open)
+      return false;
+   const int value_x = 286;
+   const int value_width = 236;
+   string keys[7];
+   int field_count = 0;
+   if(g_gui_page == GUI_PAGE_OPENING)
+     {
+      keys[0] = "first_direction";
+      keys[1] = "cycle_mode";
+      keys[2] = "order_type";
+      keys[3] = "candle_order_mode";
+      keys[4] = "candle_enable_multiple";
+      keys[5] = "initial_lots";
+      keys[6] = "initial_lots_multiplier";
+      field_count = 7;
+     }
+   else if(g_gui_page == GUI_PAGE_DISTANCE)
+     {
+      keys[0] = "distance_mode";
+      keys[1] = "stop_loss_distance_points";
+      keys[2] = "take_profit_distance_points";
+      keys[3] = "candle_min_range_points";
+      keys[4] = "candle_max_range_points";
+      keys[5] = "take_profit_mode";
+      field_count = 6;
+     }
+   else if(g_gui_page == GUI_PAGE_GRID)
+     {
+      keys[0] = "grid_count";
+      keys[1] = "grid_lot_multiplier";
+      field_count = 2;
+     }
+   else if(g_gui_page == GUI_PAGE_RISK)
+     {
+      keys[0] = "max_reversals";
+      keys[1] = "start_time";
+      keys[2] = "end_time";
+      keys[3] = "magic_number";
+      keys[4] = "order_comment";
+      field_count = 5;
+     }
+
+   const int first_y = 114;
+   if(StringLen(g_gui_dropdown_key) > 0)
+     {
+      for(int index = 0; index < field_count; index++)
+        {
+         if(keys[index] != g_gui_dropdown_key)
+            continue;
+         const int option_count = GuiDropdownOptionCount(keys[index]);
+         for(int option = 0; option < option_count; option++)
+           {
+            const int option_y = first_y + index * 30 + 24 + option * 24;
+            if(x >= value_x && x <= value_x + value_width
+               && y >= option_y && y <= option_y + 24)
+              {
+               if(GuiSetDropdownValue(keys[index], option))
+                 {
+                  g_gui_dropdown_key = "";
+                  GuiMarkDraftChanged();
+                  return true;
+                 }
+               return false;
+              }
+           }
+         break;
+        }
+     }
+
+   for(int index = 0; index < field_count; index++)
+     {
+      const int field_y = first_y + index * 30;
+      if(x < value_x || x > value_x + value_width || y < field_y || y > field_y + 24)
+         continue;
+      if(GuiDropdownOptionCount(keys[index]) > 0)
+        {
+         g_gui_dropdown_key = g_gui_dropdown_key == keys[index] ? "" : keys[index];
+         GuiMarkDirty();
+         return true;
+        }
+      const string edit_name = g_gui_object_prefix + "field." + keys[index];
+      if(ObjectFind(0, edit_name) >= 0)
+        {
+         g_gui_edit_key = keys[index];
+         ObjectSetInteger(0, edit_name, OBJPROP_SELECTABLE, true);
+         ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, true);
+        }
+      return false;
+     }
+   if(StringLen(g_gui_dropdown_key) > 0)
+     {
+      g_gui_dropdown_key = "";
+      GuiMarkDirty();
+      return true;
+     }
+   return false;
   }
 
 bool GuiApplyDraft()
@@ -4225,8 +4551,37 @@ bool GuiApplyDraft()
    return true;
   }
 
+bool GuiPrepareChartForWindow()
+  {
+   if(g_gui_chart_overlay_state_saved)
+      return true;
+   ResetLastError();
+   g_gui_saved_trade_levels = (bool)ChartGetInteger(0, CHART_SHOW_TRADE_LEVELS);
+   g_gui_saved_trade_history = (bool)ChartGetInteger(0, CHART_SHOW_TRADE_HISTORY);
+   if(GetLastError() != 0)
+      return false;
+   g_gui_chart_overlay_state_saved = true;
+   ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false);
+   ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, false);
+   ChartRedraw(0);
+   return true;
+  }
+
+void GuiRestoreChartAfterWindow()
+  {
+   if(!g_gui_chart_overlay_state_saved)
+      return;
+   ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, g_gui_saved_trade_levels);
+   ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, g_gui_saved_trade_history);
+   g_gui_chart_overlay_state_saved = false;
+   ChartRedraw(0);
+  }
+
 bool GuiCreate()
   {
+   GuiPrepareChartForWindow();
+   const string legacy_prefix = GuiLegacyObjectPrefix();
+   ObjectsDeleteAll(0, legacy_prefix);
    g_gui_object_prefix = GuiObjectPrefix();
    g_gui_objects_created = true;
    g_gui_dirty = true;
@@ -4237,7 +4592,12 @@ void GuiDestroy()
   {
    if(StringLen(g_gui_object_prefix) > 0)
       ObjectsDeleteAll(0, g_gui_object_prefix);
+   const string legacy_prefix = GuiLegacyObjectPrefix();
+   ObjectsDeleteAll(0, legacy_prefix);
    g_gui_objects_created = false;
+   g_gui_dropdown_key = "";
+   g_gui_edit_key = "";
+   GuiRestoreChartAfterWindow();
    g_gui_last_snapshot = "";
    g_gui_dirty = true;
    g_gui_object_prefix = "";
@@ -4246,6 +4606,23 @@ void GuiDestroy()
 void OnChartEvent(const int id, const long &lparam, const double &dparam,
                   const string &sparam)
   {
+   if(id == CHARTEVENT_CLICK)
+     {
+      if(GuiHandleChartClick((int)lparam, (int)dparam))
+        {
+         GuiRender();
+         return;
+        }
+     }
+   if(id == CHARTEVENT_KEYDOWN && StringLen(g_gui_edit_key) > 0)
+     {
+      if(GuiSyncEditValue(g_gui_edit_key))
+        {
+         g_gui_has_unapplied_changes = true;
+         g_gui_notice = "有未应用修改";
+        }
+      return;
+     }
    if(!g_gui_objects_created || StringFind(sparam, g_gui_object_prefix) != 0)
       return;
 
@@ -4258,8 +4635,23 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    if(id != CHARTEVENT_OBJECT_CLICK)
       return;
 
-   if(sparam == g_gui_object_prefix + "minimize")
+   const string field_prefix = g_gui_object_prefix + "field.";
+   if(StringFind(sparam, field_prefix) == 0)
      {
+      const string key = StringSubstr(sparam, StringLen(field_prefix));
+      if(GuiIsEditableFieldKey(key))
+        {
+         g_gui_edit_key = key;
+         g_gui_dropdown_key = "";
+         return;
+        }
+     }
+
+      if(sparam == g_gui_object_prefix + "minimize")
+     {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      GuiRestoreChartAfterWindow();
       g_gui_full_window = false;
       GuiMarkDirty();
       GuiRender();
@@ -4267,6 +4659,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "restore")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      GuiPrepareChartForWindow();
       g_gui_full_window = true;
       GuiMarkDirty();
       GuiRender();
@@ -4274,6 +4669,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "pause")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
       if(g_gui_run_state == GUI_RUN_PAUSED_INITIAL)
         {
          g_gui_run_state = GUI_RUN_RUNNING;
@@ -4290,6 +4687,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "close")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
       g_gui_close_confirm_open = true;
       GuiMarkDirty();
       GuiRender();
@@ -4297,6 +4696,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "confirm.cancel")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
       g_gui_close_confirm_open = false;
       GuiMarkDirty();
       GuiRender();
@@ -4316,6 +4717,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "mode.toggle")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
       g_gui_display_mode = g_gui_display_mode == GUI_MODE_EXPERT
                            ? GUI_MODE_SIMPLE : GUI_MODE_EXPERT;
       GuiMarkDirty();
@@ -4324,12 +4727,21 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(sparam == g_gui_object_prefix + "apply")
      {
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
       GuiApplyDraft();
+      GuiRender();
+      return;
+     }
+   if(GuiHandleDropdownClick(sparam))
+     {
+      g_gui_edit_key = "";
       GuiRender();
       return;
      }
    if(GuiHandleEnumClick(sparam))
      {
+      g_gui_edit_key = "";
       GuiRender();
       return;
      }
@@ -4337,6 +4749,8 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      {
       if(sparam == g_gui_object_prefix + "nav." + IntegerToString(index))
         {
+         g_gui_dropdown_key = "";
+         g_gui_edit_key = "";
          g_gui_page = (GuiPage)index;
          GuiMarkDirty();
          GuiRender();

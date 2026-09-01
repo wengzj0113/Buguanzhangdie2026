@@ -70,6 +70,313 @@ def test_mt5_gui_keeps_editable_pages_stable_between_user_events():
     assert "return;" in body
 
 
+def test_mt5_gui_exposes_every_input_parameter_on_an_editable_page():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    render_content = re.search(
+        r"bool GuiRenderContent\(\).*?\n\s*\}\n\nbool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert render_content, "MT5 GUI content renderer must remain discoverable"
+    body = render_content.group(0)
+    for key in (
+        "first_direction", "cycle_mode", "distance_mode", "order_type",
+        "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
+        "initial_lots", "initial_lots_multiplier", "max_reversals",
+        "grid_count", "grid_lot_multiplier", "stop_loss_distance_points",
+        "take_profit_distance_points", "candle_min_range_points",
+        "candle_max_range_points", "magic_number", "order_comment",
+        "start_time", "end_time",
+    ):
+        assert f'"{key}"' in body, f"GUI is missing input parameter: {key}"
+
+
+def test_mt5_gui_uses_dropdown_option_lists_for_all_selectable_modes():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiRenderDropdownField" in source
+    assert "bool GuiHandleDropdownClick" in source
+    assert '"dropdown."' in source
+    for key in (
+        "first_direction", "cycle_mode", "distance_mode", "order_type",
+        "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
+    ):
+        assert f'"{key}"' in re.search(
+            r"int GuiDropdownOptionCount\(.*?\n\s*\}\n\n",
+            source,
+            flags=re.DOTALL,
+        ).group(0)
+
+
+def test_mt5_gui_dropdown_clicks_are_dispatched_before_redraw():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiHandleDropdownClick(sparam)" in body
+    assert body.index("GuiHandleDropdownClick(sparam)") < body.index("GuiHandleEnumClick(sparam)")
+
+
+def test_mt5_gui_overview_includes_applied_configuration_summary():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    overview = re.search(
+        r"if\(g_gui_page == GUI_PAGE_OVERVIEW\).*?\n\s*\}\n\s*else if\(g_gui_page == GUI_PAGE_OPENING\)",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert overview, "GUI overview page must remain discoverable"
+    body = overview.group(0)
+    for key in (
+        "overview.cycle_mode", "overview.distance_mode", "overview.order_type",
+        "overview.initial_lots", "overview.grid_count", "overview.stops",
+        "overview.schedule",
+    ):
+        assert f'"{key}"' in body, f"Overview is missing applied configuration: {key}"
+
+
+def test_mt5_gui_interactive_objects_have_explicit_event_priority():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    button = re.search(
+        r"bool GuiCreateButton\(.*?\n\s*\}\n\nbool GuiCreateEdit",
+        source,
+        flags=re.DOTALL,
+    )
+    edit = re.search(
+        r"bool GuiCreateEdit\(.*?\n\s*\}\n\nbool GuiTrackCreateResult",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert button and edit
+    assert "OBJPROP_SELECTABLE, true" in button.group(0)
+    assert "OBJPROP_ZORDER, 1000" in button.group(0)
+    assert "OBJPROP_SELECTABLE, true" in edit.group(0)
+    assert "OBJPROP_ZORDER, 1000" in edit.group(0)
+
+
+def test_mt5_gui_has_chart_coordinate_fallback_for_control_clicks():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiHandleChartClick" in source
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert chart_event
+    body = chart_event.group(0)
+    assert "id == CHARTEVENT_CLICK" in body
+    assert "GuiHandleChartClick((int)lparam, (int)dparam)" in body
+
+
+def test_mt5_gui_chart_fallback_does_not_swallow_object_click_dispatch():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"if\(id == CHARTEVENT_CLICK\)\n\s*\{.*?\n\s*\}\n\s*if\(id == CHARTEVENT_KEYDOWN",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiRender();\n      return;" not in body
+
+
+def test_mt5_gui_mode_toggle_has_visible_mode_hint():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert '"mode.hint"' in source
+    assert "全部参数仍可编辑" in source
+
+
+def test_mt5_gui_dropdown_layer_is_above_other_interactive_controls():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    dropdown = re.search(
+        r"bool GuiCreateDropdownOption\(.*?\n\s*\}\n\nbool GuiRenderDropdownField",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert dropdown
+    assert "OBJPROP_ZORDER, 2000" in dropdown.group(0)
+
+
+def test_mt5_gui_panel_fits_compact_chart_viewport():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert '"content", x, y, 434, 502' in source
+    assert '"window", 18, 18, 520, 580' in source
+
+
+def test_mt5_gui_keeps_edit_session_alive_until_text_edit_ends():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert 'g_gui_edit_key' in source
+    assert "bool GuiSyncEditValue" in source
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert chart_event
+    body = chart_event.group(0)
+    assert "id == CHARTEVENT_KEYDOWN" in body
+    assert "GuiSyncEditValue(g_gui_edit_key)" in body
+
+
+def test_mt5_gui_temporarily_hides_chart_trade_overlays_and_restores_them():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "CHART_SHOW_TRADE_LEVELS" in source
+    assert "CHART_SHOW_TRADE_HISTORY" in source
+    assert "GuiPrepareChartForWindow" in source
+    assert "GuiRestoreChartAfterWindow" in source
+    assert "ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false)" in source
+    assert "ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, false)" in source
+
+
+def test_mt5_gui_chart_overlay_state_is_prepared_and_restored_with_lifecycle():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    create = re.search(
+        r"bool GuiCreate\(\)\n\s*\{.*?\n\s*\}\n\nvoid GuiDestroy",
+        source,
+        flags=re.DOTALL,
+    )
+    destroy = re.search(
+        r"void GuiDestroy\(\)\n\s*\{.*?\n\s*\}\n\nvoid OnChartEvent",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert create and destroy
+    assert "GuiPrepareChartForWindow" in create.group(0)
+    assert "GuiRestoreChartAfterWindow" in destroy.group(0)
+
+
+def test_mt5_gui_uses_dark_terminal_palette_and_readable_controls():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "color GuiColorPanel()" in source
+    assert "color GuiColorSurface()" in source
+    assert "color GuiColorInput()" in source
+    assert "color GuiColorPrimary()" in source
+    assert "color GuiColorDanger()" in source
+    assert "OBJPROP_FONTSIZE, 10" in source
+    assert "GuiColorInput()" in source
+    assert "GuiColorPrimary()" in source
+    assert "GuiColorDanger()" in source
+
+
+def test_mt5_gui_has_terminal_header_context_and_overview_summary():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    title = re.search(
+        r"bool GuiRenderTitleBar\(\)\n\s*\{.*?\n\s*\}\n\n"
+        r"bool GuiRenderNavigation",
+        source,
+        flags=re.DOTALL,
+    )
+    overview = re.search(
+        r"bool GuiRenderContent\(\).*?\n\s*\}\n\s*bool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+    assert title and overview
+    assert "GuiSymbolPeriodText()" in title.group(0)
+    for key in (
+        "overview.state", "overview.direction", "overview.positions",
+        "overview.orders", "overview.profit", "overview.reversal",
+        "overview.cycle_mode", "overview.distance_mode",
+        "overview.initial_lots", "overview.grid_count", "overview.stops",
+        "overview.schedule",
+    ):
+        assert key in overview.group(0)
+
+
+def test_mt5_gui_layout_keeps_panel_and_actions_inside_window():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    render = re.search(
+        r"bool GuiRender\(\).*?\n\s*\}\n\s*void GuiDestroy",
+        source,
+        flags=re.DOTALL,
+    )
+    assert render
+    assert '"window", 18, 18, 520, 580' in render.group(0)
+    assert 'const int y = 570' in source
+    for action in ("apply", "pause", "close"):
+        assert f'GuiCreateButton(g_gui_object_prefix + "{action}"' in source
+
+
+def test_mt5_gui_uses_dropdowns_for_enum_parameters_and_edits_for_values():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    content = re.search(
+        r"bool GuiRenderContent\(\).*?\n\s*\}\n\s*bool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+    assert content
+    body = content.group(0)
+    for key in (
+        "first_direction", "cycle_mode", "order_type", "candle_order_mode",
+        "candle_enable_multiple", "distance_mode", "take_profit_mode",
+    ):
+        assert f'GuiRenderEnumField("{key}"' in body
+    for key in (
+        "initial_lots", "initial_lots_multiplier", "grid_count",
+        "grid_lot_multiplier", "max_reversals", "magic_number", "order_comment",
+    ):
+        assert f'GuiRenderEditField("{key}"' in body
+
+
+def test_mt5_gui_keeps_dropdowns_and_edits_above_chart_objects():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "ObjectSetInteger(0, name, OBJPROP_ZORDER, 1000);" in source
+    assert "ObjectSetInteger(0, name, OBJPROP_ZORDER, 2000);" in source
+    assert "CHART_SHOW_TRADE_LEVELS" in source
+    assert "CHART_SHOW_TRADE_HISTORY" in source
+
+
+def test_mt5_gui_text_layers_are_above_panels():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    panel = re.search(
+        r"bool GuiCreatePanel\(.*?\n\s*\}\n\nbool GuiCreateText",
+        source,
+        flags=re.DOTALL,
+    )
+    text = re.search(
+        r"bool GuiCreateText\(.*?\n\s*\}\n\nbool GuiCreateButton",
+        source,
+        flags=re.DOTALL,
+    )
+    assert panel and text
+    assert "OBJPROP_ZORDER, 10" in panel.group(0)
+    assert "OBJPROP_ZORDER, 500" in text.group(0)
+
+
+def test_mt5_gui_does_not_render_default_label_for_clean_dirty_status():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    title = re.search(
+        r"bool GuiRenderTitleBar\(\)\n\s*\{.*?\n\s*\}\n\n"
+        r"bool GuiRenderNavigation",
+        source,
+        flags=re.DOTALL,
+    )
+    assert title
+    assert 'g_gui_has_unapplied_changes ? "· 未应用" : " "' in title.group(0)
+
+
+def test_mt5_gui_object_prefix_stays_short_for_mql5_object_names():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    prefix = re.search(
+        r"string GuiObjectPrefix\(\)\n\s*\{.*?\n\s*\}",
+        source,
+        flags=re.DOTALL,
+    )
+    assert prefix
+    assert 'return "NMR.g."' in prefix.group(0)
+    assert "ObjectsDeleteAll(0, legacy_prefix)" in source
+
+
 def test_cycle_templates_cover_both_modes_and_first_directions():
     assert cycle_directions(Direction.BUY, CycleMode.MODE_1) == [
         Direction.BUY, Direction.SELL, Direction.SELL,
