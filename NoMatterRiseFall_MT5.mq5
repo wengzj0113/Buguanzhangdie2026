@@ -148,6 +148,17 @@ enum GuiCommand
    GUI_CMD_CANCEL_CLOSE_ALL = 6
   };
 
+const int GUI_WINDOW_WIDTH = 760;
+const int GUI_WINDOW_HEIGHT = 640;
+const int GUI_TITLE_HEIGHT = 42;
+const int GUI_NAV_WIDTH = 178;
+const int GUI_CONTENT_WIDTH = 560;
+const int GUI_CONTENT_X = GUI_NAV_WIDTH + 18;
+const int GUI_CONTENT_PADDING = 20;
+const int GUI_FORM_GAP = 12;
+const int GUI_FIELD_WIDTH = 254;
+const int GUI_FIELD_HEIGHT = 32;
+
 struct GuiConfig
   {
    FirstDirection first_direction;
@@ -232,6 +243,8 @@ bool ResetInMemoryStrategyState();
 bool GuiCreate();
 void GuiDestroy();
 bool GuiRender();
+string GuiObjectPrefix();
+string GuiLegacyObjectPrefix();
 bool GuiRenderTitleBar();
 bool GuiRenderNavigation();
 bool GuiRenderContent();
@@ -1053,6 +1066,7 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
    const int previous_end_minutes = g_end_operation_minutes;
    const bool previous_has_unapplied_changes = g_gui_has_unapplied_changes;
    const bool previous_config_initialized = g_gui_config_initialized;
+   const string previous_object_prefix = g_gui_object_prefix;
    const bool magic_changed = g_gui_config_initialized
                               && config.magic_number != previous_config.magic_number;
    if(magic_changed && HasBlockingCandidateTransition(config.magic_number))
@@ -1166,6 +1180,11 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
    g_gui_config_initialized = true;
+   if(magic_changed && StringLen(previous_object_prefix) > 0)
+     {
+      ObjectsDeleteAll(0, previous_object_prefix);
+      g_gui_object_prefix = GuiObjectPrefix();
+     }
    return true;
   }
 
@@ -3733,15 +3752,17 @@ bool GuiCreateDropdownOption(const string name, const string text, const int x, 
 bool GuiRenderDropdownField(const string key, const string label, const string value,
                             const int x, const int y, bool &ok)
   {
-   const int value_x = x + 166;
-   const int value_width = 236;
+   const int value_x = x;
+   const int value_y = y + 18;
+   const int value_width = GUI_FIELD_WIDTH;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
-                                          label, x, y + 3, 156, 20,
-                                          GuiColorMuted(), 10),
+                                          label, x, y, value_width, 16,
+                                          GuiColorMuted(), 9),
                             "field.label." + key))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "field." + key,
-                                            value + " ▾", value_x, y, value_width, 24,
+                                            value + " ▾", value_x, value_y, value_width,
+                                            GUI_FIELD_HEIGHT,
                                             GuiColorInput(), GuiColorText()),
                             "field." + key))
       ok = false;
@@ -3749,7 +3770,8 @@ bool GuiRenderDropdownField(const string key, const string label, const string v
       return true;
    const int option_count = GuiDropdownOptionCount(key);
    if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "dropdown.panel." + key,
-                                            value_x, y + 24, value_width, option_count * 24,
+                                            value_x, value_y + GUI_FIELD_HEIGHT,
+                                            value_width, option_count * GUI_FIELD_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()),
                             "dropdown.panel." + key))
       ok = false;
@@ -3760,8 +3782,9 @@ bool GuiRenderDropdownField(const string key, const string label, const string v
                                  + IntegerToString(index);
       if(!GuiTrackCreateResult(GuiCreateDropdownOption(option_name,
                                                        GuiDropdownOptionText(key, index),
-                                                       value_x, y + 24 + index * 24,
-                                                       value_width, 24,
+                                                       value_x, value_y + GUI_FIELD_HEIGHT
+                                                       + index * GUI_FIELD_HEIGHT,
+                                                       value_width, GUI_FIELD_HEIGHT,
                                                        index == selected_index),
                                 "dropdown." + key + "." + IntegerToString(index)))
          ok = false;
@@ -3774,23 +3797,24 @@ bool GuiRenderLabelValue(const string key, const string label, const string valu
                          const bool button_value, bool &ok)
   {
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
-                                          label, x, y + 3, 156, 20,
-                                          GuiColorMuted(), 10),
+                                          label, x, y, GUI_FIELD_WIDTH, 16,
+                                          GuiColorMuted(), 9),
                             "field.label." + key))
       ok = false;
-   const int value_x = x + 166;
-   const int value_width = 236;
+   const int value_x = x;
+   const int value_y = y + 18;
+   const int value_width = GUI_FIELD_WIDTH;
    bool created = false;
    if(editable)
       created = GuiCreateEdit(g_gui_object_prefix + "field." + key,
-                              value, value_x, y, value_width, 24);
+                              value, value_x, value_y, value_width, GUI_FIELD_HEIGHT);
    else if(button_value)
       created = GuiCreateButton(g_gui_object_prefix + "field." + key,
-                                value, value_x, y, value_width, 24,
+                                value, value_x, value_y, value_width, GUI_FIELD_HEIGHT,
                                 GuiColorInput(), GuiColorText());
    else
       created = GuiCreateText(g_gui_object_prefix + "field." + key, value,
-                              value_x + 4, y + 3, value_width - 4, 20,
+                              value_x + 8, value_y + 7, value_width - 8, 18,
                               GuiColorMuted(), 10);
    if(!GuiTrackCreateResult(created, "field." + key))
       ok = false;
@@ -3824,6 +3848,26 @@ void GuiRenderNotice(const int x, const int y, bool &ok)
                                           g_gui_run_state == GUI_RUN_ERROR
                                           ? C'248,113,113' : GuiColorSuccess(), 9),
                             "notice"))
+      ok = false;
+  }
+
+void GuiRenderMetricCard(const string key, const string label, const string value,
+                         const int x, const int y, const int width, bool &ok)
+  {
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "metric." + key,
+                                            x, y, width, 56,
+                                            GuiColorPanel(), GuiColorBorder()),
+                            "metric." + key))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "metric.label." + key,
+                                          label, x + 10, y + 8, width - 20, 14,
+                                          GuiColorMuted(), 9),
+                            "metric.label." + key))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "metric.value." + key,
+                                          value, x + 10, y + 27, width - 20, 20,
+                                          GuiColorText(), 12),
+                            "metric.value." + key))
       ok = false;
   }
 
@@ -3922,7 +3966,8 @@ bool GuiRenderTitleBar()
    bool ok = true;
    const int x = 18;
    const int y = 18;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "title", x, y, 520, 42,
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "title", x, y,
+                                            GUI_WINDOW_WIDTH, GUI_TITLE_HEIGHT,
                                             GuiColorPanel(), GuiColorBorder()), "title"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.text", "不管涨跌 EA",
@@ -3939,11 +3984,11 @@ bool GuiRenderTitleBar()
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.dirty",
                                           g_gui_has_unapplied_changes ? "· 未应用" : " ",
-                                          x + 402, y + 12, 74, 18,
+                                          x + 570, y + 12, 90, 18,
                                           GuiColorWarning(), 9), "title.dirty"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "minimize", "—",
-                                            x + 482, y + 7, 28, 28,
+                                            x + GUI_WINDOW_WIDTH - 38, y + 7, 28, 28,
                                             GuiColorSurface(), GuiColorMuted()), "minimize"))
       ok = false;
    return ok;
@@ -3954,25 +3999,26 @@ bool GuiRenderNavigation()
    bool ok = true;
    const int x = 18;
    const int y = 60;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "navigation", x, y, 86, 502,
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "navigation", x, y,
+                                            GUI_NAV_WIDTH, GUI_WINDOW_HEIGHT - GUI_TITLE_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()), "navigation"))
       ok = false;
-   const string pages[5] = {"总览", "开仓", "距离", "网格", "风控"};
+   const string pages[5] = {"总览  01", "开仓  07", "距离与止盈  06", "网格  03", "风控与时段  05"};
    for(int index = 0; index < 5; index++)
      {
       const GuiPage page = (GuiPage)index;
-      const int item_y = y + 12 + index * 48;
+      const int item_y = y + 48 + index * 48;
       const bool selected = g_gui_page == page;
       if(selected)
         {
          if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "nav.bg." + IntegerToString(index),
-                                                  x + 7, item_y - 4, 72, 36,
+                                                  x + 12, item_y - 4, GUI_NAV_WIDTH - 24, 36,
                                                   GuiColorPrimary(), GuiColorPrimary()),
                                   "nav.bg." + IntegerToString(index)))
             ok = false;
         }
       if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "nav." + IntegerToString(index),
-                                               pages[index], x + 7, item_y, 72, 28,
+                                               pages[index], x + 12, item_y, GUI_NAV_WIDTH - 24, 28,
                                                selected ? GuiColorPrimary() : GuiColorInput(),
                                                GuiColorText()),
                                "nav." + IntegerToString(index)))
@@ -4013,17 +4059,20 @@ bool GuiRenderCloseConfirmation(bool &ok)
 bool GuiRenderContent()
   {
    bool ok = true;
-   const int x = 104;
+   const int x = GUI_CONTENT_X;
    const int y = 60;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "content", x, y, 434, 502,
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "content", x, y,
+                                            GUI_CONTENT_WIDTH,
+                                            GUI_WINDOW_HEIGHT - GUI_TITLE_HEIGHT,
                                             GuiColorSurface(), GuiColorBorder()), "content"))
       ok = false;
-   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.page", GuiPageText(g_gui_page),
-                                          x + 16, y + 14, 120, 22, GuiColorText(), 11), "content.page"))
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.page", "EA控制面板",
+                                          x + GUI_CONTENT_PADDING, y + 14, 240, 22,
+                                          GuiColorText(), 11), "content.page"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "mode.toggle",
                                             g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
-                                            x + 326, y + 12, 92, 24,
+                                            x + GUI_CONTENT_WIDTH - 112, y + 12, 92, 24,
                                             GuiColorInput(), GuiColorText()), "mode.toggle"))
       ok = false;
    const string mode_hint = g_gui_has_unapplied_changes
@@ -4035,196 +4084,235 @@ bool GuiRenderContent()
                                  ? GuiColorWarning() : GuiColorMuted();
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "mode.hint",
                                           mode_hint,
-                                          x + 16, y + 36, 400, 16,
+                                          x + GUI_CONTENT_PADDING, y + 36,
+                                          GUI_CONTENT_WIDTH - GUI_CONTENT_PADDING * 2, 16,
                                           mode_hint_color, 9), "mode.hint"))
+      ok = false;
+   string section_title = "运行总览";
+   string section_note = "已应用配置";
+   if(g_gui_page == GUI_PAGE_OPENING)
+     {
+      section_title = "开仓参数";
+      section_note = "7项";
+     }
+   else if(g_gui_page == GUI_PAGE_DISTANCE)
+     {
+      section_title = "距离与止盈";
+      section_note = "6项";
+     }
+   else if(g_gui_page == GUI_PAGE_GRID)
+     {
+      section_title = "网格参数";
+      section_note = "3项";
+     }
+   else if(g_gui_page == GUI_PAGE_RISK)
+     {
+      section_title = "风控与时段";
+      section_note = "5项";
+     }
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.section",
+                                          section_title, x + GUI_CONTENT_PADDING, y + 62,
+                                          240, 18, GuiColorText(), 10), "content.section"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.section.note",
+                                          section_note, x + GUI_CONTENT_WIDTH - 78, y + 62,
+                                          58, 18, GuiColorMuted(), 9), "content.section.note"))
       ok = false;
 
    if(g_gui_page == GUI_PAGE_OVERVIEW)
      {
       GuiSnapshot snapshot;
       GuiCollectSnapshot(snapshot);
-      if(!GuiRenderReadOnlyField("overview.state", "运行状态",
-                                 GuiRunStateText(), x + 16, y + 58, ok))
-         ok = false;
+      const int metric_width = 166;
+      GuiRenderMetricCard("direction", "当前方向",
+                          g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
+                                            ? "BUY" : "SELL") : "无持仓",
+                          x + GUI_CONTENT_PADDING, y + 86, metric_width, ok);
+      GuiRenderMetricCard("reversal", "反手次数",
+                          IntegerToString(g_reversal_count) + "/"
+                          + IntegerToString(g_gui_applied_config.max_reversals),
+                          x + GUI_CONTENT_PADDING + metric_width + GUI_FORM_GAP,
+                          y + 86, metric_width, ok);
+      GuiRenderMetricCard("exposure", "持仓 / 挂单",
+                          IntegerToString(snapshot.position_count) + " / "
+                          + IntegerToString(snapshot.pending_order_count),
+                          x + GUI_CONTENT_PADDING + (metric_width + GUI_FORM_GAP) * 2,
+                          y + 86, metric_width, ok);
+
+      const int left_x = x + GUI_CONTENT_PADDING;
+      const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+      const int summary_y = y + 160;
+      const int row_gap = 34;
+      if(!GuiRenderReadOnlyField("overview.state", "运行状态", GuiRunStateText(),
+                                 left_x, summary_y, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.direction", "首单方向",
                                  GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
                                                        ? FIRST_SELL : FIRST_BUY),
-                                 x + 16, y + 84, ok))
-         ok = false;
+                                 right_x, summary_y, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.positions", "持仓",
                                  IntegerToString(snapshot.position_count),
-                                 x + 16, y + 110, ok))
-         ok = false;
+                                 left_x, summary_y + row_gap, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.orders", "挂单",
                                  IntegerToString(snapshot.pending_order_count),
-                                 x + 16, y + 136, ok))
-         ok = false;
+                                 right_x, summary_y + row_gap, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.profit", "浮盈",
                                  DoubleToString(snapshot.floating_profit, 2),
-                                 x + 16, y + 162, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("overview.cycle", "订单组/循环",
-                                 IntegerToString(g_cycle_index), x + 16, y + 188, ok))
-         ok = false;
+                                 left_x, summary_y + row_gap * 2, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.reversal", "反手次数",
                                  IntegerToString(g_reversal_count) + "/"
                                  + IntegerToString(g_gui_applied_config.max_reversals),
-                                 x + 16, y + 214, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("overview.direction.active", "当前方向",
-                                 g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
-                                                   ? "BUY" : "SELL") : "无持仓",
-                                 x + 16, y + 240, ok))
-         ok = false;
+                                 right_x, summary_y + row_gap * 2, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.cycle_mode", "循环模式",
                                  GuiCycleModeText(g_gui_applied_config.cycle_mode),
-                                 x + 16, y + 266, ok))
-         ok = false;
+                                 left_x, summary_y + row_gap * 3, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.distance_mode", "距离模式",
                                  GuiDistanceModeText(g_gui_applied_config.distance_mode),
-                                 x + 16, y + 292, ok))
-         ok = false;
+                                 right_x, summary_y + row_gap * 3, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.order_type", "开单方式",
                                  GuiOrderTypeText(g_gui_applied_config.order_type),
-                                 x + 16, y + 318, ok))
-         ok = false;
+                                 left_x, summary_y + row_gap * 4, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.initial_lots", "首单手数",
                                  DoubleToString(g_gui_applied_config.initial_lots, 8),
-                                 x + 16, y + 344, ok))
-         ok = false;
+                                 right_x, summary_y + row_gap * 4, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.initial_lots_multiplier", "首单手数倍数",
+                                 DoubleToString(g_gui_applied_config.initial_lots_multiplier, 8),
+                                 left_x, summary_y + row_gap * 5, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.grid_count", "网格数量",
                                  IntegerToString(g_gui_applied_config.grid_count),
-                                 x + 16, y + 370, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("overview.stops", "止损/止盈(点)",
+                                 right_x, summary_y + row_gap * 5, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.grid_lot_multiplier", "网格手数倍数",
+                                 DoubleToString(g_gui_applied_config.grid_lot_multiplier, 8),
+                                 left_x, summary_y + row_gap * 6, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.stops", "止损 / 止盈(点)",
                                  IntegerToString(g_gui_applied_config.stop_loss_distance_points)
-                                 + "/"
-                                 + IntegerToString(g_gui_applied_config.take_profit_distance_points),
-                                 x + 16, y + 396, ok))
-         ok = false;
+                                 + "/" + IntegerToString(g_gui_applied_config.take_profit_distance_points),
+                                 right_x, summary_y + row_gap * 6, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.take_profit_mode", "止盈移动模式",
+                                 GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode),
+                                 left_x, summary_y + row_gap * 7, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.schedule", "运行时间",
-                                 g_gui_applied_config.start_time + " - "
-                                 + g_gui_applied_config.end_time,
-                                 x + 16, y + 422, ok))
-         ok = false;
-      GuiRenderNotice(x + 16, y + 454, ok);
+                                 g_gui_applied_config.start_time + " - " + g_gui_applied_config.end_time,
+                                 right_x, summary_y + row_gap * 7, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.magic_number", "订单识别编号",
+                                 IntegerToString((long)g_gui_applied_config.magic_number),
+                                 left_x, summary_y + row_gap * 8, ok)) ok = false;
+      if(!GuiRenderReadOnlyField("overview.order_comment", "订单注释",
+                                 g_gui_applied_config.order_comment,
+                                 right_x, summary_y + row_gap * 8, ok)) ok = false;
+      GuiRenderNotice(left_x, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_OPENING)
      {
-      int row = y + 54;
+      const int left_x = x + GUI_CONTENT_PADDING;
+      const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+      const int row = y + 94;
+      const int row_gap = 64;
       if(!GuiRenderEnumField("first_direction", "首单方向",
-                             GuiFirstDirectionText(g_gui_draft_config.first_direction), x + 16, row, ok))
+                             GuiFirstDirectionText(g_gui_draft_config.first_direction), left_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEnumField("cycle_mode", "循环模式",
-                             GuiCycleModeText(g_gui_draft_config.cycle_mode), x + 16, row, ok))
+                             GuiCycleModeText(g_gui_draft_config.cycle_mode), right_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEnumField("order_type", "开单方式",
-                             GuiOrderTypeText(g_gui_draft_config.order_type), x + 16, row, ok))
+                             GuiOrderTypeText(g_gui_draft_config.order_type), left_x, row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEnumField("candle_order_mode", "K线开单模式",
-                             GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), x + 16, row, ok))
+                             GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), right_x,
+                             row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEnumField("candle_enable_multiple", "K线多组",
-                             GuiMultipleText(g_gui_draft_config.candle_enable_multiple), x + 16, row, ok))
+                             GuiMultipleText(g_gui_draft_config.candle_enable_multiple), left_x,
+                             row + row_gap * 2, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("initial_lots", "首单手数",
-                             DoubleToString(g_gui_draft_config.initial_lots, 8), x + 16, row, ok))
+                             DoubleToString(g_gui_draft_config.initial_lots, 8), right_x,
+                             row + row_gap * 2, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("initial_lots_multiplier", "首单手数倍数",
                              DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
-                             x + 16, row, ok))
+                             left_x, row + row_gap * 3, ok))
          ok = false;
-      GuiRenderNotice(x + 16, y + 460, ok);
+      GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
-      int row = y + 54;
+      const int left_x = x + GUI_CONTENT_PADDING;
+      const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+      const int row = y + 94;
+      const int row_gap = 64;
       if(!GuiRenderEnumField("distance_mode", "距离模式",
-                             GuiDistanceModeText(g_gui_draft_config.distance_mode), x + 16, row, ok))
+                             GuiDistanceModeText(g_gui_draft_config.distance_mode), left_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("stop_loss_distance_points", "固定止损距离(点)",
                              IntegerToString(g_gui_draft_config.stop_loss_distance_points),
-                             x + 16, row, ok))
+                             right_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("take_profit_distance_points", "固定止盈距离(点)",
                              IntegerToString(g_gui_draft_config.take_profit_distance_points),
-                             x + 16, row, ok))
+                             left_x, row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("candle_min_range_points", "K线最小高度(点)",
                              IntegerToString(g_gui_draft_config.candle_min_range_points),
-                             x + 16, row, ok))
+                             right_x, row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("candle_max_range_points", "K线最大高度(点)",
                              IntegerToString(g_gui_draft_config.candle_max_range_points),
-                             x + 16, row, ok))
+                             left_x, row + row_gap * 2, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
-                             GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), x + 16, row, ok))
+                             GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), right_x,
+                             row + row_gap * 2, ok))
          ok = false;
-      GuiRenderNotice(x + 16, y + 460, ok);
+      GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_GRID)
      {
-      int row = y + 54;
+      const int left_x = x + GUI_CONTENT_PADDING;
+      const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+      const int row = y + 94;
       if(!GuiRenderEditField("grid_count", "网格数量",
-                             IntegerToString(g_gui_draft_config.grid_count), x + 16, row, ok))
+                             IntegerToString(g_gui_draft_config.grid_count), left_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("grid_lot_multiplier", "网格手数倍数",
                              DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
-                             x + 16, row, ok))
+                             right_x, row, ok))
          ok = false;
-      row += 38;
       if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
-                                IntegerToString(g_grid_filled_levels), x + 16, row, ok))
+                                IntegerToString(g_grid_filled_levels), left_x, row + 64, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
                                 g_grid_pending_price > 0.0
-                                ? DoubleToString(g_grid_pending_price, _Digits) : "--",
-                                x + 16, row, ok))
+                                ? DoubleToString(g_grid_pending_price, _Digits) : "--", right_x,
+                                row + 64, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
-                                DoubleToString(g_group_total_lots, 2), x + 16, row, ok))
+                                DoubleToString(g_group_total_lots, 2), left_x, row + 128, ok))
          ok = false;
-      GuiRenderNotice(x + 16, y + 460, ok);
+      GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else
      {
-      int row = y + 54;
+      const int left_x = x + GUI_CONTENT_PADDING;
+      const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+      const int row = y + 94;
+      const int row_gap = 64;
       if(!GuiRenderEditField("max_reversals", "最大反手次数",
-                             IntegerToString(g_gui_draft_config.max_reversals), x + 16, row, ok))
+                             IntegerToString(g_gui_draft_config.max_reversals), left_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("start_time", "开始时间",
-                             g_gui_draft_config.start_time, x + 16, row, ok))
+                             g_gui_draft_config.start_time, right_x, row, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("end_time", "结束时间",
-                             g_gui_draft_config.end_time, x + 16, row, ok))
+                             g_gui_draft_config.end_time, left_x, row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("magic_number", "订单识别编号",
                              IntegerToString((long)g_gui_draft_config.magic_number),
-                             x + 16, row, ok))
+                             right_x, row + row_gap, ok))
          ok = false;
-      row += 30;
       if(!GuiRenderEditField("order_comment", "订单注释",
-                             g_gui_draft_config.order_comment, x + 16, row, ok))
+                             g_gui_draft_config.order_comment, left_x, row + row_gap * 2, ok))
          ok = false;
-      GuiRenderNotice(x + 16, y + 460, ok);
+      GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    if(g_gui_close_confirm_open)
       GuiRenderCloseConfirmation(ok);
@@ -4234,8 +4322,8 @@ bool GuiRenderContent()
 bool GuiRenderActions()
   {
    bool ok = true;
-   const int x = 104;
-   const int y = 570;
+   const int x = GUI_CONTENT_X + GUI_CONTENT_PADDING;
+   const int y = GUI_WINDOW_HEIGHT - 44;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "apply", "应用参数", x, y, 88, 28,
                                              GuiColorPrimary(), GuiColorText()), "apply"))
       ok = false;
@@ -4254,7 +4342,8 @@ bool GuiRenderMinimizedBar()
    bool ok = true;
    const int x = 18;
    const int y = 18;
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "minimized", x, y, 520, 34,
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "minimized", x, y,
+                                            GUI_WINDOW_WIDTH, 34,
                                             GuiColorPanel(), GuiColorBorder()), "minimized"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "minimized.text",
@@ -4263,23 +4352,34 @@ bool GuiRenderMinimizedBar()
                             "minimized.text"))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "restore", "恢复",
-                                            x + 462, y + 4, 46, 26,
+                                            x + GUI_WINDOW_WIDTH - 58, y + 4, 46, 26,
                                             GuiColorPrimary(), GuiColorText()), "restore"))
       ok = false;
    return ok;
+  }
+
+bool GuiRenderActiveEdit()
+  {
+   if(StringLen(g_gui_edit_key) == 0)
+      return false;
+   const string edit_name = g_gui_object_prefix + "field." + g_gui_edit_key;
+   return ObjectFind(0, edit_name) >= 0;
   }
 
 bool GuiRender()
   {
    if(!g_gui_objects_created || StringLen(g_gui_object_prefix) == 0)
       return false;
+   if(GuiRenderActiveEdit())
+      return true;
    ObjectsDeleteAll(0, g_gui_object_prefix);
    g_gui_render_error = "";
    g_gui_render_error_code = 0;
    bool render_ok = true;
    if(g_gui_full_window)
      {
-      if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "window", 18, 18, 520, 580,
+      if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "window", 18, 18,
+                                              GUI_WINDOW_WIDTH, GUI_WINDOW_HEIGHT,
                                               GuiColorBackground(), GuiColorBorder()), "window"))
          render_ok = false;
       if(!GuiRenderTitleBar())
@@ -4342,6 +4442,51 @@ bool GuiIsEditableFieldKey(const string key)
           || key == "order_comment";
   }
 
+bool GuiIsDecimalText(const string value, const bool allow_decimal)
+  {
+   string trimmed = value;
+   StringTrimLeft(trimmed);
+   StringTrimRight(trimmed);
+   if(StringLen(trimmed) == 0)
+      return false;
+   int digits = 0;
+   int decimals = 0;
+   for(int index = 0; index < StringLen(trimmed); index++)
+     {
+      const int ch = StringGetCharacter(trimmed, index);
+      if(ch >= '0' && ch <= '9')
+        {
+         digits++;
+         continue;
+        }
+      if(ch == '-' && index == 0)
+         continue;
+      if(allow_decimal && ch == '.' && decimals == 0)
+        {
+         decimals++;
+         continue;
+        }
+      return false;
+     }
+   return digits > 0;
+  }
+
+bool GuiTryParseDouble(const string value, double &result)
+  {
+   if(!GuiIsDecimalText(value, true))
+      return false;
+   result = StringToDouble(value);
+   return true;
+  }
+
+bool GuiTryParseInteger(const string value, int &result)
+  {
+   if(!GuiIsDecimalText(value, false))
+      return false;
+   result = (int)StringToInteger(value);
+   return true;
+  }
+
 bool GuiSyncEditValue(const string key)
   {
    if(!GuiIsEditableFieldKey(key))
@@ -4350,27 +4495,97 @@ bool GuiSyncEditValue(const string key)
    if(ObjectFind(0, object_name) < 0)
       return false;
    const string value = ObjectGetString(0, object_name, OBJPROP_TEXT);
+   double parsed_double = 0.0;
+   int parsed_integer = 0;
    if(key == "initial_lots")
-      g_gui_draft_config.initial_lots = StringToDouble(value);
+     {
+      if(!GuiTryParseDouble(value, parsed_double))
+        {
+         g_gui_notice = "首单手数格式无效";
+         return false;
+        }
+      g_gui_draft_config.initial_lots = parsed_double;
+     }
    else if(key == "initial_lots_multiplier")
-      g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+     {
+      if(!GuiTryParseDouble(value, parsed_double))
+        {
+         g_gui_notice = "首单手数倍数格式无效";
+         return false;
+        }
+      g_gui_draft_config.initial_lots_multiplier = parsed_double;
+     }
    else if(key == "grid_count")
-      g_gui_draft_config.grid_count = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "网格数量格式无效";
+         return false;
+        }
+      g_gui_draft_config.grid_count = parsed_integer;
+     }
    else if(key == "grid_lot_multiplier")
-      g_gui_draft_config.grid_lot_multiplier = StringToDouble(value);
+     {
+      if(!GuiTryParseDouble(value, parsed_double))
+        {
+         g_gui_notice = "网格手数倍数格式无效";
+         return false;
+        }
+      g_gui_draft_config.grid_lot_multiplier = parsed_double;
+     }
    else if(key == "stop_loss_distance_points")
-      g_gui_draft_config.stop_loss_distance_points = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "止损距离格式无效";
+         return false;
+        }
+      g_gui_draft_config.stop_loss_distance_points = parsed_integer;
+     }
    else if(key == "take_profit_distance_points")
-      g_gui_draft_config.take_profit_distance_points = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "止盈距离格式无效";
+         return false;
+        }
+      g_gui_draft_config.take_profit_distance_points = parsed_integer;
+     }
    else if(key == "candle_min_range_points")
-      g_gui_draft_config.candle_min_range_points = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "K线最小高度格式无效";
+         return false;
+        }
+      g_gui_draft_config.candle_min_range_points = parsed_integer;
+     }
    else if(key == "candle_max_range_points")
-      g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "K线最大高度格式无效";
+         return false;
+        }
+      g_gui_draft_config.candle_max_range_points = parsed_integer;
+     }
    else if(key == "max_reversals")
-      g_gui_draft_config.max_reversals = (int)StringToInteger(value);
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "最大反手次数格式无效";
+         return false;
+        }
+      g_gui_draft_config.max_reversals = parsed_integer;
+     }
    else if(key == "magic_number")
      {
-      const long parsed_magic = StringToInteger(value);
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "订单识别编号格式无效";
+         return false;
+        }
+      const long parsed_magic = parsed_integer;
       g_gui_draft_config.magic_number = parsed_magic > 0 ? (ulong)parsed_magic : 0;
      }
    else if(key == "start_time")
@@ -4432,8 +4647,11 @@ bool GuiHandleChartClick(const int x, const int y)
   {
    if(!g_gui_full_window || g_gui_close_confirm_open)
       return false;
-   const int value_x = 286;
-   const int value_width = 236;
+   const int left_x = GUI_CONTENT_X + GUI_CONTENT_PADDING;
+   const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+   const int value_width = GUI_FIELD_WIDTH;
+   const int first_y = 60 + 94;
+   const int row_gap = 64;
    string keys[7];
    int field_count = 0;
    if(g_gui_page == GUI_PAGE_OPENING)
@@ -4473,7 +4691,6 @@ bool GuiHandleChartClick(const int x, const int y)
       field_count = 5;
      }
 
-   const int first_y = 114;
    if(StringLen(g_gui_dropdown_key) > 0)
      {
       for(int index = 0; index < field_count; index++)
@@ -4483,9 +4700,11 @@ bool GuiHandleChartClick(const int x, const int y)
          const int option_count = GuiDropdownOptionCount(keys[index]);
          for(int option = 0; option < option_count; option++)
            {
-            const int option_y = first_y + index * 30 + 24 + option * 24;
-            if(x >= value_x && x <= value_x + value_width
-               && y >= option_y && y <= option_y + 24)
+            const int field_x = (index % 2 == 0) ? left_x : right_x;
+            const int option_y = first_y + (index / 2) * row_gap + 18
+                                 + GUI_FIELD_HEIGHT + option * GUI_FIELD_HEIGHT;
+            if(x >= field_x && x <= field_x + value_width
+               && y >= option_y && y <= option_y + GUI_FIELD_HEIGHT)
               {
                if(GuiSetDropdownValue(keys[index], option))
                  {
@@ -4502,8 +4721,10 @@ bool GuiHandleChartClick(const int x, const int y)
 
    for(int index = 0; index < field_count; index++)
      {
-      const int field_y = first_y + index * 30;
-      if(x < value_x || x > value_x + value_width || y < field_y || y > field_y + 24)
+      const int field_x = (index % 2 == 0) ? left_x : right_x;
+      const int field_y = first_y + (index / 2) * row_gap + 18;
+      if(x < field_x || x > field_x + value_width
+         || y < field_y || y > field_y + GUI_FIELD_HEIGHT)
          continue;
       if(GuiDropdownOptionCount(keys[index]) > 0)
         {
@@ -4561,8 +4782,20 @@ bool GuiPrepareChartForWindow()
    if(GetLastError() != 0)
       return false;
    g_gui_chart_overlay_state_saved = true;
+   ResetLastError();
    ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false);
+   if(GetLastError() != 0)
+     {
+      g_gui_chart_overlay_state_saved = false;
+      return false;
+     }
+   ResetLastError();
    ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, false);
+   if(GetLastError() != 0)
+     {
+      g_gui_chart_overlay_state_saved = false;
+      return false;
+     }
    ChartRedraw(0);
    return true;
   }
@@ -4579,12 +4812,16 @@ void GuiRestoreChartAfterWindow()
 
 bool GuiCreate()
   {
-   GuiPrepareChartForWindow();
+   g_gui_object_prefix = GuiObjectPrefix();
    const string legacy_prefix = GuiLegacyObjectPrefix();
    ObjectsDeleteAll(0, legacy_prefix);
-   g_gui_object_prefix = GuiObjectPrefix();
    g_gui_objects_created = true;
    g_gui_dirty = true;
+   if(!GuiPrepareChartForWindow())
+     {
+      g_gui_run_state = GUI_RUN_ERROR;
+      g_gui_notice = "GUI无法隐藏图表交易叠加层";
+     }
    return GuiRender();
   }
 

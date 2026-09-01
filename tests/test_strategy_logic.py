@@ -207,8 +207,10 @@ def test_mt5_gui_dropdown_layer_is_above_other_interactive_controls():
 
 def test_mt5_gui_panel_fits_compact_chart_viewport():
     source = MT5_SOURCE.read_text(encoding="utf-8")
-    assert '"content", x, y, 434, 502' in source
-    assert '"window", 18, 18, 520, 580' in source
+    assert "GUI_WINDOW_WIDTH = 760" in source
+    assert "GUI_WINDOW_HEIGHT = 640" in source
+    assert "GUI_NAV_WIDTH = 178" in source
+    assert "GUI_CONTENT_WIDTH = 560" in source
 
 
 def test_mt5_gui_keeps_edit_session_alive_until_text_edit_ends():
@@ -295,14 +297,9 @@ def test_mt5_gui_has_terminal_header_context_and_overview_summary():
 
 def test_mt5_gui_layout_keeps_panel_and_actions_inside_window():
     source = MT5_SOURCE.read_text(encoding="utf-8")
-    render = re.search(
-        r"bool GuiRender\(\).*?\n\s*\}\n\s*void GuiDestroy",
-        source,
-        flags=re.DOTALL,
-    )
-    assert render
-    assert '"window", 18, 18, 520, 580' in render.group(0)
-    assert 'const int y = 570' in source
+    assert 'g_gui_object_prefix + "window", 18, 18' in source
+    assert 'GUI_WINDOW_WIDTH, GUI_WINDOW_HEIGHT' in source
+    assert 'const int y = GUI_WINDOW_HEIGHT - 44' in source
     for action in ("apply", "pause", "close"):
         assert f'GuiCreateButton(g_gui_object_prefix + "{action}"' in source
 
@@ -363,6 +360,105 @@ def test_mt5_gui_does_not_render_default_label_for_clean_dirty_status():
     )
     assert title
     assert 'g_gui_has_unapplied_changes ? "· 未应用" : " "' in title.group(0)
+
+
+def test_mt5_gui_matches_browser_shell_geometry():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    title = re.search(
+        r"bool GuiRenderTitleBar\(\)\n\s*\{.*?\n\s*\}\n\n"
+        r"bool GuiRenderNavigation",
+        source,
+        flags=re.DOTALL,
+    )
+    navigation = re.search(
+        r"bool GuiRenderNavigation\(\)\n\s*\{.*?\n\s*\}\n\n"
+        r"bool GuiRenderCloseConfirmation",
+        source,
+        flags=re.DOTALL,
+    )
+    content = re.search(
+        r"bool GuiRenderContent\(\)\n\s*\{.*?\n\s*\}\n\n"
+        r"bool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+    assert title and navigation and content
+    assert 'GUI_WINDOW_WIDTH' in title.group(0)
+    assert 'GUI_NAV_WIDTH' in navigation.group(0)
+    assert 'GUI_CONTENT_WIDTH' in content.group(0)
+    assert 'const int GUI_CONTENT_X = GUI_NAV_WIDTH + 18' in source
+
+
+def test_mt5_gui_overview_contains_browser_summary_fields():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    overview = re.search(
+        r"if\(g_gui_page == GUI_PAGE_OVERVIEW\).*?\n\s*\}\n\s*else if\(g_gui_page == GUI_PAGE_OPENING\)",
+        source,
+        flags=re.DOTALL,
+    )
+    assert overview
+    body = overview.group(0)
+    for key in (
+        "overview.initial_lots_multiplier", "overview.grid_lot_multiplier",
+        "overview.take_profit_mode", "overview.magic_number",
+        "overview.order_comment",
+    ):
+        assert f'"{key}"' in body, f"Browser-parity overview is missing {key}"
+
+
+def test_mt5_gui_rejects_invalid_numeric_edits_without_coercing_to_zero():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiTryParseDouble" in source
+    assert "bool GuiTryParseInteger" in source
+    sync = re.search(
+        r"bool GuiSyncEditValue\(.*?\n\s*\}\n\nbool GuiHandleEditEnd",
+        source,
+        flags=re.DOTALL,
+    )
+    assert sync
+    assert "GuiTryParseDouble" in sync.group(0)
+    assert "GuiTryParseInteger" in sync.group(0)
+    assert "g_gui_notice" in sync.group(0)
+
+
+def test_mt5_gui_preserves_active_edit_control_during_redraw():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    render = re.search(
+        r"bool GuiRender\(\)\n\s*\{.*?\n\s*\}\n\nvoid GuiRenderIfNeeded",
+        source,
+        flags=re.DOTALL,
+    )
+    assert render
+    body = render.group(0)
+    assert "GuiRenderActiveEdit" in body
+    assert "g_gui_edit_key" in source
+
+
+def test_mt5_gui_surfaces_chart_overlay_preparation_failure():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    create = re.search(
+        r"bool GuiCreate\(\)\n\s*\{.*?\n\s*\}\n\nvoid GuiDestroy",
+        source,
+        flags=re.DOTALL,
+    )
+    prepare = re.search(
+        r"bool GuiPrepareChartForWindow\(\)\n\s*\{.*?\n\s*\}\n\nvoid GuiRestoreChartAfterWindow",
+        source,
+        flags=re.DOTALL,
+    )
+    assert create and prepare
+    assert "if(!GuiPrepareChartForWindow())" in create.group(0)
+    assert "ChartSetInteger" in prepare.group(0)
+    assert "GetLastError" in prepare.group(0)
+
+
+def test_mt5_gui_rebuilds_object_prefix_after_magic_number_change():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    apply_start = source.index("bool ApplyGuiConfig")
+    apply_end = source.index("GuiConfig LoadConfigFromInputs", apply_start)
+    apply = source[apply_start:apply_end]
+    assert "g_gui_object_prefix" in apply
+    assert "GuiObjectPrefix()" in apply
 
 
 def test_mt5_gui_object_prefix_stays_short_for_mql5_object_names():
