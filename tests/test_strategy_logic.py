@@ -1121,15 +1121,27 @@ def test_gui_draft_does_not_change_applied_config_until_apply():
     assert model.applied["initial_lots"] == 0.05
     assert model.has_unapplied_changes is False
 
+    model.edit("initial_lots", 0.10)
+
+    assert model.applied["initial_lots"] == 0.05
+    assert model.draft["initial_lots"] == 0.10
+    assert model.has_unapplied_changes is True
+
 
 def test_gui_pause_only_blocks_new_initial_entry():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+    applied_before = dict(model.applied)
+    draft_before = dict(model.draft)
+    unapplied_before = model.has_unapplied_changes
 
     model.pause_new_initial_entry()
 
     assert model.paused_new_initial_entry is True
     assert model.strategy_management_enabled is True
     assert model.pending_orders_are_preserved is True
+    assert model.applied == applied_before
+    assert model.draft == draft_before
+    assert model.has_unapplied_changes is unapplied_before
 
 
 def test_gui_close_all_requires_confirmation_and_reports_incomplete_cleanup():
@@ -1140,3 +1152,27 @@ def test_gui_close_all_requires_confirmation_and_reports_incomplete_cleanup():
 
     assert request.requires_confirmation is True
     assert result.status == "cleanup_incomplete"
+
+
+def test_gui_close_all_reports_incomplete_cleanup_when_delete_fails():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.request_close_all()
+
+    assert model.confirm_close_all(close_ok=True, delete_ok=False).status == "cleanup_incomplete"
+
+
+def test_gui_close_all_reports_closed_when_both_cleanup_operations_succeed():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.request_close_all()
+
+    assert model.confirm_close_all(close_ok=True, delete_ok=True).status == "closed"
+
+
+def test_gui_close_all_cannot_confirm_without_a_pending_request():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    result = model.confirm_close_all(close_ok=True, delete_ok=True)
+
+    assert result.status == "confirmation_required"

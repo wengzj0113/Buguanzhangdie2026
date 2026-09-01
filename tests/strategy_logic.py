@@ -67,6 +67,8 @@ class GuiStateModel:
         return GuiCloseResult(requires_confirmation=True)
 
     def confirm_close_all(self, close_ok, delete_ok):
+        if not self._close_all_confirmation_requested:
+            return GuiCloseResult(status="confirmation_required")
         self._close_all_confirmation_requested = False
         status = "closed" if close_ok and delete_ok else "cleanup_incomplete"
         return GuiCloseResult(status=status)
