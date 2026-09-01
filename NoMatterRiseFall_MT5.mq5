@@ -3841,14 +3841,23 @@ bool GuiRenderReadOnlyField(const string key, const string label, const string v
 
 void GuiRenderNotice(const int x, const int y, bool &ok)
   {
-   if(StringLen(g_gui_notice) == 0)
-      return;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "notice", g_gui_notice,
                                           x, y, 252, 30,
                                           g_gui_run_state == GUI_RUN_ERROR
                                           ? C'248,113,113' : GuiColorSuccess(), 9),
                             "notice"))
       ok = false;
+  }
+
+void GuiRefreshNoticeObject()
+  {
+   const string notice_name = g_gui_object_prefix + "notice";
+   if(ObjectFind(0, notice_name) < 0)
+      return;
+   ObjectSetString(0, notice_name, OBJPROP_TEXT, g_gui_notice);
+   ObjectSetInteger(0, notice_name, OBJPROP_COLOR,
+                    g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : GuiColorWarning());
+   ChartRedraw(0);
   }
 
 void GuiRenderMetricCard(const string key, const string label, const string value,
@@ -4502,6 +4511,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseDouble(value, parsed_double))
         {
          g_gui_notice = "首单手数格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.initial_lots = parsed_double;
@@ -4511,6 +4521,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseDouble(value, parsed_double))
         {
          g_gui_notice = "首单手数倍数格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.initial_lots_multiplier = parsed_double;
@@ -4520,6 +4531,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "网格数量格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.grid_count = parsed_integer;
@@ -4529,6 +4541,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseDouble(value, parsed_double))
         {
          g_gui_notice = "网格手数倍数格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.grid_lot_multiplier = parsed_double;
@@ -4538,6 +4551,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "止损距离格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.stop_loss_distance_points = parsed_integer;
@@ -4547,6 +4561,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "止盈距离格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.take_profit_distance_points = parsed_integer;
@@ -4556,6 +4571,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "K线最小高度格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.candle_min_range_points = parsed_integer;
@@ -4565,6 +4581,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "K线最大高度格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.candle_max_range_points = parsed_integer;
@@ -4574,6 +4591,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "最大反手次数格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       g_gui_draft_config.max_reversals = parsed_integer;
@@ -4583,6 +4601,7 @@ bool GuiSyncEditValue(const string key)
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "订单识别编号格式无效";
+         GuiRefreshNoticeObject();
          return false;
         }
       const long parsed_magic = parsed_integer;
