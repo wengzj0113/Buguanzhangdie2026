@@ -428,19 +428,18 @@ double PriceNormalize(const double price)
 
 int ParseTimeMinutes(const string value)
   {
-   const int separator = StringFind(value, ":");
-   if(separator <= 0 || separator >= StringLen(value) - 1)
+   if(StringLen(value) != 5 || StringGetCharacter(value, 2) != 58)
       return -1;
-   for(int index = 0; index < StringLen(value); index++)
+   for(int index = 0; index < 5; index++)
      {
-      if(index == separator)
+      if(index == 2)
          continue;
       const int character = StringGetCharacter(value, index);
       if(character < 48 || character > 57)
          return -1;
      }
-   const int hour = (int)StringToInteger(StringSubstr(value, 0, separator));
-   const int minute = (int)StringToInteger(StringSubstr(value, separator + 1));
+   const int hour = (int)StringToInteger(StringSubstr(value, 0, 2));
+   const int minute = (int)StringToInteger(StringSubstr(value, 3, 2));
    if(hour < 0 || hour > 23 || minute < 0 || minute > 59)
       return -1;
    return hour * 60 + minute;
@@ -463,14 +462,14 @@ bool IsVolumeAligned(const double volume, const double minimum,
           && MathAbs(steps - MathRound(steps)) <= 1e-6;
   }
 
-bool HasManagedExposure()
+bool HasManagedExposureForMagic(const ulong magic_number)
   {
    for(int index = 0; index < PositionsTotal(); index++)
      {
       const ulong ticket = PositionGetTicket(index);
       if(ticket > 0 && PositionGetString(POSITION_SYMBOL) == _Symbol
          && (ulong)PositionGetInteger(POSITION_MAGIC)
-            == g_gui_applied_config.magic_number)
+            == magic_number)
          return true;
      }
    for(int index = 0; index < OrdersTotal(); index++)
@@ -478,10 +477,99 @@ bool HasManagedExposure()
       const ulong ticket = OrderGetTicket(index);
       if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == _Symbol
          && (ulong)OrderGetInteger(ORDER_MAGIC)
-            == g_gui_applied_config.magic_number)
+            == magic_number)
          return true;
      }
    return false;
+  }
+
+bool HasManagedExposure()
+  {
+   return HasManagedExposureForMagic(g_gui_applied_config.magic_number);
+  }
+
+string ScopeRegistryPrefix()
+  {
+   return "NMR.scope." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + SanitizeExecutionLockPart(_Symbol) + ".";
+  }
+
+string ScopeRegistryKey(const ulong magic_number)
+  {
+   return ScopeRegistryPrefix() + IntegerToString((long)magic_number);
+  }
+
+string StateScopePrefix()
+  {
+   return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + _Symbol + ".";
+  }
+
+bool ParsePositiveMagicText(const string value, ulong &magic_number)
+  {
+   if(StringLen(value) == 0)
+      return false;
+   for(int index = 0; index < StringLen(value); index++)
+     {
+      const int character = StringGetCharacter(value, index);
+      if(character < 48 || character > 57)
+         return false;
+     }
+   const long parsed = StringToInteger(value);
+   if(parsed <= 0)
+      return false;
+   magic_number = (ulong)parsed;
+   return true;
+  }
+
+bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
+  {
+   const string registry_prefix = ScopeRegistryPrefix();
+   const string state_prefix = StateScopePrefix();
+   for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
+     {
+      const string name = GlobalVariableName(index);
+      ulong known_magic = 0;
+      bool is_known_scope = false;
+      if(StringFind(name, registry_prefix) == 0)
+        {
+         is_known_scope = ParsePositiveMagicText(
+            StringSubstr(name, StringLen(registry_prefix)), known_magic);
+        }
+      else if(StringFind(name, state_prefix) == 0)
+        {
+         const string state_suffix = StringSubstr(name, StringLen(state_prefix));
+         const int separator = StringFind(state_suffix, ".");
+         if(separator > 0)
+            is_known_scope = ParsePositiveMagicText(
+               StringSubstr(state_suffix, 0, separator), known_magic);
+        }
+      if(!is_known_scope || known_magic == requested_magic)
+         continue;
+      if(HasManagedExposureForMagic(known_magic))
+        {
+         error = "Cannot initialize magic/order id "
+                 + IntegerToString((long)requested_magic)
+                 + "; known scope " + IntegerToString((long)known_magic)
+                 + " still has positions or pending orders.";
+         return false;
+        }
+      if(StringFind(name, registry_prefix) == 0)
+         GlobalVariableDel(name);
+     }
+   return true;
+  }
+
+void RememberManagedScope(const ulong magic_number)
+  {
+   if(magic_number > 0)
+      GlobalVariableSet(ScopeRegistryKey(magic_number), 1.0);
+  }
+
+void ForgetManagedScopeIfFlat(const ulong magic_number)
+  {
+   if(magic_number > 0 && !HasManagedExposureForMagic(magic_number))
+      GlobalVariableDel(ScopeRegistryKey(magic_number));
   }
 
 bool ValidateGuiConfig(const GuiConfig &config, string &error)
@@ -566,6 +654,11 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       error = "Order comment must not be empty.";
       return false;
      }
+   if(StringFind(comment, ".Grid") >= 0 || StringFind(comment, ".G") >= 0)
+     {
+      error = "Order comment must not contain reserved .Grid or .G markers.";
+      return false;
+     }
    if(ParseTimeMinutes(config.start_time) < 0 || ParseTimeMinutes(config.end_time) < 0)
      {
       error = "Start and end time must use HH:MM within the server day.";
@@ -618,6 +711,12 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
          error = "Cannot acquire execution lock for the new magic/order id; previous config restored.";
       g_gui_notice = error;
       return false;
+     }
+   if(g_gui_config_initialized)
+     {
+      if(magic_changed)
+         ForgetManagedScopeIfFlat(previous_config.magic_number);
+      RememberManagedScope(config.magic_number);
      }
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
@@ -2862,8 +2961,17 @@ int OnInit()
   {
    GuiConfig input_config = LoadConfigFromInputs();
    string config_error = "";
-   if(!ValidateGuiConfig(input_config, config_error)
-      || !ApplyGuiConfig(input_config, config_error))
+   if(!ValidateGuiConfig(input_config, config_error))
+     {
+      PrintFormat("Invalid GUI configuration: %s", config_error);
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(!CheckKnownScopeExposure(input_config.magic_number, config_error))
+     {
+      PrintFormat("Cannot initialize GUI configuration: %s", config_error);
+      return INIT_FAILED;
+     }
+   if(!ApplyGuiConfig(input_config, config_error))
      {
       PrintFormat("Invalid GUI configuration: %s", config_error);
       return INIT_PARAMETERS_INCORRECT;
@@ -2871,6 +2979,7 @@ int OnInit()
 
    if(!AcquireExecutionOwnership())
       return INIT_FAILED;
+   RememberManagedScope(g_gui_applied_config.magic_number);
 
    g_active_first_direction = g_gui_applied_config.first_direction;
    g_active_cycle_mode = g_gui_applied_config.cycle_mode;
@@ -2895,5 +3004,12 @@ void OnTick()
 
 void OnDeinit(const int reason)
   {
+   if(g_gui_config_initialized)
+     {
+      if(HasManagedExposureForMagic(g_gui_applied_config.magic_number))
+         RememberManagedScope(g_gui_applied_config.magic_number);
+      else
+         ForgetManagedScopeIfFlat(g_gui_applied_config.magic_number);
+     }
    ReleaseExecutionOwnership();
   }
