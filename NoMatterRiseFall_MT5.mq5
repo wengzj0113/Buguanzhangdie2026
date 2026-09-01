@@ -186,6 +186,8 @@ string          g_gui_object_prefix = "";
 string          g_gui_last_snapshot = "";
 bool            g_gui_dirty = true;
 bool            g_gui_objects_created = false;
+string          g_gui_render_error = "";
+int             g_gui_render_error_code = 0;
 
 CTrade g_trade;
 bool   g_had_position = false;
@@ -222,14 +224,14 @@ void MultiClearAll();
 string SanitizeExecutionLockPart(string value);
 bool HasManagedExposureForMagic(const ulong magic_number);
 bool ResetInMemoryStrategyState();
-void GuiCreate();
+bool GuiCreate();
 void GuiDestroy();
-void GuiRender();
-void GuiRenderTitleBar();
-void GuiRenderNavigation();
-void GuiRenderContent();
-void GuiRenderActions();
-void GuiRenderMinimizedBar();
+bool GuiRender();
+bool GuiRenderTitleBar();
+bool GuiRenderNavigation();
+bool GuiRenderContent();
+bool GuiRenderActions();
+bool GuiRenderMinimizedBar();
 void GuiRenderIfNeeded();
 void GuiMarkDirty();
 
@@ -3485,6 +3487,18 @@ bool GuiCreateButton(const string name, const string text, const int x, const in
    return true;
   }
 
+bool GuiTrackCreateResult(const bool created, const string object_name)
+  {
+   if(created)
+      return true;
+   if(StringLen(g_gui_render_error) == 0)
+     {
+      g_gui_render_error = object_name;
+      g_gui_render_error_code = GetLastError();
+     }
+   return false;
+  }
+
 string GuiPageText(const GuiPage page)
   {
    switch(page)
@@ -3529,27 +3543,37 @@ void GuiMarkDirty()
    g_gui_dirty = true;
   }
 
-void GuiRenderTitleBar()
+bool GuiRenderTitleBar()
   {
+   bool ok = true;
    const int x = 18;
    const int y = 18;
-   GuiCreatePanel(g_gui_object_prefix + "title", x, y, 360, 42,
-                  C'15,23,42', C'70,86,112');
-   GuiCreateText(g_gui_object_prefix + "title.text", "不管涨跌 EA", x + 14, y + 11,
-                 180, 20, clrWhite, 11);
-   GuiCreateText(g_gui_object_prefix + "title.status", "● " + GuiRunStateText(),
-                 x + 198, y + 12, 100, 18,
-                 g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : C'52,211,153', 9);
-   GuiCreateButton(g_gui_object_prefix + "minimize", "—", x + 322, y + 7, 28, 28,
-                   C'30,41,66', C'191,219,254');
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "title", x, y, 360, 42,
+                                            C'15,23,42', C'70,86,112'), "title"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.text", "不管涨跌 EA",
+                                          x + 14, y + 11, 180, 20, clrWhite, 11), "title.text"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "title.status",
+                                          "● " + GuiRunStateText(), x + 198, y + 12, 100, 18,
+                                          g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : C'52,211,153', 9),
+                            "title.status"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "minimize", "—",
+                                            x + 322, y + 7, 28, 28,
+                                            C'30,41,66', C'191,219,254'), "minimize"))
+      ok = false;
+   return ok;
   }
 
-void GuiRenderNavigation()
+bool GuiRenderNavigation()
   {
+   bool ok = true;
    const int x = 18;
    const int y = 60;
-   GuiCreatePanel(g_gui_object_prefix + "navigation", x, y, 86, 342,
-                  C'15,23,42', C'70,86,112');
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "navigation", x, y, 86, 342,
+                                            C'15,23,42', C'70,86,112'), "navigation"))
+      ok = false;
    const string pages[5] = {"总览", "开仓", "距离", "网格", "风控"};
    for(int index = 0; index < 5; index++)
      {
@@ -3557,105 +3581,166 @@ void GuiRenderNavigation()
       const int item_y = y + 12 + index * 48;
       const bool selected = g_gui_page == page;
       if(selected)
-         GuiCreatePanel(g_gui_object_prefix + "nav.bg." + IntegerToString(index),
-                        x + 7, item_y - 4, 72, 36,
-                        C'37,99,235', C'37,99,235');
-      GuiCreateButton(g_gui_object_prefix + "nav." + IntegerToString(index),
-                      pages[index], x + 7, item_y, 72, 28,
-                      selected ? C'37,99,235' : C'15,23,42',
-                      selected ? clrWhite : C'191,219,254');
+        {
+         if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "nav.bg." + IntegerToString(index),
+                                                  x + 7, item_y - 4, 72, 36,
+                                                  C'37,99,235', C'37,99,235'),
+                                  "nav.bg." + IntegerToString(index)))
+            ok = false;
+        }
+      if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "nav." + IntegerToString(index),
+                                               pages[index], x + 7, item_y, 72, 28,
+                                               selected ? C'37,99,235' : C'15,23,42',
+                                               selected ? clrWhite : C'191,219,254'),
+                               "nav." + IntegerToString(index)))
+         ok = false;
      }
+   return ok;
   }
 
-void GuiRenderContent()
+bool GuiRenderContent()
   {
+   bool ok = true;
    const int x = 104;
    const int y = 60;
-   GuiCreatePanel(g_gui_object_prefix + "content", x, y, 274, 342,
-                  C'30,41,66', C'70,86,112');
-   GuiCreateText(g_gui_object_prefix + "content.page", GuiPageText(g_gui_page),
-                 x + 16, y + 14, 120, 22, clrWhite, 11);
-   GuiCreateText(g_gui_object_prefix + "content.mode",
-                 g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
-                 x + 164, y + 16, 92, 18, C'147,197,253', 9);
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "content", x, y, 274, 342,
+                                            C'30,41,66', C'70,86,112'), "content"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.page", GuiPageText(g_gui_page),
+                                          x + 16, y + 14, 120, 22, clrWhite, 11), "content.page"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.mode",
+                                          g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
+                                          x + 164, y + 16, 92, 18, C'147,197,253', 9), "content.mode"))
+      ok = false;
 
    if(g_gui_page == GUI_PAGE_OVERVIEW)
      {
       const string exposure = HasManagedExposureForMagic(g_gui_applied_config.magic_number)
                               ? "有持仓/挂单" : "暂无持仓/挂单";
-      GuiCreateText(g_gui_object_prefix + "content.summary", "运行总览", x + 16, y + 58,
-                    220, 22, C'226,232,240', 10);
-      GuiCreateText(g_gui_object_prefix + "content.direction",
-                    "首单方向  " + (g_gui_applied_config.first_direction == FIRST_BUY
-                                  ? "BUY" : "SELL"),
-                    x + 16, y + 94, 220, 20, C'191,219,254', 9);
-      GuiCreateText(g_gui_object_prefix + "content.exposure", "状态  " + exposure,
-                    x + 16, y + 122, 220, 20, C'191,219,254', 9);
-      GuiCreateText(g_gui_object_prefix + "content.cycle",
-                    "循环序号  " + IntegerToString(g_cycle_index),
-                    x + 16, y + 150, 220, 20, C'191,219,254', 9);
-      GuiCreateText(g_gui_object_prefix + "content.reversal",
-                    "反手次数  " + IntegerToString(g_reversal_count),
-                    x + 16, y + 178, 220, 20, C'191,219,254', 9);
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.summary", "运行总览",
+                                             x + 16, y + 58, 220, 22, C'226,232,240', 10),
+                               "content.summary"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.direction",
+                                             "首单方向  " + (g_gui_applied_config.first_direction == FIRST_BUY
+                                                           ? "BUY" : "SELL"),
+                                             x + 16, y + 94, 220, 20, C'191,219,254', 9),
+                               "content.direction"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.exposure", "状态  " + exposure,
+                                             x + 16, y + 122, 220, 20, C'191,219,254', 9),
+                               "content.exposure"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.cycle",
+                                             "循环序号  " + IntegerToString(g_cycle_index),
+                                             x + 16, y + 150, 220, 20, C'191,219,254', 9),
+                               "content.cycle"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.reversal",
+                                             "反手次数  " + IntegerToString(g_reversal_count),
+                                             x + 16, y + 178, 220, 20, C'191,219,254', 9),
+                               "content.reversal"))
+         ok = false;
      }
    else
      {
-      GuiCreateText(g_gui_object_prefix + "content.placeholder",
-                    "参数面板将在下一阶段接入\n当前仅显示固定布局和运行状态。",
-                    x + 16, y + 64, 235, 48, C'191,219,254', 9);
-      GuiCreateText(g_gui_object_prefix + "content.scope",
-                    "当前订单识别编号  " + IntegerToString((long)g_gui_applied_config.magic_number),
-                    x + 16, y + 138, 240, 20, C'148,163,184', 9);
-      GuiCreateText(g_gui_object_prefix + "content.notice", g_gui_notice,
-                    x + 16, y + 176, 235, 70, C'248,113,113', 9);
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.placeholder",
+                                             "参数面板将在下一阶段接入\n当前仅显示固定布局和运行状态。",
+                                             x + 16, y + 64, 235, 48, C'191,219,254', 9),
+                               "content.placeholder"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.scope",
+                                             "当前订单识别编号  " + IntegerToString((long)g_gui_applied_config.magic_number),
+                                             x + 16, y + 138, 240, 20, C'148,163,184', 9),
+                               "content.scope"))
+         ok = false;
+      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.notice", g_gui_notice,
+                                             x + 16, y + 176, 235, 70, C'248,113,113', 9),
+                               "content.notice"))
+         ok = false;
      }
+   return ok;
   }
 
-void GuiRenderActions()
+bool GuiRenderActions()
   {
+   bool ok = true;
    const int x = 104;
    const int y = 402;
-   GuiCreateButton(g_gui_object_prefix + "apply", "应用参数", x, y, 88, 28,
-                   C'37,99,235', clrWhite);
-   GuiCreateButton(g_gui_object_prefix + "pause",
-                   g_gui_run_state == GUI_RUN_PAUSED_INITIAL ? "继续" : "暂停",
-                   x + 94, y, 72, 28, C'51,65,85', C'226,232,240');
-   GuiCreateButton(g_gui_object_prefix + "close", "平仓删挂单", x + 172, y, 102, 28,
-                   C'153,27,27', clrWhite);
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "apply", "应用参数", x, y, 88, 28,
+                                             C'37,99,235', clrWhite), "apply"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "pause",
+                                             g_gui_run_state == GUI_RUN_PAUSED_INITIAL ? "继续" : "暂停",
+                                             x + 94, y, 72, 28, C'51,65,85', C'226,232,240'), "pause"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "close", "平仓删挂单",
+                                             x + 172, y, 102, 28, C'153,27,27', clrWhite), "close"))
+      ok = false;
+   return ok;
   }
 
-void GuiRenderMinimizedBar()
+bool GuiRenderMinimizedBar()
   {
+   bool ok = true;
    const int x = 18;
    const int y = 18;
-   GuiCreatePanel(g_gui_object_prefix + "minimized", x, y, 360, 34,
-                  C'15,23,42', C'70,86,112');
-   GuiCreateText(g_gui_object_prefix + "minimized.text",
-                 "不管涨跌 EA  ·  " + GuiRunStateText(), x + 12, y + 8,
-                 250, 18, C'226,232,240', 9);
-   GuiCreateButton(g_gui_object_prefix + "restore", "恢复", x + 302, y + 4, 46, 26,
-                   C'37,99,235', clrWhite);
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "minimized", x, y, 360, 34,
+                                            C'15,23,42', C'70,86,112'), "minimized"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "minimized.text",
+                                          "不管涨跌 EA  ·  " + GuiRunStateText(),
+                                          x + 12, y + 8, 250, 18, C'226,232,240', 9),
+                            "minimized.text"))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "restore", "恢复",
+                                            x + 302, y + 4, 46, 26,
+                                            C'37,99,235', clrWhite), "restore"))
+      ok = false;
+   return ok;
   }
 
-void GuiRender()
+bool GuiRender()
   {
    if(!g_gui_objects_created || StringLen(g_gui_object_prefix) == 0)
-      return;
+      return false;
    ObjectsDeleteAll(0, g_gui_object_prefix);
+   g_gui_render_error = "";
+   g_gui_render_error_code = 0;
+   bool render_ok = true;
    if(g_gui_full_window)
      {
-      GuiCreatePanel(g_gui_object_prefix + "window", 18, 18, 360, 420,
-                     C'30,41,66', C'70,86,112');
-      GuiRenderTitleBar();
-      GuiRenderNavigation();
-      GuiRenderContent();
-      GuiRenderActions();
+      if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "window", 18, 18, 360, 420,
+                                              C'30,41,66', C'70,86,112'), "window"))
+         render_ok = false;
+      if(!GuiRenderTitleBar())
+         render_ok = false;
+      if(!GuiRenderNavigation())
+         render_ok = false;
+      if(!GuiRenderContent())
+         render_ok = false;
+      if(!GuiRenderActions())
+         render_ok = false;
      }
    else
-      GuiRenderMinimizedBar();
+     {
+      if(!GuiRenderMinimizedBar())
+         render_ok = false;
+     }
+   if(!render_ok)
+     {
+      g_gui_notice = "GUI对象创建失败: " + g_gui_render_error;
+      g_gui_run_state = GUI_RUN_ERROR;
+      g_gui_dirty = true;
+      PrintFormat("%s (GetLastError=%d)", g_gui_notice, g_gui_render_error_code);
+      ChartRedraw(0);
+      return false;
+     }
    g_gui_last_snapshot = GuiBuildSnapshot();
    g_gui_dirty = false;
    ChartRedraw(0);
+   return true;
   }
 
 void GuiRenderIfNeeded()
@@ -3667,12 +3752,12 @@ void GuiRenderIfNeeded()
       GuiRender();
   }
 
-void GuiCreate()
+bool GuiCreate()
   {
    g_gui_object_prefix = GuiObjectPrefix();
    g_gui_objects_created = true;
    g_gui_dirty = true;
-   GuiRender();
+   return GuiRender();
   }
 
 void GuiDestroy()
@@ -3770,7 +3855,8 @@ int OnInit()
       && g_gui_applied_config.candle_enable_multiple == 1)
       MultiLoadGroups();
    g_trade.SetTypeFillingBySymbol(_Symbol);
-   GuiCreate();
+   if(!GuiCreate())
+      Print("GUI initialization failed; EA continues without stopping trade management.");
    return INIT_SUCCEEDED;
   }
 
