@@ -1093,8 +1093,12 @@ def test_candle_distance_mode_uses_user_selected_cycle_mode(source_name):
 
     assert "g_active_cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
     assert "state.cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
-    assert "g_active_cycle_mode = InpCycleMode" in source
-    assert "state.cycle_mode = InpCycleMode" in source
+    if source_name.endswith("_MT5.mq5"):
+        assert "g_active_cycle_mode = g_gui_applied_config.cycle_mode" in source
+        assert "state.cycle_mode = g_gui_applied_config.cycle_mode" in source
+    else:
+        assert "g_active_cycle_mode = InpCycleMode" in source
+        assert "state.cycle_mode = InpCycleMode" in source
 
 
 @pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])

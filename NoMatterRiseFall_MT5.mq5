@@ -223,13 +223,8 @@ string StatePrefix()
   {
    return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
           + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + "." + IntegerToString((long)g_gui_applied_config.magic_number);
-  }
-
-string LegacyStatePrefix()
-  {
-   return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + "." + IntegerToString((long)g_gui_applied_config.magic_number);
+          + "." + SanitizeExecutionLockPart(_Symbol) + "."
+          + IntegerToString((long)g_gui_applied_config.magic_number);
   }
 
 bool DisableLegacyStateFallback(string &error)
@@ -243,18 +238,6 @@ bool DisableLegacyStateFallback(string &error)
       return false;
      }
    return true;
-  }
-
-bool HasStateDataAtPrefix(const string prefix)
-  {
-   return GlobalVariableCheck(prefix + ".candleentrybar")
-          || GlobalVariableCheck(prefix + ".index")
-          || GlobalVariableCheck(prefix + ".meta")
-          || GlobalVariableCheck(prefix + ".transitionphase")
-          || GlobalVariableCheck(prefix + ".multi.nextid")
-          || GlobalVariableCheck(prefix + ".configfingerprint")
-          || GlobalVariableCheck(prefix + ".configfingerprint2")
-          || GlobalVariableCheck(prefix + ".legacy_disabled");
   }
 
 bool HasStrategyStateDataAtPrefix(const string prefix)
@@ -272,24 +255,13 @@ string StatePrefixForMagic(const ulong magic_number)
   {
    return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
           + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + "." + IntegerToString((long)magic_number);
-  }
-
-string LegacyStatePrefixForMagic(const ulong magic_number)
-  {
-   return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + "." + IntegerToString((long)magic_number);
+          + "." + SanitizeExecutionLockPart(_Symbol) + "."
+          + IntegerToString((long)magic_number);
   }
 
 string StateReadPrefixForMagic(const ulong magic_number)
   {
-   const string current_prefix = StatePrefixForMagic(magic_number);
-   if(HasStateDataAtPrefix(current_prefix))
-      return current_prefix;
-   const string legacy_prefix = LegacyStatePrefixForMagic(magic_number);
-   if(HasManagedExposureForMagic(magic_number) && HasStateDataAtPrefix(legacy_prefix))
-      return legacy_prefix;
-   return current_prefix;
+   return StatePrefixForMagic(magic_number);
   }
 
 string StateReadPrefix()
@@ -299,17 +271,19 @@ string StateReadPrefix()
 
 string SanitizeExecutionLockPart(string value)
   {
-   StringReplace(value, "\\", "_");
-   StringReplace(value, "/", "_");
-   StringReplace(value, ":", "_");
-   StringReplace(value, "*", "_");
-   StringReplace(value, "?", "_");
-   StringReplace(value, "\"", "_");
-   StringReplace(value, "<", "_");
-   StringReplace(value, ">", "_");
-   StringReplace(value, "|", "_");
-   StringReplace(value, " ", "_");
-   return value;
+   string encoded = "x";
+   for(int index = 0; index < StringLen(value); index++)
+     {
+      const int character = StringGetCharacter(value, index);
+      if((character >= 48 && character <= 57)
+         || (character >= 65 && character <= 90)
+         || (character >= 97 && character <= 122)
+         || character == 45)
+         encoded += StringSubstr(value, index, 1);
+      else
+         encoded += "_" + IntegerToString(character) + "_";
+     }
+   return encoded;
   }
 
 string ExecutionLockFileName()
@@ -505,7 +479,7 @@ void ClearState()
       PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
   }
 
-bool LoadStateFromPrefix(const string prefix, const bool migrate_legacy)
+bool LoadStateFromPrefix(const string prefix)
   {
    if(GlobalVariableCheck(prefix + ".candleentrybar"))
       g_last_candle_entry_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".candleentrybar"));
@@ -569,19 +543,17 @@ bool LoadStateFromPrefix(const string prefix, const bool migrate_legacy)
       g_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
    if(GlobalVariableCheck(prefix + ".gridpendingprice"))
       g_grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
-   if(migrate_legacy && prefix != StatePrefix())
-      SaveState();
    return true;
   }
 
 void LoadState()
   {
-   LoadStateFromPrefix(StateReadPrefix(), true);
+   LoadStateFromPrefix(StateReadPrefix());
   }
 
 bool LoadStateForMagic(const ulong magic_number)
   {
-   return LoadStateFromPrefix(StateReadPrefixForMagic(magic_number), false);
+   return LoadStateFromPrefix(StateReadPrefixForMagic(magic_number));
   }
 
 int PriceDigits()
@@ -658,33 +630,16 @@ string ScopeRegistryPrefix()
           + "." + SanitizeExecutionLockPart(_Symbol) + ".";
   }
 
-string LegacyScopeRegistryPrefix()
-  {
-   return "NMR.scope." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + SanitizeExecutionLockPart(_Symbol) + ".";
-  }
-
 string ScopeRegistryKey(const ulong magic_number)
   {
    return ScopeRegistryPrefix() + IntegerToString((long)magic_number);
-  }
-
-string LegacyScopeRegistryKey(const ulong magic_number)
-  {
-   return LegacyScopeRegistryPrefix() + IntegerToString((long)magic_number);
   }
 
 string StateScopePrefix()
   {
    return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
           + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + ".";
-  }
-
-string LegacyStateScopePrefix()
-  {
-   return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
-          + "." + _Symbol + ".";
+          + "." + SanitizeExecutionLockPart(_Symbol) + ".";
   }
 
 bool LoadPersistedTransitionPhaseForPrefix(const string prefix,
@@ -702,13 +657,6 @@ bool LoadPersistedTransitionPhaseForPrefix(const string prefix,
    return true;
   }
 
-bool LoadPersistedTransitionPhaseForMagic(const ulong magic_number, int &phase)
-  {
-   return LoadPersistedTransitionPhaseForPrefix(StateScopePrefix(), magic_number, phase)
-          || LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(),
-                                                   magic_number, phase);
-  }
-
 bool HasCurrentServerPersistedTransition(const ulong magic_number)
   {
    int phase = TRANSITION_NONE;
@@ -717,11 +665,7 @@ bool HasCurrentServerPersistedTransition(const ulong magic_number)
 
 bool HasBlockingCandidateTransition(const ulong magic_number)
   {
-   if(HasCurrentServerPersistedTransition(magic_number))
-      return true;
-   int phase = TRANSITION_NONE;
-   return LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(), magic_number, phase)
-          && HasManagedExposureForMagic(magic_number);
+   return HasCurrentServerPersistedTransition(magic_number);
   }
 
 bool ParsePositiveMagicText(const string value, ulong &magic_number)
@@ -756,19 +700,12 @@ bool HasPersistedStateForMagicPrefix(const string prefix, const ulong magic_numb
 bool IsKnownScopeForMagic(const ulong magic_number)
   {
    return GlobalVariableCheck(ScopeRegistryKey(magic_number))
-          || HasPersistedStateForMagicPrefix(StateScopePrefix(), magic_number)
-          || (HasManagedExposureForMagic(magic_number)
-              && (GlobalVariableCheck(LegacyScopeRegistryKey(magic_number))
-                  || HasPersistedStateForMagicPrefix(LegacyStateScopePrefix(),
-                                                     magic_number)));
+          || HasPersistedStateForMagicPrefix(StateScopePrefix(), magic_number);
   }
 
 bool HasCandidatePersistedState(const ulong magic_number)
   {
-   if(HasStateDataAtPrefix(StatePrefixForMagic(magic_number)))
-      return true;
-   return HasManagedExposureForMagic(magic_number)
-          && HasStateDataAtPrefix(LegacyStatePrefixForMagic(magic_number));
+   return HasStrategyStateDataAtPrefix(StatePrefixForMagic(magic_number));
   }
 
 bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys,
@@ -826,18 +763,13 @@ bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
   {
    if(!CheckKnownScopeExposurePrefix(ScopeRegistryPrefix(), true, true,
                                      requested_magic, error)
-      || !CheckKnownScopeExposurePrefix(LegacyScopeRegistryPrefix(), true, false,
-                                        requested_magic, error)
       || !CheckKnownScopeExposurePrefix(StateScopePrefix(), false, false,
-                                        requested_magic, error)
-      || !CheckKnownScopeExposurePrefix(LegacyStateScopePrefix(), false, false,
                                         requested_magic, error))
       return false;
    return true;
   }
 
 bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
-                                      const bool require_current_exposure,
                                       const ulong requested_magic, string &error)
   {
    int persisted_phase = TRANSITION_NONE;
@@ -851,11 +783,7 @@ bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
             StringSubstr(name, StringLen(registry_prefix)), known_magic)
          || known_magic == requested_magic)
          continue;
-      const bool has_transition = require_current_exposure
-                                  ? LoadPersistedTransitionPhaseForMagic(known_magic,
-                                                                         persisted_phase)
-                                    && HasManagedExposureForMagic(known_magic)
-                                  : HasCurrentServerPersistedTransition(known_magic);
+      const bool has_transition = HasCurrentServerPersistedTransition(known_magic);
       if(has_transition)
         {
          error = "Cannot initialize magic/order id "
@@ -868,12 +796,40 @@ bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
    return true;
   }
 
+bool CheckKnownStateTransitions(const ulong requested_magic, string &error)
+  {
+   const string prefix = StateScopePrefix();
+   const string marker = ".transitionphase";
+   int persisted_phase = TRANSITION_NONE;
+   for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
+     {
+      const string name = GlobalVariableName(index);
+      if(StringFind(name, prefix) != 0)
+         continue;
+      const string suffix = StringSubstr(name, StringLen(prefix));
+      const int marker_index = StringFind(suffix, marker);
+      if(marker_index <= 0 || StringSubstr(suffix, marker_index) != marker)
+         continue;
+      ulong known_magic = 0;
+      if(!ParsePositiveMagicText(StringSubstr(suffix, 0, marker_index), known_magic)
+         || known_magic == requested_magic
+         || !LoadPersistedTransitionPhaseForPrefix(prefix, known_magic,
+                                                   persisted_phase))
+         continue;
+      error = "Cannot initialize magic/order id "
+              + IntegerToString((long)requested_magic)
+              + "; known scope " + IntegerToString((long)known_magic)
+              + " has a persisted transition in flight.";
+      return false;
+     }
+   return true;
+  }
+
 bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
   {
-   return CheckKnownScopeTransitionsPrefix(ScopeRegistryPrefix(), false,
-                                            requested_magic, error)
-          && CheckKnownScopeTransitionsPrefix(LegacyScopeRegistryPrefix(), true,
-                                              requested_magic, error);
+   return CheckKnownScopeTransitionsPrefix(ScopeRegistryPrefix(), requested_magic,
+                                            error)
+          && CheckKnownStateTransitions(requested_magic, error);
   }
 
 bool RememberManagedScope(const ulong magic_number, string &error)
@@ -901,11 +857,7 @@ bool ForgetManagedScopeIfFlat(const ulong magic_number, string &error)
    if(magic_number == 0 || HasManagedExposureForMagic(magic_number))
       return true;
    const string key = ScopeRegistryKey(magic_number);
-   int persisted_phase = TRANSITION_NONE;
-   if(HasCurrentServerPersistedTransition(magic_number)
-      || (HasManagedExposureForMagic(magic_number)
-          && LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(),
-                                                   magic_number, persisted_phase)))
+   if(HasCurrentServerPersistedTransition(magic_number))
       return true;
    if(!GlobalVariableCheck(key))
       return true;
@@ -2826,14 +2778,7 @@ void MultiSaveGroup(const MultiGroupState &group)
 
 void MultiLoadGroups()
   {
-   const string current_prefix = StatePrefix();
-   string state_prefix = StateReadPrefix();
-   if(state_prefix == current_prefix
-      && !GlobalVariableCheck(current_prefix + ".multi.nextid")
-      && !GlobalVariableCheck(current_prefix + ".legacy_disabled")
-      && HasManagedExposureForMagic(g_gui_applied_config.magic_number)
-      && GlobalVariableCheck(LegacyStatePrefix() + ".multi.nextid"))
-      state_prefix = LegacyStatePrefix();
+   const string state_prefix = StatePrefix();
    const string next_key = state_prefix + ".multi.nextid";
    if(!GlobalVariableCheck(next_key))
       return;
@@ -2869,17 +2814,6 @@ void MultiLoadGroups()
       state.grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
       state.grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
       g_multi_groups[index] = state;
-     }
-   if(state_prefix != current_prefix)
-     {
-      for(int index = 0; index < ArraySize(g_multi_groups); index++)
-         MultiSaveGroup(g_multi_groups[index]);
-      const string current_next_key = current_prefix + ".multi.nextid";
-      if(!GlobalVariableSet(current_next_key, (double)g_multi_next_id))
-         PrintFormat("Failed to migrate MT5 multi-group next-id state: %s", current_next_key);
-      string migration_error = "";
-      if(!DisableLegacyStateFallback(migration_error))
-         PrintFormat("Failed to finalize legacy MT5 multi-group migration: %s", migration_error);
      }
   }
 
