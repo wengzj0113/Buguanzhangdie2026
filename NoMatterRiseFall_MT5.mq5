@@ -216,6 +216,8 @@ int    g_end_operation_minutes = 24 * 60;
 
 void MultiClearAll();
 string SanitizeExecutionLockPart(string value);
+bool HasManagedExposureForMagic(const ulong magic_number);
+bool ResetInMemoryStrategyState();
 
 string StatePrefix()
   {
@@ -243,17 +245,56 @@ bool DisableLegacyStateFallback(string &error)
    return true;
   }
 
+bool HasStateDataAtPrefix(const string prefix)
+  {
+   return GlobalVariableCheck(prefix + ".candleentrybar")
+          || GlobalVariableCheck(prefix + ".index")
+          || GlobalVariableCheck(prefix + ".meta")
+          || GlobalVariableCheck(prefix + ".transitionphase")
+          || GlobalVariableCheck(prefix + ".multi.nextid")
+          || GlobalVariableCheck(prefix + ".configfingerprint")
+          || GlobalVariableCheck(prefix + ".configfingerprint2")
+          || GlobalVariableCheck(prefix + ".legacy_disabled");
+  }
+
+bool HasStrategyStateDataAtPrefix(const string prefix)
+  {
+   return GlobalVariableCheck(prefix + ".candleentrybar")
+          || GlobalVariableCheck(prefix + ".index")
+          || GlobalVariableCheck(prefix + ".meta")
+          || GlobalVariableCheck(prefix + ".transitionphase")
+          || GlobalVariableCheck(prefix + ".multi.nextid")
+          || GlobalVariableCheck(prefix + ".configfingerprint")
+          || GlobalVariableCheck(prefix + ".configfingerprint2");
+  }
+
+string StatePrefixForMagic(const ulong magic_number)
+  {
+   return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
+          + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + _Symbol + "." + IntegerToString((long)magic_number);
+  }
+
+string LegacyStatePrefixForMagic(const ulong magic_number)
+  {
+   return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + _Symbol + "." + IntegerToString((long)magic_number);
+  }
+
+string StateReadPrefixForMagic(const ulong magic_number)
+  {
+   const string current_prefix = StatePrefixForMagic(magic_number);
+   if(HasStateDataAtPrefix(current_prefix))
+      return current_prefix;
+   const string legacy_prefix = LegacyStatePrefixForMagic(magic_number);
+   if(HasManagedExposureForMagic(magic_number) && HasStateDataAtPrefix(legacy_prefix))
+      return legacy_prefix;
+   return current_prefix;
+  }
+
 string StateReadPrefix()
   {
-   const string current_prefix = StatePrefix();
-   if(GlobalVariableCheck(current_prefix + ".candleentrybar")
-      || GlobalVariableCheck(current_prefix + ".index")
-      || GlobalVariableCheck(current_prefix + ".meta")
-      || GlobalVariableCheck(current_prefix + ".transitionphase")
-      || GlobalVariableCheck(current_prefix + ".multi.nextid")
-      || GlobalVariableCheck(current_prefix + ".legacy_disabled"))
-      return current_prefix;
-   return LegacyStatePrefix();
+   return StateReadPrefixForMagic(g_gui_applied_config.magic_number);
   }
 
 string SanitizeExecutionLockPart(string value)
@@ -309,6 +350,78 @@ void ReleaseExecutionOwnership()
    g_execution_lock_handle = INVALID_HANDLE;
   }
 
+string GuiConfigFingerprintText(const GuiConfig &config)
+  {
+   return IntegerToString((int)config.first_direction) + "|"
+          + IntegerToString((int)config.cycle_mode) + "|"
+          + IntegerToString((int)config.distance_mode) + "|"
+          + IntegerToString((int)config.order_type) + "|"
+          + IntegerToString((int)config.candle_order_mode) + "|"
+          + IntegerToString(config.candle_enable_multiple) + "|"
+          + IntegerToString((int)config.take_profit_mode) + "|"
+          + DoubleToString(config.initial_lots, 16) + "|"
+          + DoubleToString(config.initial_lots_multiplier, 16) + "|"
+          + IntegerToString(config.max_reversals) + "|"
+          + IntegerToString(config.grid_count) + "|"
+          + DoubleToString(config.grid_lot_multiplier, 16) + "|"
+          + IntegerToString(config.stop_loss_distance_points) + "|"
+          + IntegerToString(config.take_profit_distance_points) + "|"
+          + IntegerToString(config.candle_min_range_points) + "|"
+          + IntegerToString(config.candle_max_range_points) + "|"
+          + IntegerToString((long)config.magic_number) + "|"
+          + config.order_comment + "|" + config.start_time + "|" + config.end_time;
+  }
+
+double GuiConfigFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index),
+                     1000000007.0);
+   return hash;
+  }
+
+double GuiConfigFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index),
+                     1000000009.0);
+   return hash;
+  }
+
+bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
+  {
+   error = "";
+   const string prefix = StateReadPrefixForMagic(config.magic_number);
+   const bool has_state = HasStrategyStateDataAtPrefix(prefix);
+   if(!has_state && !HasManagedExposureForMagic(config.magic_number))
+      return true;
+   const string fingerprint_key = prefix + ".configfingerprint";
+   const string fingerprint2_key = prefix + ".configfingerprint2";
+   if(!GlobalVariableCheck(fingerprint_key)
+      || !GlobalVariableCheck(fingerprint2_key))
+     {
+      error = "Cannot safely recover magic/order id "
+              + IntegerToString((long)config.magic_number)
+              + "; persisted state or exposure has no GUI configuration fingerprint.";
+      return false;
+     }
+   if(MathAbs(GlobalVariableGet(fingerprint_key)
+              - GuiConfigFingerprint(config)) > 0.5
+      || MathAbs(GlobalVariableGet(fingerprint2_key)
+                 - GuiConfigFingerprint2(config)) > 0.5)
+     {
+      error = "Cannot safely recover magic/order id "
+              + IntegerToString((long)config.magic_number)
+              + "; input GUI configuration does not match the persisted active configuration.";
+      return false;
+     }
+   return true;
+  }
+
 void SaveState()
   {
    const string prefix = StatePrefix();
@@ -333,6 +446,11 @@ void SaveState()
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".transitionphase", (double)g_transition_phase);
    GlobalVariableSet(prefix + ".transitionid", (double)g_transition_id);
+   if(!GlobalVariableSet(prefix + ".configfingerprint",
+                         GuiConfigFingerprint(g_gui_applied_config))
+      || !GlobalVariableSet(prefix + ".configfingerprint2",
+                            GuiConfigFingerprint2(g_gui_applied_config)))
+      PrintFormat("Failed to persist MT5 GUI configuration fingerprint: %s", prefix);
   }
 
 void ClearState()
@@ -358,6 +476,8 @@ void ClearState()
    GlobalVariableDel(prefix + ".reset");
    GlobalVariableDel(prefix + ".transitionphase");
    GlobalVariableDel(prefix + ".transitionid");
+   GlobalVariableDel(prefix + ".configfingerprint");
+   GlobalVariableDel(prefix + ".configfingerprint2");
    g_had_position = false;
    g_last_position_type = POSITION_TYPE_BUY;
    g_last_take_profit = 0.0;
@@ -385,13 +505,12 @@ void ClearState()
       PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
   }
 
-void LoadState()
+bool LoadStateFromPrefix(const string prefix, const bool migrate_legacy)
   {
-   const string prefix = StateReadPrefix();
    if(GlobalVariableCheck(prefix + ".candleentrybar"))
       g_last_candle_entry_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".candleentrybar"));
    if(!GlobalVariableCheck(prefix + ".index") || !GlobalVariableCheck(prefix + ".meta"))
-      return;
+      return false;
 
    if(GlobalVariableCheck(prefix + ".reset"))
       g_reset_pending = GlobalVariableGet(prefix + ".reset") > 0.5;
@@ -450,8 +569,19 @@ void LoadState()
       g_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
    if(GlobalVariableCheck(prefix + ".gridpendingprice"))
       g_grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
-   if(prefix != StatePrefix())
+   if(migrate_legacy && prefix != StatePrefix())
       SaveState();
+   return true;
+  }
+
+void LoadState()
+  {
+   LoadStateFromPrefix(StateReadPrefix(), true);
+  }
+
+bool LoadStateForMagic(const ulong magic_number)
+  {
+   return LoadStateFromPrefix(StateReadPrefixForMagic(magic_number), false);
   }
 
 int PriceDigits()
@@ -618,15 +748,27 @@ bool HasPersistedStateForMagicPrefix(const string prefix, const ulong magic_numb
           || GlobalVariableCheck(state_prefix + ".index")
           || GlobalVariableCheck(state_prefix + ".meta")
           || GlobalVariableCheck(state_prefix + ".transitionphase")
-          || GlobalVariableCheck(state_prefix + ".multi.nextid");
+          || GlobalVariableCheck(state_prefix + ".multi.nextid")
+          || GlobalVariableCheck(state_prefix + ".configfingerprint")
+          || GlobalVariableCheck(state_prefix + ".configfingerprint2");
   }
 
 bool IsKnownScopeForMagic(const ulong magic_number)
   {
    return GlobalVariableCheck(ScopeRegistryKey(magic_number))
-          || GlobalVariableCheck(LegacyScopeRegistryKey(magic_number))
           || HasPersistedStateForMagicPrefix(StateScopePrefix(), magic_number)
-          || HasPersistedStateForMagicPrefix(LegacyStateScopePrefix(), magic_number);
+          || (HasManagedExposureForMagic(magic_number)
+              && (GlobalVariableCheck(LegacyScopeRegistryKey(magic_number))
+                  || HasPersistedStateForMagicPrefix(LegacyStateScopePrefix(),
+                                                     magic_number)));
+  }
+
+bool HasCandidatePersistedState(const ulong magic_number)
+  {
+   if(HasStateDataAtPrefix(StatePrefixForMagic(magic_number)))
+      return true;
+   return HasManagedExposureForMagic(magic_number)
+          && HasStateDataAtPrefix(LegacyStatePrefixForMagic(magic_number));
   }
 
 bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys,
@@ -666,7 +808,8 @@ bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys
       if(cleanup_registry)
         {
          int persisted_phase = TRANSITION_NONE;
-         if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase))
+         if(LoadPersistedTransitionPhaseForPrefix(StateScopePrefix(), known_magic,
+                                                  persisted_phase))
             continue;
         }
       if(cleanup_registry && !GlobalVariableDel(name))
@@ -759,7 +902,10 @@ bool ForgetManagedScopeIfFlat(const ulong magic_number, string &error)
       return true;
    const string key = ScopeRegistryKey(magic_number);
    int persisted_phase = TRANSITION_NONE;
-   if(LoadPersistedTransitionPhaseForMagic(magic_number, persisted_phase))
+   if(HasCurrentServerPersistedTransition(magic_number)
+      || (HasManagedExposureForMagic(magic_number)
+          && LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(),
+                                                   magic_number, persisted_phase)))
       return true;
    if(!GlobalVariableCheck(key))
       return true;
@@ -870,15 +1016,16 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
 
 bool ApplyGuiConfig(const GuiConfig &config, string &error)
   {
-   if(g_transition_phase == TRANSITION_PREPARED
+   const bool allow_initial_scope_recovery = !g_gui_config_initialized
+                                             && IsKnownScopeForMagic(config.magic_number);
+   if((g_transition_phase == TRANSITION_PREPARED
       || g_transition_phase == TRANSITION_COMPLETE)
+      && !allow_initial_scope_recovery)
      {
       error = "Cannot apply GUI config while a persisted transition is in flight.";
       g_gui_notice = error;
       return false;
      }
-   const bool allow_initial_scope_recovery = !g_gui_config_initialized
-                                             && IsKnownScopeForMagic(config.magic_number);
    if(g_gui_config_initialized
       && HasManagedExposureForMagic(g_gui_applied_config.magic_number))
      {
@@ -898,17 +1045,29 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       g_gui_notice = error;
       return false;
      }
+   if(!ValidatePersistedConfigForMagic(config, error))
+     {
+      g_gui_notice = error;
+      return false;
+     }
 
    GuiConfig previous_config = g_gui_applied_config;
    GuiConfig previous_draft = g_gui_draft_config;
    const int previous_start_minutes = g_start_operation_minutes;
    const int previous_end_minutes = g_end_operation_minutes;
    const bool previous_has_unapplied_changes = g_gui_has_unapplied_changes;
+   const bool previous_config_initialized = g_gui_config_initialized;
    const bool magic_changed = g_gui_config_initialized
                               && config.magic_number != previous_config.magic_number;
    if(magic_changed && HasBlockingCandidateTransition(config.magic_number))
      {
       error = "Cannot apply GUI config for a magic/order id with a persisted transition in flight.";
+      g_gui_notice = error;
+      return false;
+     }
+   if(magic_changed && HasCandidatePersistedState(config.magic_number))
+     {
+      error = "Cannot apply GUI config for a magic/order id with persisted state; clear that scope before switching.";
       g_gui_notice = error;
       return false;
      }
@@ -929,6 +1088,7 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       g_end_operation_minutes = previous_end_minutes;
       g_trade.SetExpertMagicNumber(previous_config.magic_number);
       g_gui_has_unapplied_changes = previous_has_unapplied_changes;
+      g_gui_config_initialized = previous_config_initialized;
       if(!AcquireExecutionOwnership())
          error = "New magic/order-id lock failed and the previous execution lock could not be restored.";
       else
@@ -963,6 +1123,7 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       g_end_operation_minutes = previous_end_minutes;
       g_trade.SetExpertMagicNumber(previous_config.magic_number);
       g_gui_has_unapplied_changes = previous_has_unapplied_changes;
+      g_gui_config_initialized = previous_config_initialized;
       string restore_error = "";
       if(magic_changed
          && !RememberManagedScope(previous_config.magic_number, restore_error))
@@ -973,6 +1134,38 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
               + scope_registry_error;
       g_gui_notice = error;
       return false;
+     }
+   if(magic_changed)
+     {
+      if(!ResetInMemoryStrategyState())
+        {
+         string cleanup_error = "";
+         if(!ForgetManagedScopeIfFlat(config.magic_number, cleanup_error))
+            scope_registry_error += " " + cleanup_error;
+         ReleaseExecutionOwnership();
+         g_gui_applied_config = previous_config;
+         g_gui_draft_config = previous_draft;
+         g_start_operation_minutes = previous_start_minutes;
+         g_end_operation_minutes = previous_end_minutes;
+         g_trade.SetExpertMagicNumber(previous_config.magic_number);
+         g_gui_has_unapplied_changes = previous_has_unapplied_changes;
+         g_gui_config_initialized = previous_config_initialized;
+         string restore_error = "";
+         if(!RememberManagedScope(previous_config.magic_number, restore_error))
+            scope_registry_error += " " + restore_error;
+         if(!AcquireExecutionOwnership())
+            scope_registry_error += " Previous execution lock could not be restored.";
+         error = "Cannot switch magic/order id because in-memory strategy state could not be reset: "
+                 + scope_registry_error;
+         g_gui_notice = error;
+         return false;
+        }
+      g_active_first_direction = config.first_direction;
+      g_active_cycle_mode = config.cycle_mode;
+      LoadState();
+      if(config.distance_mode == DISTANCE_CANDLE_RANGE
+         && config.candle_enable_multiple == 1)
+         MultiLoadGroups();
      }
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
@@ -2404,6 +2597,40 @@ MultiGroupState g_multi_groups[];
 datetime g_multi_last_trigger_bar = 0;
 int g_multi_next_id = 1;
 
+bool ResetInMemoryStrategyState()
+  {
+   if(ArrayResize(g_multi_groups, 0) < 0)
+      return false;
+   g_multi_last_trigger_bar = 0;
+   g_multi_next_id = 1;
+   g_had_position = false;
+   g_last_position_type = POSITION_TYPE_BUY;
+   g_last_take_profit = 0.0;
+   g_cycle_index = 0;
+   g_pending_index = -1;
+   g_reversal_count = 0;
+   g_pending_ticket = 0;
+   g_last_candle_entry_bar_time = 0;
+   g_transition_phase = TRANSITION_NONE;
+   g_transition_id = 0;
+   g_reset_pending = false;
+   g_active_first_direction = FIRST_BUY;
+   g_active_cycle_mode = CYCLE_MODE_1;
+   g_group_stop_points = 0;
+   g_group_take_profit_points = 0;
+   g_cumulative_loss_lots = 0.0;
+   g_previous_grid_lots = 0.0;
+   g_grid_lots = 0.0;
+   g_group_total_lots = 0.0;
+   g_group_anchor_price = 0.0;
+   g_group_last_entry = 0.0;
+   g_group_linear_extreme = 0.0;
+   g_grid_filled_levels = 0;
+   g_grid_pending_level = 0;
+   g_grid_pending_price = 0.0;
+   return true;
+  }
+
 string MultiGroupTag(const int group_id)
   {
    return ".G" + IntegerToString(group_id);
@@ -2491,6 +2718,8 @@ void MultiClearAll()
    g_multi_last_trigger_bar = 0;
    g_multi_next_id = 1;
    GlobalVariableDel(StatePrefix() + ".multi.nextid");
+   GlobalVariableDel(StatePrefix() + ".configfingerprint");
+   GlobalVariableDel(StatePrefix() + ".configfingerprint2");
    string migration_error = "";
    if(!DisableLegacyStateFallback(migration_error))
       PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
@@ -2587,6 +2816,12 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".gridpendinglevel", (double)group.grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", group.grid_pending_price);
    GlobalVariableSet(StatePrefix() + ".multi.nextid", (double)g_multi_next_id);
+   if(!GlobalVariableSet(StatePrefix() + ".configfingerprint",
+                         GuiConfigFingerprint(g_gui_applied_config))
+      || !GlobalVariableSet(StatePrefix() + ".configfingerprint2",
+                            GuiConfigFingerprint2(g_gui_applied_config)))
+      PrintFormat("Failed to persist MT5 GUI configuration fingerprint: %s",
+                  StatePrefix());
   }
 
 void MultiLoadGroups()
@@ -2596,6 +2831,7 @@ void MultiLoadGroups()
    if(state_prefix == current_prefix
       && !GlobalVariableCheck(current_prefix + ".multi.nextid")
       && !GlobalVariableCheck(current_prefix + ".legacy_disabled")
+      && HasManagedExposureForMagic(g_gui_applied_config.magic_number)
       && GlobalVariableCheck(LegacyStatePrefix() + ".multi.nextid"))
       state_prefix = LegacyStatePrefix();
    const string next_key = state_prefix + ".multi.nextid";
@@ -3253,6 +3489,12 @@ int OnInit()
       PrintFormat("Cannot initialize GUI configuration: %s", config_error);
       return INIT_FAILED;
      }
+   if(!ValidatePersistedConfigForMagic(input_config, config_error))
+     {
+      PrintFormat("Cannot initialize GUI configuration: %s", config_error);
+      return INIT_FAILED;
+     }
+   const bool persisted_state_loaded = LoadStateForMagic(input_config.magic_number);
    if(!ApplyGuiConfig(input_config, config_error))
      {
       PrintFormat("Invalid GUI configuration: %s", config_error);
@@ -3269,8 +3511,11 @@ int OnInit()
       return INIT_FAILED;
      }
 
-   g_active_first_direction = g_gui_applied_config.first_direction;
-   g_active_cycle_mode = g_gui_applied_config.cycle_mode;
+   if(!persisted_state_loaded)
+     {
+      g_active_first_direction = g_gui_applied_config.first_direction;
+      g_active_cycle_mode = g_gui_applied_config.cycle_mode;
+     }
    LoadState();
    if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
       && g_gui_applied_config.candle_enable_multiple == 1)
