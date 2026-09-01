@@ -4,7 +4,7 @@ import pytest
 
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
-    ExposureSnapshot, OrderType, ParallelStrategyModel, PendingRecord,
+    ExposureSnapshot, GuiStateModel, OrderType, ParallelStrategyModel, PendingRecord,
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
     normalize_pending_records, recover_prepared_transition, cycle_directions,
 )
@@ -1104,3 +1104,39 @@ def test_cycle_mode_parameter_describes_each_direction_sequence(source_name):
     assert "模式一：首单多=多空空多空空；首单空=空多多空多多" in source
     assert "模式二：首单多=多空多空多多；首单空=空多空多空空" in source
     assert "模式三：首单多=多空多多空多；首单空=空多空空多空" in source
+
+
+def test_gui_draft_does_not_change_applied_config_until_apply():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.edit("initial_lots", 0.05)
+
+    assert model.applied["initial_lots"] == 0.01
+    assert model.draft["initial_lots"] == 0.05
+    assert model.has_unapplied_changes is True
+
+    result = model.apply()
+
+    assert result.ok is True
+    assert model.applied["initial_lots"] == 0.05
+    assert model.has_unapplied_changes is False
+
+
+def test_gui_pause_only_blocks_new_initial_entry():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.pause_new_initial_entry()
+
+    assert model.paused_new_initial_entry is True
+    assert model.strategy_management_enabled is True
+    assert model.pending_orders_are_preserved is True
+
+
+def test_gui_close_all_requires_confirmation_and_reports_incomplete_cleanup():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    request = model.request_close_all()
+    result = model.confirm_close_all(close_ok=False, delete_ok=True)
+
+    assert request.requires_confirmation is True
+    assert result.status == "cleanup_incomplete"

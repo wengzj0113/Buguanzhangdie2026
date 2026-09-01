@@ -28,6 +28,50 @@ class TakeProfitMode(Enum):
     LINEAR = "linear"
 
 
+@dataclass(frozen=True)
+class GuiApplyResult:
+    ok: bool
+
+
+@dataclass(frozen=True)
+class GuiCloseResult:
+    status: str = ""
+    requires_confirmation: bool = False
+
+
+class GuiStateModel:
+    def __init__(self, applied):
+        self.applied = dict(applied)
+        self.draft = dict(applied)
+        self.paused_new_initial_entry = False
+        self.strategy_management_enabled = True
+        self.pending_orders_are_preserved = True
+        self._close_all_confirmation_requested = False
+
+    @property
+    def has_unapplied_changes(self):
+        return self.draft != self.applied
+
+    def edit(self, key, value):
+        self.draft[key] = value
+
+    def apply(self):
+        self.applied = dict(self.draft)
+        return GuiApplyResult(ok=True)
+
+    def pause_new_initial_entry(self):
+        self.paused_new_initial_entry = True
+
+    def request_close_all(self):
+        self._close_all_confirmation_requested = True
+        return GuiCloseResult(requires_confirmation=True)
+
+    def confirm_close_all(self, close_ok, delete_ok):
+        self._close_all_confirmation_requested = False
+        status = "closed" if close_ok and delete_ok else "cleanup_incomplete"
+        return GuiCloseResult(status=status)
+
+
 class ExecutionOwnershipRegistry:
     def __init__(self):
         self._owners = {}
