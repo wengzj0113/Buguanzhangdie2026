@@ -4,7 +4,7 @@ import pytest
 
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
-    ExposureSnapshot, OrderType, ParallelStrategyModel, PendingRecord,
+    ExposureSnapshot, GuiStateModel, OrderType, ParallelStrategyModel, PendingRecord,
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
     normalize_pending_records, recover_prepared_transition, cycle_directions,
 )
@@ -1093,8 +1093,12 @@ def test_candle_distance_mode_uses_user_selected_cycle_mode(source_name):
 
     assert "g_active_cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
     assert "state.cycle_mode = ordertype == ORDERTYPE_FORWARD" not in source
-    assert "g_active_cycle_mode = InpCycleMode" in source
-    assert "state.cycle_mode = InpCycleMode" in source
+    if source_name.endswith("_MT5.mq5"):
+        assert "g_active_cycle_mode = g_gui_applied_config.cycle_mode" in source
+        assert "state.cycle_mode = g_gui_applied_config.cycle_mode" in source
+    else:
+        assert "g_active_cycle_mode = InpCycleMode" in source
+        assert "state.cycle_mode = InpCycleMode" in source
 
 
 @pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
@@ -1104,3 +1108,118 @@ def test_cycle_mode_parameter_describes_each_direction_sequence(source_name):
     assert "模式一：首单多=多空空多空空；首单空=空多多空多多" in source
     assert "模式二：首单多=多空多空多多；首单空=空多空多空空" in source
     assert "模式三：首单多=多空多多空多；首单空=空多空空多空" in source
+
+
+def test_gui_draft_does_not_change_applied_config_until_apply():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.edit("initial_lots", 0.05)
+
+    assert model.applied["initial_lots"] == 0.01
+    assert model.draft["initial_lots"] == 0.05
+    assert model.has_unapplied_changes is True
+
+    result = model.apply()
+
+    assert result.ok is True
+    assert model.applied["initial_lots"] == 0.05
+    assert model.has_unapplied_changes is False
+
+    model.edit("initial_lots", 0.10)
+
+    assert model.applied["initial_lots"] == 0.05
+    assert model.draft["initial_lots"] == 0.10
+    assert model.has_unapplied_changes is True
+
+
+def test_gui_pause_and_resume_only_controls_new_initial_entry():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+    applied_before = dict(model.applied)
+    draft_before = dict(model.draft)
+    unapplied_before = model.has_unapplied_changes
+
+    model.pause_new_initial_entry()
+
+    assert model.paused_new_initial_entry is True
+    assert model.strategy_management_enabled is True
+    assert model.pending_orders_are_preserved is True
+    assert model.applied == applied_before
+    assert model.draft == draft_before
+    assert model.has_unapplied_changes is unapplied_before
+
+    model.resume_new_initial_entry()
+
+    assert model.paused_new_initial_entry is False
+    assert model.should_force_market_order is False
+
+
+def test_gui_close_all_requires_confirmation_and_reports_incomplete_cleanup():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    request = model.request_close_all()
+    result = model.confirm_close_all(close_ok=False, delete_ok=True)
+
+    assert request.requires_confirmation is True
+    assert result.status == "cleanup_incomplete"
+
+
+def test_gui_close_all_reports_incomplete_cleanup_when_delete_fails():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.request_close_all()
+
+    assert model.confirm_close_all(close_ok=True, delete_ok=False).status == "cleanup_incomplete"
+
+
+def test_gui_close_all_reports_closed_when_both_cleanup_operations_succeed():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+
+    model.request_close_all()
+
+    assert model.confirm_close_all(close_ok=True, delete_ok=True).status == "closed"
+
+
+def test_gui_close_all_cannot_confirm_without_a_pending_request():
+    model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+    state_before = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
+
+    result = model.confirm_close_all(close_ok=True, delete_ok=True)
+
+    assert result.status == "confirmation_required"
+    assert model.applied == state_before["applied"]
+    assert model.draft == state_before["draft"]
+    assert model.has_unapplied_changes is state_before["has_unapplied_changes"]
+    assert model.close_all_requested is state_before["close_all_requested"]
+    assert model.cleanup_state == state_before["cleanup_state"]
+
+    state_before_request = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
+    model.request_close_all()
+    state_before_cancel = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
+    assert state_before_cancel["close_all_requested"] is True
+
+    cancel_result = model.cancel_close_all()
+
+    assert cancel_result.status == "cancelled"
+    assert model.applied == state_before_cancel["applied"]
+    assert model.draft == state_before_cancel["draft"]
+    assert model.has_unapplied_changes is state_before_cancel["has_unapplied_changes"]
+    assert model.cleanup_state == state_before_cancel["cleanup_state"]
+    assert model.close_all_requested is state_before_request["close_all_requested"]
