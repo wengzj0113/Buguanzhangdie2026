@@ -431,6 +431,14 @@ int ParseTimeMinutes(const string value)
    const int separator = StringFind(value, ":");
    if(separator <= 0 || separator >= StringLen(value) - 1)
       return -1;
+   for(int index = 0; index < StringLen(value); index++)
+     {
+      if(index == separator)
+         continue;
+      const int character = StringGetCharacter(value, index);
+      if(character < 48 || character > 57)
+         return -1;
+     }
    const int hour = (int)StringToInteger(StringSubstr(value, 0, separator));
    const int minute = (int)StringToInteger(StringSubstr(value, separator + 1));
    if(hour < 0 || hour > 23 || minute < 0 || minute > 59)
@@ -580,11 +588,37 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       return false;
      }
 
+   GuiConfig previous_config = g_gui_applied_config;
+   GuiConfig previous_draft = g_gui_draft_config;
+   const int previous_start_minutes = g_start_operation_minutes;
+   const int previous_end_minutes = g_end_operation_minutes;
+   const bool previous_has_unapplied_changes = g_gui_has_unapplied_changes;
+   const bool magic_changed = g_gui_config_initialized
+                              && config.magic_number != previous_config.magic_number;
+   if(magic_changed)
+      ReleaseExecutionOwnership();
+
    g_gui_applied_config = config;
    g_gui_draft_config = config;
    g_start_operation_minutes = ParseTimeMinutes(config.start_time);
    g_end_operation_minutes = ParseTimeMinutes(config.end_time);
    g_trade.SetExpertMagicNumber(config.magic_number);
+   if(magic_changed && !AcquireExecutionOwnership())
+     {
+      ReleaseExecutionOwnership();
+      g_gui_applied_config = previous_config;
+      g_gui_draft_config = previous_draft;
+      g_start_operation_minutes = previous_start_minutes;
+      g_end_operation_minutes = previous_end_minutes;
+      g_trade.SetExpertMagicNumber(previous_config.magic_number);
+      g_gui_has_unapplied_changes = previous_has_unapplied_changes;
+      if(!AcquireExecutionOwnership())
+         error = "New magic/order-id lock failed and the previous execution lock could not be restored.";
+      else
+         error = "Cannot acquire execution lock for the new magic/order id; previous config restored.";
+      g_gui_notice = error;
+      return false;
+     }
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
    g_gui_config_initialized = true;
