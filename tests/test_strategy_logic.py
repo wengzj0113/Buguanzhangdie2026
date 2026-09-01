@@ -187,6 +187,31 @@ def test_mt5_gui_chart_fallback_does_not_swallow_object_click_dispatch():
     assert "GuiRender();\n      return;" not in body
 
 
+def test_mt5_gui_edit_focus_does_not_turn_edit_boxes_into_draggable_objects():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_click = re.search(
+        r"bool GuiHandleChartClick\(.*?\n\s*\}\n\nbool GuiApplyDraft",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_click
+    body = chart_click.group(0)
+    assert "OBJPROP_SELECTED, true" not in body
+    assert "OBJPROP_READONLY, false" in body
+
+
+def test_mt5_gui_releases_button_state_after_object_click_dispatch():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiReleaseButtonState(sparam)" in body
+
+
 def test_mt5_gui_mode_toggle_has_visible_mode_hint():
     source = MT5_SOURCE.read_text(encoding="utf-8")
     assert '"mode.hint"' in source

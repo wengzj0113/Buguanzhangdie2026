@@ -256,6 +256,7 @@ void GuiRenderIfNeeded();
 void GuiMarkDirty();
 bool GuiHandleDropdownClick(const string object_name);
 bool GuiHandleChartClick(const int x, const int y);
+void GuiReleaseButtonState(const string object_name);
 bool GuiSyncEditValue(const string key);
 bool GuiPrepareChartForWindow();
 void GuiRestoreChartAfterWindow();
@@ -4677,6 +4678,14 @@ bool GuiLeaveEditSession()
    return true;
   }
 
+void GuiReleaseButtonState(const string object_name)
+  {
+   if(ObjectFind(0, object_name) < 0)
+      return;
+   if((ENUM_OBJECT)ObjectGetInteger(0, object_name, OBJPROP_TYPE) == OBJ_BUTTON)
+      ObjectSetInteger(0, object_name, OBJPROP_STATE, false);
+  }
+
 bool GuiHandleEditEnd(const string object_name)
   {
    const string field_prefix = g_gui_object_prefix + "field.";
@@ -4815,7 +4824,8 @@ bool GuiHandleChartClick(const int x, const int y)
         {
          g_gui_edit_key = keys[index];
          ObjectSetInteger(0, edit_name, OBJPROP_SELECTABLE, true);
-         ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, true);
+         ObjectSetInteger(0, edit_name, OBJPROP_READONLY, false);
+         ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, false);
         }
       return false;
      }
@@ -4963,6 +4973,9 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
       if(!GuiLeaveEditSession())
          return;
      }
+
+   if(id == CHARTEVENT_OBJECT_CLICK)
+      GuiReleaseButtonState(sparam);
 
    if(id == CHARTEVENT_OBJECT_ENDEDIT)
      {
