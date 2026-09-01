@@ -673,6 +673,7 @@ bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
   }
 
 bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
+                                      const bool require_current_exposure,
                                       const ulong requested_magic, string &error)
   {
    int persisted_phase = TRANSITION_NONE;
@@ -686,7 +687,8 @@ bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
             StringSubstr(name, StringLen(registry_prefix)), known_magic)
          || known_magic == requested_magic)
          continue;
-      if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase))
+      if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase)
+         && (!require_current_exposure || HasManagedExposureForMagic(known_magic)))
         {
          error = "Cannot initialize magic/order id "
                  + IntegerToString((long)requested_magic)
@@ -700,8 +702,9 @@ bool CheckKnownScopeTransitionsPrefix(const string registry_prefix,
 
 bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
   {
-   return CheckKnownScopeTransitionsPrefix(ScopeRegistryPrefix(), requested_magic, error)
-          && CheckKnownScopeTransitionsPrefix(LegacyScopeRegistryPrefix(),
+   return CheckKnownScopeTransitionsPrefix(ScopeRegistryPrefix(), false,
+                                            requested_magic, error)
+          && CheckKnownScopeTransitionsPrefix(LegacyScopeRegistryPrefix(), true,
                                               requested_magic, error);
   }
 
