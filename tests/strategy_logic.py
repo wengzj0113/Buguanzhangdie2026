@@ -47,6 +47,7 @@ class GuiStateModel:
         self.strategy_management_enabled = True
         self.pending_orders_are_preserved = True
         self._close_all_confirmation_requested = False
+        self.cleanup_state = "idle"
 
     @property
     def has_unapplied_changes(self):
@@ -66,11 +67,20 @@ class GuiStateModel:
         self._close_all_confirmation_requested = True
         return GuiCloseResult(requires_confirmation=True)
 
+    @property
+    def close_all_requested(self):
+        return self._close_all_confirmation_requested
+
+    def cancel_close_all(self):
+        self._close_all_confirmation_requested = False
+        return GuiCloseResult(status="cancelled")
+
     def confirm_close_all(self, close_ok, delete_ok):
         if not self._close_all_confirmation_requested:
             return GuiCloseResult(status="confirmation_required")
         self._close_all_confirmation_requested = False
         status = "closed" if close_ok and delete_ok else "cleanup_incomplete"
+        self.cleanup_state = status
         return GuiCloseResult(status=status)
 
 

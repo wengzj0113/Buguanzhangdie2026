@@ -1172,7 +1172,45 @@ def test_gui_close_all_reports_closed_when_both_cleanup_operations_succeed():
 
 def test_gui_close_all_cannot_confirm_without_a_pending_request():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
+    state_before = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
 
     result = model.confirm_close_all(close_ok=True, delete_ok=True)
 
     assert result.status == "confirmation_required"
+    assert model.applied == state_before["applied"]
+    assert model.draft == state_before["draft"]
+    assert model.has_unapplied_changes is state_before["has_unapplied_changes"]
+    assert model.close_all_requested is state_before["close_all_requested"]
+    assert model.cleanup_state == state_before["cleanup_state"]
+
+    state_before_request = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
+    model.request_close_all()
+    state_before_cancel = {
+        "applied": dict(model.applied),
+        "draft": dict(model.draft),
+        "has_unapplied_changes": model.has_unapplied_changes,
+        "close_all_requested": model.close_all_requested,
+        "cleanup_state": model.cleanup_state,
+    }
+    assert state_before_cancel["close_all_requested"] is True
+
+    cancel_result = model.cancel_close_all()
+
+    assert cancel_result.status == "cancelled"
+    assert model.applied == state_before_cancel["applied"]
+    assert model.draft == state_before_cancel["draft"]
+    assert model.has_unapplied_changes is state_before_cancel["has_unapplied_changes"]
+    assert model.cleanup_state == state_before_cancel["cleanup_state"]
+    assert model.close_all_requested is state_before_request["close_all_requested"]
