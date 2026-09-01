@@ -3637,14 +3637,52 @@ void GuiRenderNotice(const int x, const int y, bool &ok)
       ok = false;
   }
 
+struct GuiSnapshot
+  {
+   int position_count;
+   int pending_order_count;
+   double floating_profit;
+  };
+
+void GuiCollectSnapshot(GuiSnapshot &snapshot)
+  {
+   snapshot.position_count = 0;
+   snapshot.pending_order_count = 0;
+   snapshot.floating_profit = 0.0;
+   for(int index = 0; index < PositionsTotal(); index++)
+     {
+      const ulong ticket = PositionGetTicket(index);
+      if(ticket == 0 || PositionGetString(POSITION_SYMBOL) != _Symbol
+         || (ulong)PositionGetInteger(POSITION_MAGIC)
+            != g_gui_applied_config.magic_number)
+         continue;
+      snapshot.position_count++;
+      snapshot.floating_profit += PositionGetDouble(POSITION_PROFIT);
+     }
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong ticket = OrderGetTicket(index);
+      if(ticket == 0 || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC)
+            != g_gui_applied_config.magic_number)
+         continue;
+      snapshot.pending_order_count++;
+     }
+  }
+
 string GuiBuildSnapshot()
   {
+   GuiSnapshot snapshot;
+   GuiCollectSnapshot(snapshot);
    return IntegerToString((int)g_gui_page) + "|"
           + IntegerToString((int)g_gui_run_state) + "|"
           + (g_gui_full_window ? "1" : "0") + "|"
           + (g_gui_has_unapplied_changes ? "1" : "0") + "|"
           + (g_gui_close_confirm_open ? "1" : "0") + "|"
           + (HasManagedExposureForMagic(g_gui_applied_config.magic_number) ? "1" : "0") + "|"
+          + IntegerToString(snapshot.position_count) + "|"
+          + IntegerToString(snapshot.pending_order_count) + "|"
+          + DoubleToString(snapshot.floating_profit, 2) + "|"
           + (g_had_position ? "1" : "0") + "|"
           + IntegerToString(g_cycle_index) + "|"
           + IntegerToString(g_reversal_count) + "|"
@@ -3732,8 +3770,8 @@ bool GuiRenderContent()
 
    if(g_gui_page == GUI_PAGE_OVERVIEW)
      {
-      const string exposure = HasManagedExposureForMagic(g_gui_applied_config.magic_number)
-                              ? "有持仓/挂单" : "暂无持仓/挂单";
+      GuiSnapshot snapshot;
+      GuiCollectSnapshot(snapshot);
       if(!GuiRenderReadOnlyField("overview.state", "运行状态",
                                  GuiRunStateText(), x + 16, y + 58, ok))
          ok = false;
@@ -3742,24 +3780,30 @@ bool GuiRenderContent()
                                                        ? FIRST_SELL : FIRST_BUY),
                                  x + 16, y + 88, ok))
          ok = false;
-      if(!GuiRenderReadOnlyField("overview.exposure", "持仓/挂单",
-                                 exposure, x + 16, y + 118, ok))
+      if(!GuiRenderReadOnlyField("overview.positions", "持仓",
+                                 IntegerToString(snapshot.position_count),
+                                 x + 16, y + 118, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.orders", "挂单",
+                                 IntegerToString(snapshot.pending_order_count),
+                                 x + 16, y + 148, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.profit", "浮盈",
+                                 DoubleToString(snapshot.floating_profit, 2),
+                                 x + 16, y + 178, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.cycle", "订单组/循环",
-                                 IntegerToString(g_cycle_index), x + 16, y + 148, ok))
+                                 IntegerToString(g_cycle_index), x + 16, y + 208, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.reversal", "反手次数",
                                  IntegerToString(g_reversal_count) + "/"
                                  + IntegerToString(g_gui_applied_config.max_reversals),
-                                 x + 16, y + 178, ok))
+                                 x + 16, y + 238, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("overview.direction.active", "当前方向",
                                  g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
                                                    ? "BUY" : "SELL") : "无持仓",
-                                 x + 16, y + 208, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("overview.profit", "浮动盈亏", "--",
-                                 x + 16, y + 238, ok))
+                                 x + 16, y + 268, ok))
          ok = false;
       GuiRenderNotice(x + 16, y + 292, ok);
      }
@@ -3773,7 +3817,8 @@ bool GuiRenderContent()
       if(!GuiRenderEnumField("cycle_mode", "循环模式",
                              GuiCycleModeText(g_gui_draft_config.cycle_mode), x + 16, row, ok))
          ok = false;
-      if(g_gui_display_mode == GUI_MODE_EXPERT)
+      if(g_gui_display_mode == GUI_MODE_EXPERT
+         && g_gui_draft_config.distance_mode == DISTANCE_CANDLE_RANGE)
         {
          row += 30;
          if(!GuiRenderEnumField("order_type", "开单方式",
