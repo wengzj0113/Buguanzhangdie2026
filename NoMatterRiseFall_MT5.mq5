@@ -3710,8 +3710,8 @@ bool GuiProcessPendingReset()
    if(g_reset_pending)
      {
       const bool complete = ProcessReset();
-      g_gui_run_state = complete ? GUI_RUN_RUNNING : GUI_RUN_CLEANING;
-      g_gui_notice = complete ? "清理完成" : "清理中";
+      g_gui_run_state = complete ? GUI_RUN_RUNNING : GUI_RUN_ERROR;
+      g_gui_notice = complete ? "清理完成" : "清理失败：服务器操作未完成，将继续重试";
       GuiMarkDirty();
       return true;
      }
