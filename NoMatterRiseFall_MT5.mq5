@@ -3487,6 +3487,25 @@ bool GuiCreateButton(const string name, const string text, const int x, const in
    return true;
   }
 
+bool GuiCreateEdit(const string name, const string text, const int x, const int y,
+                   const int width, const int height)
+  {
+   if(!ObjectCreate(0, name, OBJ_EDIT, 0, 0, 0))
+      return false;
+   GuiSetObjectBase(name, x, y, width, height);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 9);
+   ObjectSetInteger(0, name, OBJPROP_ALIGN, ALIGN_LEFT);
+   ObjectSetInteger(0, name, OBJPROP_READONLY, false);
+   ObjectSetInteger(0, name, OBJPROP_BGCOLOR, C'15,23,42');
+   ObjectSetInteger(0, name, OBJPROP_COLOR, C'226,232,240');
+   ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, C'100,116,139');
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 20);
+   return true;
+  }
+
 bool GuiTrackCreateResult(const bool created, const string object_name)
   {
    if(created)
@@ -3520,6 +3539,102 @@ string GuiRunStateText()
       case GUI_RUN_ERROR:          return "错误";
       default:                     return "运行中";
      }
+  }
+
+string GuiFirstDirectionText(const FirstDirection value)
+  {
+   return value == FIRST_SELL ? "SELL" : "BUY";
+  }
+
+string GuiCycleModeText(const CycleMode value)
+  {
+   if(value == CYCLE_MODE_2)
+      return "模式2";
+   if(value == CYCLE_MODE_3)
+      return "模式3";
+   return "模式1";
+  }
+
+string GuiDistanceModeText(const DistanceMode value)
+  {
+   return value == DISTANCE_CANDLE_RANGE ? "K线高度" : "固定距离";
+  }
+
+string GuiOrderTypeText(const OrderTypeMode value)
+  {
+   return value == ORDERTYPE_REVERSE ? "逆向" : "正向";
+  }
+
+string GuiCandleOrderModeText(const CandleOrderMode value)
+  {
+   return value == KORDER_REPEAT_PER_BAR ? "每根重复" : "每根一次";
+  }
+
+string GuiMultipleText(const int value)
+  {
+   return value == 1 ? "多组" : "单组";
+  }
+
+string GuiTakeProfitModeText(const TakeProfitMode value)
+  {
+   return value == TAKE_PROFIT_LINEAR ? "线性移动" : "网格移动";
+  }
+
+bool GuiRenderLabelValue(const string key, const string label, const string value,
+                         const int x, const int y, const bool editable,
+                         const bool button_value, bool &ok)
+  {
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
+                                          label, x, y + 3, 116, 20,
+                                          C'191,219,254', 9),
+                            "field.label." + key))
+      ok = false;
+   const int value_x = x + 122;
+   bool created = false;
+   if(editable)
+      created = GuiCreateEdit(g_gui_object_prefix + "field." + key,
+                              value, value_x, y, 130, 24);
+   else if(button_value)
+      created = GuiCreateButton(g_gui_object_prefix + "field." + key,
+                                value, value_x, y, 130, 24,
+                                C'15,23,42', C'226,232,240');
+   else
+      created = GuiCreateText(g_gui_object_prefix + "field." + key, value,
+                              value_x + 4, y + 3, 126, 20,
+                              C'148,163,184', 9);
+   if(!GuiTrackCreateResult(created, "field." + key))
+      ok = false;
+   return created;
+  }
+
+bool GuiRenderEditField(const string key, const string label, const string value,
+                        const int x, const int y, bool &ok)
+  {
+   return GuiRenderLabelValue(key, label, value, x, y, true, false, ok);
+  }
+
+bool GuiRenderEnumField(const string key, const string label, const string value,
+                        const int x, const int y, bool &ok)
+  {
+   return GuiRenderLabelValue(key, label, value, x, y, false, true, ok);
+  }
+
+bool GuiRenderReadOnlyField(const string key, const string label, const string value,
+                            const int x, const int y, bool &ok)
+  {
+   return GuiRenderLabelValue(key, label, value, x, y, false, false, ok);
+  }
+
+void GuiRenderNotice(const int x, const int y, bool &ok)
+  {
+   if(StringLen(g_gui_notice) == 0)
+      return;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "notice", g_gui_notice,
+                                          x, y, 252, 30,
+                                          g_gui_run_state == GUI_RUN_ERROR
+                                          ? C'248,113,113' : C'134,239,172', 8),
+                            "notice"))
+      ok = false;
   }
 
 string GuiBuildSnapshot()
@@ -3609,56 +3724,188 @@ bool GuiRenderContent()
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.page", GuiPageText(g_gui_page),
                                           x + 16, y + 14, 120, 22, clrWhite, 11), "content.page"))
       ok = false;
-   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.mode",
-                                          g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
-                                          x + 164, y + 16, 92, 18, C'147,197,253', 9), "content.mode"))
+   if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "mode.toggle",
+                                            g_gui_display_mode == GUI_MODE_EXPERT ? "专家模式" : "简易模式",
+                                            x + 164, y + 12, 92, 24,
+                                            C'15,23,42', C'191,219,254'), "mode.toggle"))
       ok = false;
 
    if(g_gui_page == GUI_PAGE_OVERVIEW)
      {
       const string exposure = HasManagedExposureForMagic(g_gui_applied_config.magic_number)
                               ? "有持仓/挂单" : "暂无持仓/挂单";
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.summary", "运行总览",
-                                             x + 16, y + 58, 220, 22, C'226,232,240', 10),
-                               "content.summary"))
+      if(!GuiRenderReadOnlyField("overview.state", "运行状态",
+                                 GuiRunStateText(), x + 16, y + 58, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.direction",
-                                             "首单方向  " + (g_gui_applied_config.first_direction == FIRST_BUY
-                                                           ? "BUY" : "SELL"),
-                                             x + 16, y + 94, 220, 20, C'191,219,254', 9),
-                               "content.direction"))
+      if(!GuiRenderReadOnlyField("overview.direction", "首单方向",
+                                 GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
+                                                       ? FIRST_SELL : FIRST_BUY),
+                                 x + 16, y + 88, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.exposure", "状态  " + exposure,
-                                             x + 16, y + 122, 220, 20, C'191,219,254', 9),
-                               "content.exposure"))
+      if(!GuiRenderReadOnlyField("overview.exposure", "持仓/挂单",
+                                 exposure, x + 16, y + 118, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.cycle",
-                                             "循环序号  " + IntegerToString(g_cycle_index),
-                                             x + 16, y + 150, 220, 20, C'191,219,254', 9),
-                               "content.cycle"))
+      if(!GuiRenderReadOnlyField("overview.cycle", "订单组/循环",
+                                 IntegerToString(g_cycle_index), x + 16, y + 148, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.reversal",
-                                             "反手次数  " + IntegerToString(g_reversal_count),
-                                             x + 16, y + 178, 220, 20, C'191,219,254', 9),
-                               "content.reversal"))
+      if(!GuiRenderReadOnlyField("overview.reversal", "反手次数",
+                                 IntegerToString(g_reversal_count) + "/"
+                                 + IntegerToString(g_gui_applied_config.max_reversals),
+                                 x + 16, y + 178, ok))
          ok = false;
+      if(!GuiRenderReadOnlyField("overview.direction.active", "当前方向",
+                                 g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
+                                                   ? "BUY" : "SELL") : "无持仓",
+                                 x + 16, y + 208, ok))
+         ok = false;
+      if(!GuiRenderReadOnlyField("overview.profit", "浮动盈亏", "--",
+                                 x + 16, y + 238, ok))
+         ok = false;
+      GuiRenderNotice(x + 16, y + 292, ok);
+     }
+   else if(g_gui_page == GUI_PAGE_OPENING)
+     {
+      int row = y + 54;
+      if(!GuiRenderEnumField("first_direction", "首单方向",
+                             GuiFirstDirectionText(g_gui_draft_config.first_direction), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(!GuiRenderEnumField("cycle_mode", "循环模式",
+                             GuiCycleModeText(g_gui_draft_config.cycle_mode), x + 16, row, ok))
+         ok = false;
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         row += 30;
+         if(!GuiRenderEnumField("order_type", "开单方式",
+                                GuiOrderTypeText(g_gui_draft_config.order_type), x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEnumField("candle_order_mode", "K线开单",
+                                GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEnumField("candle_enable_multiple", "多组开关",
+                                GuiMultipleText(g_gui_draft_config.candle_enable_multiple), x + 16, row, ok))
+            ok = false;
+        }
+      row += 30;
+      if(!GuiRenderEditField("initial_lots", "首单手数",
+                             DoubleToString(g_gui_draft_config.initial_lots, 8), x + 16, row, ok))
+         ok = false;
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         row += 30;
+         if(!GuiRenderEditField("initial_lots_multiplier", "首单倍数",
+                                DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
+                                x + 16, row, ok))
+            ok = false;
+        }
+      GuiRenderNotice(x + 16, y + 292, ok);
+     }
+   else if(g_gui_page == GUI_PAGE_DISTANCE)
+     {
+      int row = y + 54;
+      if(!GuiRenderEnumField("distance_mode", "距离模式",
+                             GuiDistanceModeText(g_gui_draft_config.distance_mode), x + 16, row, ok))
+         ok = false;
+      row += 30;
+      if(g_gui_draft_config.distance_mode == DISTANCE_FIXED)
+        {
+         if(!GuiRenderEditField("stop_loss_distance_points", "固定止损(点)",
+                                IntegerToString(g_gui_draft_config.stop_loss_distance_points),
+                                x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEditField("take_profit_distance_points", "固定止盈(点)",
+                                IntegerToString(g_gui_draft_config.take_profit_distance_points),
+                                x + 16, row, ok))
+            ok = false;
+        }
+      else
+        {
+         if(!GuiRenderEditField("candle_min_range_points", "K线最小(点)",
+                                IntegerToString(g_gui_draft_config.candle_min_range_points),
+                                x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEditField("candle_max_range_points", "K线最大(点)",
+                                IntegerToString(g_gui_draft_config.candle_max_range_points),
+                                x + 16, row, ok))
+            ok = false;
+        }
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         row += 30;
+         if(!GuiRenderEnumField("take_profit_mode", "止盈移动",
+                                GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), x + 16, row, ok))
+            ok = false;
+        }
+      GuiRenderNotice(x + 16, y + 292, ok);
+     }
+   else if(g_gui_page == GUI_PAGE_GRID)
+     {
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         int row = y + 54;
+         if(!GuiRenderEditField("grid_count", "网格数量",
+                                IntegerToString(g_gui_draft_config.grid_count), x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEditField("grid_lot_multiplier", "网格倍数",
+                                DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
+                                x + 16, row, ok))
+            ok = false;
+         row += 38;
+         if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
+                                   IntegerToString(g_grid_filled_levels), x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
+                                   g_grid_pending_price > 0.0
+                                   ? DoubleToString(g_grid_pending_price, _Digits) : "--",
+                                   x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
+                                   DoubleToString(g_group_total_lots, 2), x + 16, row, ok))
+            ok = false;
+        }
+      else
+         if(!GuiRenderReadOnlyField("grid.hidden", "网格参数", "专家模式可编辑",
+                                   x + 16, y + 64, ok))
+            ok = false;
+      GuiRenderNotice(x + 16, y + 292, ok);
      }
    else
      {
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.placeholder",
-                                             "参数面板将在下一阶段接入\n当前仅显示固定布局和运行状态。",
-                                             x + 16, y + 64, 235, 48, C'191,219,254', 9),
-                               "content.placeholder"))
+      int row = y + 54;
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         if(!GuiRenderEditField("max_reversals", "最大反手",
+                                IntegerToString(g_gui_draft_config.max_reversals), x + 16, row, ok))
+            ok = false;
+         row += 30;
+        }
+      if(!GuiRenderEditField("start_time", "开始时间",
+                             g_gui_draft_config.start_time, x + 16, row, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.scope",
-                                             "当前订单识别编号  " + IntegerToString((long)g_gui_applied_config.magic_number),
-                                             x + 16, y + 138, 240, 20, C'148,163,184', 9),
-                               "content.scope"))
+      row += 30;
+      if(!GuiRenderEditField("end_time", "结束时间",
+                             g_gui_draft_config.end_time, x + 16, row, ok))
          ok = false;
-      if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "content.notice", g_gui_notice,
-                                             x + 16, y + 176, 235, 70, C'248,113,113', 9),
-                               "content.notice"))
-         ok = false;
+      if(g_gui_display_mode == GUI_MODE_EXPERT)
+        {
+         row += 30;
+         if(!GuiRenderEditField("magic_number", "订单编号",
+                                IntegerToString((long)g_gui_draft_config.magic_number),
+                                x + 16, row, ok))
+            ok = false;
+         row += 30;
+         if(!GuiRenderEditField("order_comment", "订单注释",
+                                g_gui_draft_config.order_comment, x + 16, row, ok))
+            ok = false;
+        }
+      GuiRenderNotice(x + 16, y + 292, ok);
      }
    return ok;
   }
@@ -3752,6 +3999,104 @@ void GuiRenderIfNeeded()
       GuiRender();
   }
 
+void GuiMarkDraftChanged()
+  {
+   g_gui_has_unapplied_changes = true;
+   g_gui_notice = "有未应用修改";
+   GuiMarkDirty();
+  }
+
+bool GuiHandleEditEnd(const string object_name)
+  {
+   const string field_prefix = g_gui_object_prefix + "field.";
+   if(StringFind(object_name, field_prefix) != 0)
+      return false;
+   const string key = StringSubstr(object_name, StringLen(field_prefix));
+   const string value = ObjectGetString(0, object_name, OBJPROP_TEXT);
+   if(key == "initial_lots")
+      g_gui_draft_config.initial_lots = StringToDouble(value);
+   else if(key == "initial_lots_multiplier")
+      g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+   else if(key == "grid_count")
+      g_gui_draft_config.grid_count = (int)StringToInteger(value);
+   else if(key == "grid_lot_multiplier")
+      g_gui_draft_config.grid_lot_multiplier = StringToDouble(value);
+   else if(key == "stop_loss_distance_points")
+      g_gui_draft_config.stop_loss_distance_points = (int)StringToInteger(value);
+   else if(key == "take_profit_distance_points")
+      g_gui_draft_config.take_profit_distance_points = (int)StringToInteger(value);
+   else if(key == "candle_min_range_points")
+      g_gui_draft_config.candle_min_range_points = (int)StringToInteger(value);
+   else if(key == "candle_max_range_points")
+      g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+   else if(key == "max_reversals")
+      g_gui_draft_config.max_reversals = (int)StringToInteger(value);
+   else if(key == "magic_number")
+     {
+      const long parsed_magic = StringToInteger(value);
+      g_gui_draft_config.magic_number = parsed_magic > 0 ? (ulong)parsed_magic : 0;
+     }
+   else if(key == "start_time")
+      g_gui_draft_config.start_time = value;
+   else if(key == "end_time")
+      g_gui_draft_config.end_time = value;
+   else if(key == "order_comment")
+      g_gui_draft_config.order_comment = value;
+   else
+      return false;
+   GuiMarkDraftChanged();
+   return true;
+  }
+
+bool GuiHandleEnumClick(const string object_name)
+  {
+   if(object_name == g_gui_object_prefix + "field.first_direction")
+      g_gui_draft_config.first_direction = g_gui_draft_config.first_direction == FIRST_BUY
+                                            ? FIRST_SELL : FIRST_BUY;
+   else if(object_name == g_gui_object_prefix + "field.cycle_mode")
+      g_gui_draft_config.cycle_mode = (CycleMode)(((int)g_gui_draft_config.cycle_mode + 1) % 3);
+   else if(object_name == g_gui_object_prefix + "field.distance_mode")
+      g_gui_draft_config.distance_mode = g_gui_draft_config.distance_mode == DISTANCE_FIXED
+                                          ? DISTANCE_CANDLE_RANGE : DISTANCE_FIXED;
+   else if(object_name == g_gui_object_prefix + "field.order_type")
+      g_gui_draft_config.order_type = g_gui_draft_config.order_type == ORDERTYPE_FORWARD
+                                      ? ORDERTYPE_REVERSE : ORDERTYPE_FORWARD;
+   else if(object_name == g_gui_object_prefix + "field.candle_order_mode")
+      g_gui_draft_config.candle_order_mode = g_gui_draft_config.candle_order_mode == KORDER_ONCE_PER_BAR
+                                             ? KORDER_REPEAT_PER_BAR : KORDER_ONCE_PER_BAR;
+   else if(object_name == g_gui_object_prefix + "field.candle_enable_multiple")
+      g_gui_draft_config.candle_enable_multiple = g_gui_draft_config.candle_enable_multiple == 0 ? 1 : 0;
+   else if(object_name == g_gui_object_prefix + "field.take_profit_mode")
+      g_gui_draft_config.take_profit_mode = g_gui_draft_config.take_profit_mode == TAKE_PROFIT_GRID
+                                             ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
+   else
+      return false;
+   GuiMarkDraftChanged();
+   return true;
+  }
+
+bool GuiApplyDraft()
+  {
+   string error = "";
+   if(!ValidateGuiConfig(g_gui_draft_config, error))
+     {
+      g_gui_notice = error;
+      GuiMarkDirty();
+      return false;
+     }
+   if(!ApplyGuiConfig(g_gui_draft_config, error))
+     {
+      if(StringLen(error) == 0)
+         error = g_gui_notice;
+      g_gui_notice = error;
+      GuiMarkDirty();
+      return false;
+     }
+   g_gui_notice = "已应用；当前订单组锁定参数保持不变，新设置从下一轮生效";
+   GuiMarkDirty();
+   return true;
+  }
+
 bool GuiCreate()
   {
    g_gui_object_prefix = GuiObjectPrefix();
@@ -3773,9 +4118,16 @@ void GuiDestroy()
 void OnChartEvent(const int id, const long &lparam, const double &dparam,
                   const string &sparam)
   {
-   if(id != CHARTEVENT_OBJECT_CLICK
-      || !g_gui_objects_created
-      || StringFind(sparam, g_gui_object_prefix) != 0)
+   if(!g_gui_objects_created || StringFind(sparam, g_gui_object_prefix) != 0)
+      return;
+
+   if(id == CHARTEVENT_OBJECT_ENDEDIT)
+     {
+      if(GuiHandleEditEnd(sparam))
+         GuiRender();
+      return;
+     }
+   if(id != CHARTEVENT_OBJECT_CLICK)
       return;
 
    if(sparam == g_gui_object_prefix + "minimize")
@@ -3789,6 +4141,25 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      {
       g_gui_full_window = true;
       GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "mode.toggle")
+     {
+      g_gui_display_mode = g_gui_display_mode == GUI_MODE_EXPERT
+                           ? GUI_MODE_SIMPLE : GUI_MODE_EXPERT;
+      GuiMarkDirty();
+      GuiRender();
+      return;
+     }
+   if(sparam == g_gui_object_prefix + "apply")
+     {
+      GuiApplyDraft();
+      GuiRender();
+      return;
+     }
+   if(GuiHandleEnumClick(sparam))
+     {
       GuiRender();
       return;
      }
