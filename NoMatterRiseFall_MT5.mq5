@@ -215,7 +215,6 @@ int    g_start_operation_minutes = 0;
 int    g_end_operation_minutes = 24 * 60;
 
 void MultiClearAll();
-bool HasManagedExposure();
 
 string StatePrefix()
   {
@@ -483,11 +482,6 @@ bool HasManagedExposureForMagic(const ulong magic_number)
    return false;
   }
 
-bool HasManagedExposure()
-  {
-   return HasManagedExposureForMagic(g_gui_applied_config.magic_number);
-  }
-
 string ScopeRegistryPrefix()
   {
    return "NMR.scope." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
@@ -622,7 +616,8 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       return false;
      }
    if(config.max_reversals < 0 || config.grid_count < 0
-      || config.magic_number == 0)
+      || config.magic_number == 0
+      || config.magic_number > (ulong)0x7FFFFFFFFFFFFFFF)
      {
       error = "Risk, grid, and magic/order-id settings are invalid.";
       return false;
@@ -669,9 +664,16 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
 
 bool ApplyGuiConfig(const GuiConfig &config, string &error)
   {
-   if(g_gui_config_initialized && HasManagedExposure())
+   if(g_gui_config_initialized
+      && HasManagedExposureForMagic(g_gui_applied_config.magic_number))
      {
       error = "Cannot apply GUI config while positions or pending orders are active.";
+      g_gui_notice = error;
+      return false;
+     }
+   if(HasManagedExposureForMagic(config.magic_number))
+     {
+      error = "Cannot apply GUI config for the candidate magic/order id while positions or pending orders are active.";
       g_gui_notice = error;
       return false;
      }
