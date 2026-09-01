@@ -1,6 +1,10 @@
 from pathlib import Path
+import re
 
 import pytest
+
+
+MT5_SOURCE = Path(__file__).resolve().parents[1] / "NoMatterRiseFall_MT5.mq5"
 
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
@@ -8,6 +12,47 @@ from strategy_logic import (
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
     normalize_pending_records, recover_prepared_transition, cycle_directions,
 )
+
+
+def test_mt5_gui_migrates_legacy_state_without_fingerprint_once():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    migration = re.search(
+        r"bool MigrateLegacyGuiConfig\(.*?\n\s*\}\n\n",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert migration, "MT5 GUI must provide a legacy-config migration path"
+    body = migration.group(0)
+    assert "configfingerprint" in body
+    assert "GlobalVariableSet" in body
+    assert "return true" in body
+
+    validation = re.search(
+        r"bool ValidatePersistedConfigForMagic\(.*?\n\s*\}\n\nvoid SaveState",
+        source,
+        flags=re.DOTALL,
+    )
+    assert validation
+    assert "MigrateLegacyGuiConfig" in validation.group(0)
+
+
+def test_mt5_gui_initial_load_allows_recovery_of_active_scope():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    apply_config = re.search(
+        r"bool ApplyGuiConfig\(.*?\n\s*\}\n\nGuiConfig LoadConfigFromInputs",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert apply_config
+    first_line = re.search(
+        r"const bool allow_initial_scope_recovery = (.*?);",
+        apply_config.group(0),
+        flags=re.DOTALL,
+    )
+    assert first_line
+    assert "HasManagedExposureForMagic(config.magic_number)" in first_line.group(1)
 
 
 def test_cycle_templates_cover_both_modes_and_first_directions():

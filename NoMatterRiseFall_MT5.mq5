@@ -384,6 +384,24 @@ double GuiConfigFingerprint2(const GuiConfig &config)
    return hash;
   }
 
+bool MigrateLegacyGuiConfig(const GuiConfig &config, string &error)
+  {
+   error = "";
+   const string prefix = StateReadPrefixForMagic(config.magic_number);
+   const string fingerprint_key = prefix + ".configfingerprint";
+   const string fingerprint2_key = prefix + ".configfingerprint2";
+   if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+      || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+     {
+      error = "Failed to migrate legacy state configuration fingerprint for magic/order id "
+              + IntegerToString((long)config.magic_number) + ".";
+      return false;
+     }
+   PrintFormat("Migrated legacy MT5 state to GUI configuration for magic/order id %I64u.",
+               config.magic_number);
+   return true;
+  }
+
 bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
   {
    error = "";
@@ -396,10 +414,7 @@ bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
    if(!GlobalVariableCheck(fingerprint_key)
       || !GlobalVariableCheck(fingerprint2_key))
      {
-      error = "Cannot safely recover magic/order id "
-              + IntegerToString((long)config.magic_number)
-              + "; persisted state or exposure has no GUI configuration fingerprint.";
-      return false;
+      return MigrateLegacyGuiConfig(config, error);
      }
    if(MathAbs(GlobalVariableGet(fingerprint_key)
               - GuiConfigFingerprint(config)) > 0.5
@@ -987,7 +1002,8 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
 bool ApplyGuiConfig(const GuiConfig &config, string &error)
   {
    const bool allow_initial_scope_recovery = !g_gui_config_initialized
-                                             && IsKnownScopeForMagic(config.magic_number);
+                                             && (IsKnownScopeForMagic(config.magic_number)
+                                                 || HasManagedExposureForMagic(config.magic_number));
    if((g_transition_phase == TRANSITION_PREPARED
       || g_transition_phase == TRANSITION_COMPLETE)
       && !allow_initial_scope_recovery)
