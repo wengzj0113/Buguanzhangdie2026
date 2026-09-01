@@ -139,13 +139,13 @@ enum GuiRunState
 
 enum GuiCommand
   {
-   GUI_COMMAND_NONE = 0,
-   GUI_COMMAND_APPLY = 1,
-   GUI_COMMAND_PAUSE_INITIAL = 2,
-   GUI_COMMAND_RESUME_INITIAL = 3,
-   GUI_COMMAND_REQUEST_CLOSE_ALL = 4,
-   GUI_COMMAND_CONFIRM_CLOSE_ALL = 5,
-   GUI_COMMAND_CANCEL_CLOSE_ALL = 6
+   GUI_CMD_NONE = 0,
+   GUI_CMD_APPLY = 1,
+   GUI_CMD_PAUSE_INITIAL = 2,
+   GUI_CMD_RESUME_INITIAL = 3,
+   GUI_CMD_REQUEST_CLOSE_ALL = 4,
+   GUI_CMD_CONFIRM_CLOSE_ALL = 5,
+   GUI_CMD_CANCEL_CLOSE_ALL = 6
   };
 
 struct GuiConfig
@@ -484,6 +484,13 @@ bool HasManagedExposureForMagic(const ulong magic_number)
 
 string ScopeRegistryPrefix()
   {
+   return "NMR.scope." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
+          + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + SanitizeExecutionLockPart(_Symbol) + ".";
+  }
+
+string LegacyScopeRegistryPrefix()
+  {
    return "NMR.scope." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
           + "." + SanitizeExecutionLockPart(_Symbol) + ".";
   }
@@ -495,8 +502,37 @@ string ScopeRegistryKey(const ulong magic_number)
 
 string StateScopePrefix()
   {
+   return "NMR." + SanitizeExecutionLockPart(AccountInfoString(ACCOUNT_SERVER))
+          + "." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
+          + "." + _Symbol + ".";
+  }
+
+string LegacyStateScopePrefix()
+  {
    return "NMR." + IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))
           + "." + _Symbol + ".";
+  }
+
+bool LoadPersistedTransitionPhaseForPrefix(const string prefix,
+                                           const ulong magic_number, int &phase)
+  {
+   const string key = prefix + IntegerToString((long)magic_number)
+                      + ".transitionphase";
+   if(!GlobalVariableCheck(key))
+      return false;
+   const int persisted_phase = (int)MathRound(GlobalVariableGet(key));
+   if(persisted_phase != TRANSITION_PREPARED
+      && persisted_phase != TRANSITION_COMPLETE)
+      return false;
+   phase = persisted_phase;
+   return true;
+  }
+
+bool LoadPersistedTransitionPhaseForMagic(const ulong magic_number, int &phase)
+  {
+   return LoadPersistedTransitionPhaseForPrefix(StateScopePrefix(), magic_number, phase)
+          || LoadPersistedTransitionPhaseForPrefix(LegacyStateScopePrefix(),
+                                                   magic_number, phase);
   }
 
 bool ParsePositiveMagicText(const string value, ulong &magic_number)
@@ -516,23 +552,25 @@ bool ParsePositiveMagicText(const string value, ulong &magic_number)
    return true;
   }
 
-bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
+bool CheckKnownScopeExposurePrefix(const string prefix, const bool registry_keys,
+                                   const bool cleanup_registry,
+                                   const ulong requested_magic, string &error)
   {
-   const string registry_prefix = ScopeRegistryPrefix();
-   const string state_prefix = StateScopePrefix();
    for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
      {
       const string name = GlobalVariableName(index);
+      if(StringFind(name, prefix) != 0)
+         continue;
       ulong known_magic = 0;
       bool is_known_scope = false;
-      if(StringFind(name, registry_prefix) == 0)
+      if(registry_keys)
         {
          is_known_scope = ParsePositiveMagicText(
-            StringSubstr(name, StringLen(registry_prefix)), known_magic);
+            StringSubstr(name, StringLen(prefix)), known_magic);
         }
-      else if(StringFind(name, state_prefix) == 0)
+      else
         {
-         const string state_suffix = StringSubstr(name, StringLen(state_prefix));
+         const string state_suffix = StringSubstr(name, StringLen(prefix));
          const int separator = StringFind(state_suffix, ".");
          if(separator > 0)
             is_known_scope = ParsePositiveMagicText(
@@ -548,22 +586,96 @@ bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
                  + " still has positions or pending orders.";
          return false;
         }
-      if(StringFind(name, registry_prefix) == 0)
-         GlobalVariableDel(name);
+      if(cleanup_registry && !GlobalVariableDel(name))
+        {
+         error = "Failed to remove stale MT5 scope registry key: " + name;
+         Print(error);
+         return false;
+        }
      }
    return true;
   }
 
-void RememberManagedScope(const ulong magic_number)
+bool CheckKnownScopeExposure(const ulong requested_magic, string &error)
   {
-   if(magic_number > 0)
-      GlobalVariableSet(ScopeRegistryKey(magic_number), 1.0);
+   if(!CheckKnownScopeExposurePrefix(ScopeRegistryPrefix(), true, true,
+                                     requested_magic, error)
+      || !CheckKnownScopeExposurePrefix(LegacyScopeRegistryPrefix(), true, false,
+                                        requested_magic, error)
+      || !CheckKnownScopeExposurePrefix(StateScopePrefix(), false, false,
+                                        requested_magic, error)
+      || !CheckKnownScopeExposurePrefix(LegacyStateScopePrefix(), false, false,
+                                        requested_magic, error))
+      return false;
+   return true;
   }
 
-void ForgetManagedScopeIfFlat(const ulong magic_number)
+bool CheckKnownScopeTransitions(const ulong requested_magic, string &error)
   {
-   if(magic_number > 0 && !HasManagedExposureForMagic(magic_number))
-      GlobalVariableDel(ScopeRegistryKey(magic_number));
+   int persisted_phase = TRANSITION_NONE;
+   if(LoadPersistedTransitionPhaseForMagic(requested_magic, persisted_phase))
+     {
+      error = "Cannot initialize magic/order id while a persisted transition is in flight.";
+      return false;
+     }
+
+   const string registry_prefix = ScopeRegistryPrefix();
+   for(int index = GlobalVariablesTotal() - 1; index >= 0; index--)
+     {
+      const string name = GlobalVariableName(index);
+      if(StringFind(name, registry_prefix) != 0)
+         continue;
+      ulong known_magic = 0;
+      if(!ParsePositiveMagicText(
+            StringSubstr(name, StringLen(registry_prefix)), known_magic)
+         || known_magic == requested_magic)
+         continue;
+      if(LoadPersistedTransitionPhaseForMagic(known_magic, persisted_phase))
+        {
+         error = "Cannot initialize magic/order id "
+                 + IntegerToString((long)requested_magic)
+                 + "; known scope " + IntegerToString((long)known_magic)
+                 + " has a persisted transition in flight.";
+         return false;
+        }
+     }
+   return true;
+  }
+
+bool RememberManagedScope(const ulong magic_number, string &error)
+  {
+   error = "";
+   if(magic_number == 0)
+     {
+      error = "Cannot persist an invalid zero magic/order id in the MT5 scope registry.";
+      Print(error);
+      return false;
+     }
+   const string key = ScopeRegistryKey(magic_number);
+   if(!GlobalVariableSet(key, 1.0))
+     {
+      error = "Failed to persist MT5 scope registry key: " + key;
+      Print(error);
+      return false;
+     }
+   return true;
+  }
+
+bool ForgetManagedScopeIfFlat(const ulong magic_number, string &error)
+  {
+   error = "";
+   if(magic_number == 0 || HasManagedExposureForMagic(magic_number))
+      return true;
+   const string key = ScopeRegistryKey(magic_number);
+   if(!GlobalVariableCheck(key))
+      return true;
+   if(!GlobalVariableDel(key))
+     {
+      error = "Failed to remove MT5 scope registry key: " + key;
+      Print(error);
+      return false;
+     }
+   return true;
   }
 
 bool ValidateGuiConfig(const GuiConfig &config, string &error)
@@ -664,6 +776,13 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
 
 bool ApplyGuiConfig(const GuiConfig &config, string &error)
   {
+   if(g_transition_phase == TRANSITION_PREPARED
+      || g_transition_phase == TRANSITION_COMPLETE)
+     {
+      error = "Cannot apply GUI config while a persisted transition is in flight.";
+      g_gui_notice = error;
+      return false;
+     }
    if(g_gui_config_initialized
       && HasManagedExposureForMagic(g_gui_applied_config.magic_number))
      {
@@ -713,12 +832,44 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
          error = "Cannot acquire execution lock for the new magic/order id; previous config restored.";
       g_gui_notice = error;
       return false;
-     }
+   }
+   bool scope_registry_ok = true;
+   string scope_registry_error = "";
    if(g_gui_config_initialized)
      {
       if(magic_changed)
-         ForgetManagedScopeIfFlat(previous_config.magic_number);
-      RememberManagedScope(config.magic_number);
+        {
+         if(!ForgetManagedScopeIfFlat(previous_config.magic_number, scope_registry_error))
+            scope_registry_ok = false;
+        }
+      if(scope_registry_ok
+         && !RememberManagedScope(config.magic_number, scope_registry_error))
+         scope_registry_ok = false;
+     }
+   if(!scope_registry_ok)
+     {
+      string cleanup_error = "";
+      if(magic_changed
+         && !ForgetManagedScopeIfFlat(config.magic_number, cleanup_error))
+         scope_registry_error += " " + cleanup_error;
+      if(magic_changed)
+         ReleaseExecutionOwnership();
+      g_gui_applied_config = previous_config;
+      g_gui_draft_config = previous_draft;
+      g_start_operation_minutes = previous_start_minutes;
+      g_end_operation_minutes = previous_end_minutes;
+      g_trade.SetExpertMagicNumber(previous_config.magic_number);
+      g_gui_has_unapplied_changes = previous_has_unapplied_changes;
+      string restore_error = "";
+      if(magic_changed
+         && !RememberManagedScope(previous_config.magic_number, restore_error))
+         scope_registry_error += " " + restore_error;
+      if(magic_changed && !AcquireExecutionOwnership())
+         scope_registry_error += " Previous execution lock could not be restored.";
+      error = "Cannot apply GUI config because MT5 scope registry update failed: "
+              + scope_registry_error;
+      g_gui_notice = error;
+      return false;
      }
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
@@ -2973,6 +3124,11 @@ int OnInit()
       PrintFormat("Cannot initialize GUI configuration: %s", config_error);
       return INIT_FAILED;
      }
+   if(!CheckKnownScopeTransitions(input_config.magic_number, config_error))
+     {
+      PrintFormat("Cannot initialize GUI configuration: %s", config_error);
+      return INIT_FAILED;
+     }
    if(!ApplyGuiConfig(input_config, config_error))
      {
       PrintFormat("Invalid GUI configuration: %s", config_error);
@@ -2981,7 +3137,13 @@ int OnInit()
 
    if(!AcquireExecutionOwnership())
       return INIT_FAILED;
-   RememberManagedScope(g_gui_applied_config.magic_number);
+   string scope_error = "";
+   if(!RememberManagedScope(g_gui_applied_config.magic_number, scope_error))
+     {
+      PrintFormat("Cannot initialize MT5 scope registry: %s", scope_error);
+      ReleaseExecutionOwnership();
+      return INIT_FAILED;
+     }
 
    g_active_first_direction = g_gui_applied_config.first_direction;
    g_active_cycle_mode = g_gui_applied_config.cycle_mode;
@@ -3008,10 +3170,14 @@ void OnDeinit(const int reason)
   {
    if(g_gui_config_initialized)
      {
+      string scope_error = "";
       if(HasManagedExposureForMagic(g_gui_applied_config.magic_number))
-         RememberManagedScope(g_gui_applied_config.magic_number);
-      else
-         ForgetManagedScopeIfFlat(g_gui_applied_config.magic_number);
+        {
+         if(!RememberManagedScope(g_gui_applied_config.magic_number, scope_error))
+            PrintFormat("Failed to retain MT5 scope registry: %s", scope_error);
+        }
+      else if(!ForgetManagedScopeIfFlat(g_gui_applied_config.magic_number, scope_error))
+         PrintFormat("Failed to clear MT5 scope registry: %s", scope_error);
      }
    ReleaseExecutionOwnership();
   }
