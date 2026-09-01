@@ -235,8 +235,8 @@ def test_mt5_gui_temporarily_hides_chart_trade_overlays_and_restores_them():
     assert "CHART_SHOW_TRADE_HISTORY" in source
     assert "GuiPrepareChartForWindow" in source
     assert "GuiRestoreChartAfterWindow" in source
-    assert "ChartSetInteger(0, CHART_SHOW_TRADE_LEVELS, false)" in source
-    assert "ChartSetInteger(0, CHART_SHOW_TRADE_HISTORY, false)" in source
+    assert "GuiSetChartOverlayProperty(CHART_SHOW_TRADE_LEVELS, false)" in source
+    assert "GuiSetChartOverlayProperty(CHART_SHOW_TRADE_HISTORY, false)" in source
 
 
 def test_mt5_gui_chart_overlay_state_is_prepared_and_restored_with_lifecycle():
@@ -399,6 +399,7 @@ def test_mt5_gui_overview_contains_browser_summary_fields():
     assert overview
     body = overview.group(0)
     for key in (
+        "overview.order_group", "overview.cycle",
         "overview.initial_lots_multiplier", "overview.grid_lot_multiplier",
         "overview.take_profit_mode", "overview.magic_number",
         "overview.order_comment",
@@ -448,8 +449,51 @@ def test_mt5_gui_surfaces_chart_overlay_preparation_failure():
     )
     assert create and prepare
     assert "if(!GuiPrepareChartForWindow())" in create.group(0)
-    assert "ChartSetInteger" in prepare.group(0)
+    assert "GuiSetChartOverlayProperty" in prepare.group(0)
     assert "GetLastError" in prepare.group(0)
+    assert "GuiSetChartOverlayProperty" in prepare.group(0)
+    assert "GuiRestoreChartAfterWindow" in prepare.group(0)
+
+
+def test_mt5_gui_rejects_integer_overflow_and_keeps_magic_number_wide():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiTryParseLong" in source
+    sync = re.search(
+        r"bool GuiSyncEditValue\(.*?\n\s*\}\n\nbool GuiHandleEditEnd",
+        source,
+        flags=re.DOTALL,
+    )
+    assert sync
+    body = sync.group(0)
+    assert "GuiTryParseLong(value, parsed_long)" in body
+    assert "g_gui_draft_config.magic_number" in body
+    assert "INT_MAX" in source or "2147483647" in source
+
+
+def test_mt5_gui_blocks_navigation_while_active_edit_is_invalid():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiLeaveEditSession" in body
+    assert body.index("GuiLeaveEditSession") < body.index("g_gui_edit_key = \"\";")
+
+
+def test_mt5_gui_object_prefix_is_bounded_for_mql5_object_names():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    prefix = re.search(
+        r"string GuiObjectPrefix\(\)\n\s*\{.*?\n\s*\}",
+        source,
+        flags=re.DOTALL,
+    )
+    assert prefix
+    body = prefix.group(0)
+    assert "StringSubstr" in body
+    assert "% 1000000" in body
 
 
 def test_mt5_gui_rebuilds_object_prefix_after_magic_number_change():
