@@ -199,6 +199,9 @@ bool            g_gui_dirty = true;
 bool            g_gui_objects_created = false;
 string          g_gui_dropdown_key = "";
 string          g_gui_edit_key = "";
+bool            g_gui_object_click_pending = false;
+long            g_gui_object_click_x = 0;
+long            g_gui_object_click_y = 0;
 bool            g_gui_chart_overlay_state_saved = false;
 bool            g_gui_saved_trade_levels = true;
 bool            g_gui_saved_trade_history = true;
@@ -257,6 +260,8 @@ void GuiMarkDirty();
 bool GuiHandleDropdownClick(const string object_name);
 bool GuiHandleFieldClick(const string object_name);
 bool GuiHandleChartClick(const int x, const int y);
+void GuiRememberObjectClick(const long x, const long y);
+bool GuiShouldSkipChartClick(const long x, const long y);
 void GuiReleaseButtonState(const string object_name);
 bool GuiSyncEditValue(const string key);
 bool GuiPrepareChartForWindow();
@@ -3774,28 +3779,82 @@ bool GuiRenderDropdownField(const string key, const string label, const string v
       ok = false;
    if(g_gui_dropdown_key != key)
       return true;
-   const int option_count = GuiDropdownOptionCount(key);
-   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "dropdown.panel." + key,
-                                            value_x, value_y + GUI_FIELD_HEIGHT,
-                                            value_width, option_count * GUI_FIELD_HEIGHT,
+   return true;
+  }
+
+bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
+  {
+   const int left_x = GUI_CONTENT_X + GUI_CONTENT_PADDING;
+   const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
+   const int first_y = 60 + 94 + 18;
+   const int row_gap = 64;
+   string keys[7];
+   int field_count = 0;
+   if(g_gui_page == GUI_PAGE_OPENING)
+     {
+      keys[0] = "first_direction";
+      keys[1] = "cycle_mode";
+      keys[2] = "order_type";
+      keys[3] = "candle_order_mode";
+      keys[4] = "candle_enable_multiple";
+      keys[5] = "initial_lots";
+      keys[6] = "initial_lots_multiplier";
+      field_count = 7;
+     }
+   else if(g_gui_page == GUI_PAGE_DISTANCE)
+     {
+      keys[0] = "distance_mode";
+      keys[1] = "stop_loss_distance_points";
+      keys[2] = "take_profit_distance_points";
+      keys[3] = "candle_min_range_points";
+      keys[4] = "candle_max_range_points";
+      keys[5] = "take_profit_mode";
+      field_count = 6;
+     }
+   for(int index = 0; index < field_count; index++)
+     {
+      if(keys[index] != key)
+         continue;
+      field_x = (index % 2 == 0) ? left_x : right_x;
+      field_y = first_y + (index / 2) * row_gap;
+      return true;
+     }
+   return false;
+  }
+
+bool GuiRenderDropdownOverlay(bool &ok)
+  {
+   if(StringLen(g_gui_dropdown_key) == 0)
+      return true;
+   int field_x = 0;
+   int field_y = 0;
+   if(!GuiDropdownFieldPosition(g_gui_dropdown_key, field_x, field_y))
+      return true;
+   const int option_count = GuiDropdownOptionCount(g_gui_dropdown_key);
+   if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "dropdown.panel."
+                                            + g_gui_dropdown_key,
+                                            field_x, field_y + GUI_FIELD_HEIGHT,
+                                            GUI_FIELD_WIDTH, option_count * GUI_FIELD_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()),
-                            "dropdown.panel." + key))
+                            "dropdown.panel." + g_gui_dropdown_key))
       ok = false;
-   const int selected_index = GuiDropdownValueIndex(key);
+   const int selected_index = GuiDropdownValueIndex(g_gui_dropdown_key);
    for(int index = 0; index < option_count; index++)
      {
-      const string option_name = g_gui_object_prefix + "dropdown." + key + "."
+      const string option_name = g_gui_object_prefix + "dropdown." + g_gui_dropdown_key + "."
                                  + IntegerToString(index);
       if(!GuiTrackCreateResult(GuiCreateDropdownOption(option_name,
-                                                       GuiDropdownOptionText(key, index),
-                                                       value_x, value_y + GUI_FIELD_HEIGHT
+                                                       GuiDropdownOptionText(g_gui_dropdown_key,
+                                                                             index),
+                                                       field_x, field_y + GUI_FIELD_HEIGHT
                                                        + index * GUI_FIELD_HEIGHT,
-                                                       value_width, GUI_FIELD_HEIGHT,
+                                                       GUI_FIELD_WIDTH, GUI_FIELD_HEIGHT,
                                                        index == selected_index),
-                                "dropdown." + key + "." + IntegerToString(index)))
+                                "dropdown." + g_gui_dropdown_key + "."
+                                + IntegerToString(index)))
          ok = false;
      }
-   return true;
+   return ok;
   }
 
 bool GuiRenderLabelValue(const string key, const string label, const string value,
@@ -4360,6 +4419,8 @@ bool GuiRenderContent()
      }
    if(g_gui_close_confirm_open)
       GuiRenderCloseConfirmation(ok);
+   if(!GuiRenderDropdownOverlay(ok))
+      ok = false;
    return ok;
   }
 
@@ -5082,9 +5143,29 @@ void GuiDestroy()
    g_gui_object_prefix = "";
   }
 
+void GuiRememberObjectClick(const long x, const long y)
+  {
+   g_gui_object_click_pending = true;
+   g_gui_object_click_x = x;
+   g_gui_object_click_y = y;
+  }
+
+bool GuiShouldSkipChartClick(const long x, const long y)
+  {
+   if(!g_gui_object_click_pending)
+      return false;
+   const bool same_click = x == g_gui_object_click_x && y == g_gui_object_click_y;
+   g_gui_object_click_pending = false;
+   return same_click;
+  }
+
 void OnChartEvent(const int id, const long &lparam, const double &dparam,
                   const string &sparam)
   {
+   if(id == CHARTEVENT_OBJECT_CLICK)
+      GuiRememberObjectClick(lparam, (long)dparam);
+   if(id == CHARTEVENT_CLICK && GuiShouldSkipChartClick(lparam, (long)dparam))
+      return;
    if(id == CHARTEVENT_CLICK)
      {
       if(GuiHandleChartClick((int)lparam, (int)dparam))
@@ -5107,7 +5188,10 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
 
    if(id == CHARTEVENT_OBJECT_CLICK && GuiHandleFieldClick(sparam))
      {
-      GuiRender();
+      const string field_prefix = g_gui_object_prefix + "field.";
+      const string field_key = StringSubstr(sparam, StringLen(field_prefix));
+      if(!GuiIsEditableFieldKey(field_key))
+         GuiRender();
       return;
      }
 

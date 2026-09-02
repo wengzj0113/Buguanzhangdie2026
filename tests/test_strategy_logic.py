@@ -246,6 +246,29 @@ def test_mt5_gui_dropdown_layer_is_above_other_interactive_controls():
     assert "OBJPROP_ZORDER, 2000" in dropdown.group(0)
 
 
+def test_mt5_gui_dropdown_options_are_rendered_after_all_page_fields():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    field = re.search(
+        r"bool GuiRenderDropdownField\(.*?\n\s*\}\n\nbool GuiDropdownFieldPosition",
+        source,
+        flags=re.DOTALL,
+    )
+    overlay = re.search(
+        r"bool GuiRenderDropdownOverlay\(.*?\n\s*\}\n\nbool GuiRenderLabelValue",
+        source,
+        flags=re.DOTALL,
+    )
+    content = re.search(
+        r"bool GuiRenderContent\(.*?\n\s*\}\n\nbool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+    assert field and overlay and content
+    assert "GuiCreateDropdownOption" not in field.group(0)
+    assert "GuiCreateDropdownOption" in overlay.group(0)
+    assert "GuiRenderDropdownOverlay(ok)" in content.group(0)
+
+
 def test_mt5_gui_field_click_dispatch_is_before_active_edit_guard():
     source = MT5_SOURCE.read_text(encoding="utf-8")
     chart_event = re.search(
@@ -274,6 +297,38 @@ def test_mt5_gui_field_clicks_switch_edit_and_dropdown_sessions_cleanly():
     assert "g_gui_edit_key = \"\"" in body
     assert "GuiLeaveEditSession()" in body
     assert "OBJPROP_READONLY, false" in body
+
+
+def test_mt5_gui_edit_click_keeps_native_edit_focus_without_recreating_objects():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    dispatch = body[body.index("if(id == CHARTEVENT_OBJECT_CLICK && GuiHandleFieldClick(sparam))") :]
+    assert "if(!GuiIsEditableFieldKey" in dispatch
+    assert dispatch.index("if(!GuiIsEditableFieldKey") < dispatch.index("GuiRender();")
+
+
+def test_mt5_gui_does_not_toggle_a_dropdown_twice_for_one_mouse_click():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiShouldSkipChartClick" in source
+    assert "void GuiRememberObjectClick" in source
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiRememberObjectClick(lparam, (long)dparam)" in body
+    assert "GuiShouldSkipChartClick(lparam, (long)dparam)" in body
+    assert body.index("GuiRememberObjectClick(lparam, (long)dparam)") < body.index(
+        "if(id == CHARTEVENT_CLICK)"
+    )
 
 
 def test_mt5_gui_panel_fits_compact_chart_viewport():
