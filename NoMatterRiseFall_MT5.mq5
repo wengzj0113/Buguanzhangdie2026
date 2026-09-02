@@ -158,6 +158,9 @@ const int GUI_CONTENT_PADDING = 20;
 const int GUI_FORM_GAP = 12;
 const int GUI_FIELD_WIDTH = 254;
 const int GUI_FIELD_HEIGHT = 32;
+const int GUI_DROPDOWN_ARROW_WIDTH = 34;
+const int GUI_DROPDOWN_ARROW_FONT_SIZE = 30;
+const int GUI_EDITABLE_OPTION_MAX = 24;
 
 struct GuiConfig
   {
@@ -199,6 +202,7 @@ bool            g_gui_dirty = true;
 bool            g_gui_objects_created = false;
 string          g_gui_dropdown_key = "";
 string          g_gui_edit_key = "";
+string          g_gui_edit_original_value = "";
 bool            g_gui_object_click_pending = false;
 long            g_gui_object_click_x = 0;
 long            g_gui_object_click_y = 0;
@@ -254,12 +258,32 @@ bool GuiRenderContent();
 bool GuiRenderActions();
 bool GuiRenderCompactSummaryField(const string key, const string label, const string value,
                                   const int x, const int y, bool &ok);
+bool GuiRefreshOverviewData();
 bool GuiRenderMinimizedBar();
 void GuiRenderIfNeeded();
 void GuiMarkDirty();
 bool GuiHandleDropdownClick(const string object_name);
 bool GuiHandleFieldClick(const string object_name);
 bool GuiHandleChartClick(const int x, const int y);
+bool GuiIsEditableDropdownKey(const string key);
+int GuiEditableDropdownOptionCount(const string key);
+string GuiEditableDropdownOptionText(const string key, const int index);
+bool GuiParseEditableDropdownValue(const string key, const string value,
+                                   string &normalized, string &error);
+bool GuiCreateDropdownArrow(const string name, const int x, const int y,
+                            const int width, const int height);
+bool GuiRenderEditableDropdownField(const string key, const string label,
+                                    const string value, const int x, const int y,
+                                    bool &ok);
+int GuiAnyDropdownOptionCount(const string key);
+string GuiAnyDropdownOptionText(const string key, const int index);
+int GuiAnyDropdownValueIndex(const string key);
+bool GuiSetAnyDropdownValue(const string key, const int index);
+int GuiDropdownOptionColumns(const string key);
+void GuiDropdownOptionGeometry(const string key, const int field_x, const int field_y,
+                               const int index, int &option_x, int &option_y,
+                               int &option_width);
+bool GuiHandleEditKeyDown(const long key_code);
 void GuiRememberObjectClick(const long x, const long y);
 bool GuiShouldSkipChartClick(const long x, const long y);
 void GuiReleaseButtonState(const string object_name);
@@ -3590,6 +3614,17 @@ bool GuiCreateEdit(const string name, const string text, const int x, const int 
    return true;
   }
 
+bool GuiCreateDropdownArrow(const string name, const int x, const int y,
+                            const int width, const int height)
+  {
+   if(!GuiCreateButton(name, "▼", x, y, width, height,
+                       GuiColorInput(), GuiColorText()))
+      return false;
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, GUI_DROPDOWN_ARROW_FONT_SIZE);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 1100);
+   return true;
+  }
+
 bool GuiTrackCreateResult(const bool created, const string object_name)
   {
    if(created)
@@ -3671,6 +3706,94 @@ string GuiTakeProfitModeText(const TakeProfitMode value)
    return value == TAKE_PROFIT_LINEAR ? "线性移动" : "网格移动";
   }
 
+bool GuiIsEditableDropdownKey(const string key)
+  {
+   return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "stop_loss_distance_points"
+          || key == "take_profit_distance_points"
+          || key == "candle_min_range_points"
+          || key == "candle_max_range_points"
+          || key == "grid_count" || key == "grid_lot_multiplier"
+          || key == "max_reversals" || key == "start_time"
+          || key == "end_time";
+  }
+
+int GuiEditableDropdownOptionCount(const string key)
+  {
+   if(key == "initial_lots")
+      return 10;
+   if(key == "initial_lots_multiplier")
+      return 5;
+   if(key == "stop_loss_distance_points"
+      || key == "take_profit_distance_points"
+      || key == "candle_min_range_points"
+      || key == "candle_max_range_points")
+      return 11;
+   if(key == "grid_count")
+      return 10;
+   if(key == "grid_lot_multiplier")
+      return 9;
+   if(key == "max_reversals")
+      return 19;
+   if(key == "start_time" || key == "end_time")
+      return 24;
+   return 0;
+  }
+
+string GuiEditableDropdownOptionText(const string key, const int index)
+  {
+   if(key == "initial_lots")
+     {
+      if(index == 0) return "0.01";
+      if(index == 1) return "0.02";
+      if(index == 2) return "0.03";
+      if(index == 3) return "0.04";
+      if(index == 4) return "0.05";
+      if(index == 5) return "0.1";
+      if(index == 6) return "0.2";
+      if(index == 7) return "0.3";
+      if(index == 8) return "0.4";
+      if(index == 9) return "0.5";
+     }
+   if(key == "initial_lots_multiplier")
+     {
+      if(index == 0) return "1.0";
+      if(index == 1) return "1.2";
+      if(index == 2) return "1.3";
+      if(index == 3) return "1.5";
+      if(index == 4) return "2.0";
+     }
+   if(key == "stop_loss_distance_points"
+      || key == "take_profit_distance_points"
+      || key == "candle_min_range_points"
+      || key == "candle_max_range_points")
+     {
+      if(index >= 0 && index < 10)
+         return IntegerToString((index + 1) * 100);
+      if(index == 10)
+         return "1500";
+     }
+   if(key == "grid_count" && index >= 0 && index < 10)
+      return IntegerToString(index + 1);
+   if(key == "grid_lot_multiplier" && index >= 0 && index < 9)
+     {
+      if(index == 8)
+         return "5.0";
+      return DoubleToString(1.0 + index * 0.5, 1);
+     }
+   if(key == "max_reversals" && index >= 0 && index < 19)
+      return IntegerToString(index + 2);
+   if(key == "start_time" || key == "end_time")
+     {
+      for(int hour = 0; hour < 24; hour++)
+        {
+         if(index == hour)
+            return StringFormat("%02d:00", hour);
+        }
+     }
+   return "";
+  }
+
 int GuiDropdownOptionCount(const string key)
   {
    if(key == "first_direction" || key == "distance_mode" || key == "order_type"
@@ -3749,6 +3872,112 @@ bool GuiSetDropdownValue(const string key, const int index)
    return true;
   }
 
+int GuiAnyDropdownOptionCount(const string key)
+  {
+   const int editable_count = GuiEditableDropdownOptionCount(key);
+   if(editable_count > 0)
+      return editable_count;
+   return GuiDropdownOptionCount(key);
+  }
+
+string GuiAnyDropdownOptionText(const string key, const int index)
+  {
+   if(GuiIsEditableDropdownKey(key))
+      return GuiEditableDropdownOptionText(key, index);
+   return GuiDropdownOptionText(key, index);
+  }
+
+int GuiAnyDropdownValueIndex(const string key)
+  {
+   if(!GuiIsEditableDropdownKey(key))
+      return GuiDropdownValueIndex(key);
+   const int option_count = GuiEditableDropdownOptionCount(key);
+   const bool time_value = key == "start_time" || key == "end_time";
+   string current = "";
+   if(key == "initial_lots")
+      current = DoubleToString(g_gui_draft_config.initial_lots, 8);
+   else if(key == "initial_lots_multiplier")
+      current = DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8);
+   else if(key == "grid_count")
+      current = IntegerToString(g_gui_draft_config.grid_count);
+   else if(key == "grid_lot_multiplier")
+      current = DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8);
+   else if(key == "stop_loss_distance_points")
+      current = IntegerToString(g_gui_draft_config.stop_loss_distance_points);
+   else if(key == "take_profit_distance_points")
+      current = IntegerToString(g_gui_draft_config.take_profit_distance_points);
+   else if(key == "candle_min_range_points")
+      current = IntegerToString(g_gui_draft_config.candle_min_range_points);
+   else if(key == "candle_max_range_points")
+      current = IntegerToString(g_gui_draft_config.candle_max_range_points);
+   else if(key == "max_reversals")
+      current = IntegerToString(g_gui_draft_config.max_reversals);
+   else if(key == "start_time")
+      current = g_gui_draft_config.start_time;
+   else if(key == "end_time")
+      current = g_gui_draft_config.end_time;
+   for(int index = 0; index < option_count; index++)
+     {
+      const string option = GuiEditableDropdownOptionText(key, index);
+      if(time_value && option == current)
+         return index;
+      if(!time_value && MathAbs(StringToDouble(option) - StringToDouble(current)) <= 1e-8)
+         return index;
+     }
+   return -1;
+  }
+
+bool GuiSetAnyDropdownValue(const string key, const int index)
+  {
+   if(index < 0 || index >= GuiAnyDropdownOptionCount(key))
+      return false;
+   if(!GuiIsEditableDropdownKey(key))
+      return GuiSetDropdownValue(key, index);
+   const string value = GuiEditableDropdownOptionText(key, index);
+   if(key == "initial_lots")
+      g_gui_draft_config.initial_lots = StringToDouble(value);
+   else if(key == "initial_lots_multiplier")
+      g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+   else if(key == "stop_loss_distance_points")
+      g_gui_draft_config.stop_loss_distance_points = (int)StringToInteger(value);
+   else if(key == "take_profit_distance_points")
+      g_gui_draft_config.take_profit_distance_points = (int)StringToInteger(value);
+   else if(key == "candle_min_range_points")
+      g_gui_draft_config.candle_min_range_points = (int)StringToInteger(value);
+   else if(key == "candle_max_range_points")
+      g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+   else if(key == "grid_count")
+      g_gui_draft_config.grid_count = (int)StringToInteger(value);
+   else if(key == "grid_lot_multiplier")
+      g_gui_draft_config.grid_lot_multiplier = StringToDouble(value);
+   else if(key == "max_reversals")
+      g_gui_draft_config.max_reversals = (int)StringToInteger(value);
+   else if(key == "start_time")
+      g_gui_draft_config.start_time = value;
+   else if(key == "end_time")
+      g_gui_draft_config.end_time = value;
+   else
+      return false;
+   return true;
+  }
+
+int GuiDropdownOptionColumns(const string key)
+  {
+   if(key == "start_time" || key == "end_time" || key == "max_reversals")
+      return 2;
+   return 1;
+  }
+
+void GuiDropdownOptionGeometry(const string key, const int field_x, const int field_y,
+                               const int index, int &option_x, int &option_y,
+                               int &option_width)
+  {
+   const int columns = GuiDropdownOptionColumns(key);
+   option_width = GUI_FIELD_WIDTH / columns;
+   option_x = field_x + (index % columns) * option_width;
+   option_y = field_y + GUI_FIELD_HEIGHT + (index / columns) * GUI_FIELD_HEIGHT;
+  }
+
 bool GuiCreateDropdownOption(const string name, const string text, const int x, const int y,
                              const int width, const int height, const bool selected)
   {
@@ -3765,20 +3994,50 @@ bool GuiRenderDropdownField(const string key, const string label, const string v
   {
    const int value_x = x;
    const int value_y = y + 18;
-   const int value_width = GUI_FIELD_WIDTH;
+   const int value_width = GUI_FIELD_WIDTH - GUI_DROPDOWN_ARROW_WIDTH;
    if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
                                           label, x, y, value_width, 16,
                                           GuiColorMuted(), 9),
                             "field.label." + key))
       ok = false;
    if(!GuiTrackCreateResult(GuiCreateButton(g_gui_object_prefix + "field." + key,
-                                            value + " ▾", value_x, value_y, value_width,
+                                            value, value_x, value_y, value_width,
                                             GUI_FIELD_HEIGHT,
                                             GuiColorInput(), GuiColorText()),
                             "field." + key))
       ok = false;
-   if(g_gui_dropdown_key != key)
-      return true;
+   if(!GuiTrackCreateResult(GuiCreateDropdownArrow(g_gui_object_prefix + "field.arrow." + key,
+                                                   value_x + value_width, value_y,
+                                                   GUI_DROPDOWN_ARROW_WIDTH,
+                                                   GUI_FIELD_HEIGHT),
+                            "field.arrow." + key))
+      ok = false;
+   return true;
+  }
+
+bool GuiRenderEditableDropdownField(const string key, const string label,
+                                    const string value, const int x, const int y,
+                                    bool &ok)
+  {
+   const int value_x = x;
+   const int value_y = y + 18;
+   const int edit_width = GUI_FIELD_WIDTH - GUI_DROPDOWN_ARROW_WIDTH;
+   if(!GuiTrackCreateResult(GuiCreateText(g_gui_object_prefix + "field.label." + key,
+                                          label, x, y, GUI_FIELD_WIDTH, 16,
+                                          GuiColorMuted(), 9),
+                            "field.label." + key))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateEdit(g_gui_object_prefix + "field." + key,
+                                          value, value_x, value_y, edit_width,
+                                          GUI_FIELD_HEIGHT),
+                            "field." + key))
+      ok = false;
+   if(!GuiTrackCreateResult(GuiCreateDropdownArrow(g_gui_object_prefix + "field.arrow." + key,
+                                                   value_x + edit_width, value_y,
+                                                   GUI_DROPDOWN_ARROW_WIDTH,
+                                                   GUI_FIELD_HEIGHT),
+                            "field.arrow." + key))
+      ok = false;
    return true;
   }
 
@@ -3811,6 +4070,21 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
       keys[5] = "take_profit_mode";
       field_count = 6;
      }
+   else if(g_gui_page == GUI_PAGE_GRID)
+     {
+      keys[0] = "grid_count";
+      keys[1] = "grid_lot_multiplier";
+      field_count = 2;
+     }
+   else if(g_gui_page == GUI_PAGE_RISK)
+     {
+      keys[0] = "max_reversals";
+      keys[1] = "start_time";
+      keys[2] = "end_time";
+      keys[3] = "magic_number";
+      keys[4] = "order_comment";
+      field_count = 5;
+     }
    for(int index = 0; index < field_count; index++)
      {
       if(keys[index] != key)
@@ -3830,25 +4104,31 @@ bool GuiRenderDropdownOverlay(bool &ok)
    int field_y = 0;
    if(!GuiDropdownFieldPosition(g_gui_dropdown_key, field_x, field_y))
       return true;
-   const int option_count = GuiDropdownOptionCount(g_gui_dropdown_key);
+   const int option_count = GuiAnyDropdownOptionCount(g_gui_dropdown_key);
+   const int option_columns = GuiDropdownOptionColumns(g_gui_dropdown_key);
+   const int option_rows = (option_count + option_columns - 1) / option_columns;
    if(!GuiTrackCreateResult(GuiCreatePanel(g_gui_object_prefix + "dropdown.panel."
                                             + g_gui_dropdown_key,
                                             field_x, field_y + GUI_FIELD_HEIGHT,
-                                            GUI_FIELD_WIDTH, option_count * GUI_FIELD_HEIGHT,
+                                            GUI_FIELD_WIDTH, option_rows * GUI_FIELD_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()),
                             "dropdown.panel." + g_gui_dropdown_key))
       ok = false;
-   const int selected_index = GuiDropdownValueIndex(g_gui_dropdown_key);
+   const int selected_index = GuiAnyDropdownValueIndex(g_gui_dropdown_key);
    for(int index = 0; index < option_count; index++)
      {
       const string option_name = g_gui_object_prefix + "dropdown." + g_gui_dropdown_key + "."
                                  + IntegerToString(index);
+      int option_x = field_x;
+      int option_y = field_y;
+      int option_width = GUI_FIELD_WIDTH;
+      GuiDropdownOptionGeometry(g_gui_dropdown_key, field_x, field_y, index,
+                                option_x, option_y, option_width);
       if(!GuiTrackCreateResult(GuiCreateDropdownOption(option_name,
-                                                       GuiDropdownOptionText(g_gui_dropdown_key,
-                                                                             index),
-                                                       field_x, field_y + GUI_FIELD_HEIGHT
-                                                       + index * GUI_FIELD_HEIGHT,
-                                                       GUI_FIELD_WIDTH, GUI_FIELD_HEIGHT,
+                                                       GuiAnyDropdownOptionText(g_gui_dropdown_key,
+                                                                                 index),
+                                                       option_x, option_y, option_width,
+                                                       GUI_FIELD_HEIGHT,
                                                        index == selected_index),
                                 "dropdown." + g_gui_dropdown_key + "."
                                 + IntegerToString(index)))
@@ -4015,6 +4295,103 @@ string GuiBuildSnapshot()
           + IntegerToString(g_grid_filled_levels) + "|"
           + IntegerToString(g_pending_index) + "|"
           + g_gui_notice;
+  }
+
+bool GuiRefreshOverviewText(const string suffix, const string value)
+  {
+   const string object_name = g_gui_object_prefix + suffix;
+   if(ObjectFind(0, object_name) < 0)
+      return false;
+   return ObjectSetString(0, object_name, OBJPROP_TEXT, value);
+  }
+
+bool GuiRefreshOverviewData()
+  {
+   if(!g_gui_objects_created || !g_gui_full_window || g_gui_page != GUI_PAGE_OVERVIEW)
+      return false;
+
+   GuiSnapshot snapshot;
+   GuiCollectSnapshot(snapshot);
+   const string direction = g_had_position
+                            ? (g_last_position_type == POSITION_TYPE_BUY ? "BUY" : "SELL")
+                            : "无持仓";
+   const string reversal = IntegerToString(g_reversal_count) + "/"
+                           + IntegerToString(g_gui_applied_config.max_reversals);
+   const string exposure = IntegerToString(snapshot.position_count) + " / "
+                           + IntegerToString(snapshot.pending_order_count);
+   const string order_group = (g_had_position || snapshot.pending_order_count > 0)
+                              ? "第" + IntegerToString(g_cycle_index + 1) + "组"
+                              : "无活跃订单组";
+   const string cycle = "阶段" + IntegerToString(g_cycle_index + 1) + "/6"
+                        + (g_pending_index >= 0
+                           ? " · 待转" + IntegerToString(g_pending_index + 1)
+                           : "");
+   const string first_direction = GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
+                                                        ? FIRST_SELL : FIRST_BUY);
+   const string stops = IntegerToString(g_gui_applied_config.stop_loss_distance_points)
+                        + "/"
+                        + IntegerToString(g_gui_applied_config.take_profit_distance_points);
+   const string schedule = g_gui_applied_config.start_time + " - "
+                           + g_gui_applied_config.end_time;
+
+   bool ok = true;
+   ok = GuiRefreshOverviewText("title.status", "● " + GuiRunStateText()) && ok;
+   ok = GuiRefreshOverviewText("title.dirty",
+                               g_gui_has_unapplied_changes ? "· 未应用" : " ") && ok;
+   ok = GuiRefreshOverviewText("mode.hint",
+                               g_gui_has_unapplied_changes
+                               ? "有未应用修改：点击应用参数后生效"
+                               : (g_gui_display_mode == GUI_MODE_EXPERT
+                                  ? "专家模式：显示完整运行状态与参数"
+                                  : "简易模式：核心参数优先，全部参数仍可编辑")) && ok;
+   ok = GuiRefreshOverviewText("metric.value.direction", direction) && ok;
+   ok = GuiRefreshOverviewText("metric.value.reversal", reversal) && ok;
+   ok = GuiRefreshOverviewText("metric.value.exposure", exposure) && ok;
+   ok = GuiRefreshOverviewText("field.overview.state", GuiRunStateText()) && ok;
+   ok = GuiRefreshOverviewText("field.overview.direction", first_direction) && ok;
+   ok = GuiRefreshOverviewText("field.overview.order_group", order_group) && ok;
+   ok = GuiRefreshOverviewText("field.overview.cycle", cycle) && ok;
+   ok = GuiRefreshOverviewText("field.overview.positions",
+                               IntegerToString(snapshot.position_count)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.orders",
+                               IntegerToString(snapshot.pending_order_count)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.profit",
+                               DoubleToString(snapshot.floating_profit, 2)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.reversal", reversal) && ok;
+   ok = GuiRefreshOverviewText("field.overview.cycle_mode",
+                               GuiCycleModeText(g_gui_applied_config.cycle_mode)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.distance_mode",
+                               GuiDistanceModeText(g_gui_applied_config.distance_mode)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.order_type",
+                               GuiOrderTypeText(g_gui_applied_config.order_type)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.initial_lots",
+                               DoubleToString(g_gui_applied_config.initial_lots, 8)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.initial_lots_multiplier",
+                               DoubleToString(g_gui_applied_config.initial_lots_multiplier, 8)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.grid_count",
+                               IntegerToString(g_gui_applied_config.grid_count)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.grid_lot_multiplier",
+                               DoubleToString(g_gui_applied_config.grid_lot_multiplier, 8)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.stops", stops) && ok;
+   ok = GuiRefreshOverviewText("field.overview.take_profit_mode",
+                               GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.schedule", schedule) && ok;
+   ok = GuiRefreshOverviewText("field.overview.magic_number",
+                               IntegerToString((long)g_gui_applied_config.magic_number)) && ok;
+   ok = GuiRefreshOverviewText("field.overview.order_comment",
+                               g_gui_applied_config.order_comment) && ok;
+   ok = GuiRefreshOverviewText("notice", g_gui_notice) && ok;
+   if(!ok)
+      return false;
+   ObjectSetInteger(0, g_gui_object_prefix + "title.status", OBJPROP_COLOR,
+                    g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : GuiColorSuccess());
+   ObjectSetInteger(0, g_gui_object_prefix + "title.dirty", OBJPROP_COLOR, GuiColorWarning());
+   ObjectSetInteger(0, g_gui_object_prefix + "mode.hint", OBJPROP_COLOR,
+                    g_gui_has_unapplied_changes ? GuiColorWarning() : GuiColorMuted());
+   ObjectSetInteger(0, g_gui_object_prefix + "notice", OBJPROP_COLOR,
+                    g_gui_run_state == GUI_RUN_ERROR ? C'248,113,113' : GuiColorWarning());
+   ChartRedraw(0);
+   return true;
   }
 
 void GuiMarkDirty()
@@ -4327,13 +4704,13 @@ bool GuiRenderContent()
                              GuiMultipleText(g_gui_draft_config.candle_enable_multiple), left_x,
                              row + row_gap * 2, ok))
          ok = false;
-      if(!GuiRenderEditField("initial_lots", "首单手数",
-                             DoubleToString(g_gui_draft_config.initial_lots, 8), right_x,
-                             row + row_gap * 2, ok))
+      if(!GuiRenderEditableDropdownField("initial_lots", "首单手数",
+                                         DoubleToString(g_gui_draft_config.initial_lots, 8), right_x,
+                                         row + row_gap * 2, ok))
          ok = false;
-      if(!GuiRenderEditField("initial_lots_multiplier", "首单手数倍数",
-                             DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
-                             left_x, row + row_gap * 3, ok))
+      if(!GuiRenderEditableDropdownField("initial_lots_multiplier", "首单手数倍数",
+                                         DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
+                                         left_x, row + row_gap * 3, ok))
          ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
@@ -4346,21 +4723,21 @@ bool GuiRenderContent()
       if(!GuiRenderEnumField("distance_mode", "距离模式",
                              GuiDistanceModeText(g_gui_draft_config.distance_mode), left_x, row, ok))
          ok = false;
-      if(!GuiRenderEditField("stop_loss_distance_points", "固定止损距离(点)",
-                             IntegerToString(g_gui_draft_config.stop_loss_distance_points),
-                             right_x, row, ok))
+      if(!GuiRenderEditableDropdownField("stop_loss_distance_points", "固定止损距离(点)",
+                                         IntegerToString(g_gui_draft_config.stop_loss_distance_points),
+                                         right_x, row, ok))
          ok = false;
-      if(!GuiRenderEditField("take_profit_distance_points", "固定止盈距离(点)",
-                             IntegerToString(g_gui_draft_config.take_profit_distance_points),
-                             left_x, row + row_gap, ok))
+      if(!GuiRenderEditableDropdownField("take_profit_distance_points", "固定止盈距离(点)",
+                                         IntegerToString(g_gui_draft_config.take_profit_distance_points),
+                                         left_x, row + row_gap, ok))
          ok = false;
-      if(!GuiRenderEditField("candle_min_range_points", "K线最小高度(点)",
-                             IntegerToString(g_gui_draft_config.candle_min_range_points),
-                             right_x, row + row_gap, ok))
+      if(!GuiRenderEditableDropdownField("candle_min_range_points", "K线最小高度(点)",
+                                         IntegerToString(g_gui_draft_config.candle_min_range_points),
+                                         right_x, row + row_gap, ok))
          ok = false;
-      if(!GuiRenderEditField("candle_max_range_points", "K线最大高度(点)",
-                             IntegerToString(g_gui_draft_config.candle_max_range_points),
-                             left_x, row + row_gap * 2, ok))
+      if(!GuiRenderEditableDropdownField("candle_max_range_points", "K线最大高度(点)",
+                                         IntegerToString(g_gui_draft_config.candle_max_range_points),
+                                         left_x, row + row_gap * 2, ok))
          ok = false;
       if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
                              GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), right_x,
@@ -4373,12 +4750,12 @@ bool GuiRenderContent()
       const int left_x = x + GUI_CONTENT_PADDING;
       const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
       const int row = y + 94;
-      if(!GuiRenderEditField("grid_count", "网格数量",
-                             IntegerToString(g_gui_draft_config.grid_count), left_x, row, ok))
+      if(!GuiRenderEditableDropdownField("grid_count", "网格数量",
+                                         IntegerToString(g_gui_draft_config.grid_count), left_x, row, ok))
          ok = false;
-      if(!GuiRenderEditField("grid_lot_multiplier", "网格手数倍数",
-                             DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
-                             right_x, row, ok))
+      if(!GuiRenderEditableDropdownField("grid_lot_multiplier", "网格手数倍数",
+                                         DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
+                                         right_x, row, ok))
          ok = false;
       if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
                                 IntegerToString(g_grid_filled_levels), left_x, row + 64, ok))
@@ -4399,14 +4776,14 @@ bool GuiRenderContent()
       const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
       const int row = y + 94;
       const int row_gap = 64;
-      if(!GuiRenderEditField("max_reversals", "最大反手次数",
-                             IntegerToString(g_gui_draft_config.max_reversals), left_x, row, ok))
+      if(!GuiRenderEditableDropdownField("max_reversals", "最大反手次数",
+                                         IntegerToString(g_gui_draft_config.max_reversals), left_x, row, ok))
          ok = false;
-      if(!GuiRenderEditField("start_time", "开始时间",
-                             g_gui_draft_config.start_time, right_x, row, ok))
+      if(!GuiRenderEditableDropdownField("start_time", "开始时间",
+                                         g_gui_draft_config.start_time, right_x, row, ok))
          ok = false;
-      if(!GuiRenderEditField("end_time", "结束时间",
-                             g_gui_draft_config.end_time, left_x, row + row_gap, ok))
+      if(!GuiRenderEditableDropdownField("end_time", "结束时间",
+                                         g_gui_draft_config.end_time, left_x, row + row_gap, ok))
          ok = false;
       if(!GuiRenderEditField("magic_number", "订单识别编号",
                              IntegerToString((long)g_gui_draft_config.magic_number),
@@ -4523,6 +4900,15 @@ void GuiRenderIfNeeded()
    if(g_gui_full_window && g_gui_page != GUI_PAGE_OVERVIEW && !g_gui_dirty)
       return;
    const string snapshot = GuiBuildSnapshot();
+   if(!g_gui_dirty && g_gui_full_window && g_gui_page == GUI_PAGE_OVERVIEW
+      && snapshot != g_gui_last_snapshot)
+     {
+      if(GuiRefreshOverviewData())
+        {
+         g_gui_last_snapshot = snapshot;
+         return;
+        }
+     }
    if(g_gui_dirty || snapshot != g_gui_last_snapshot)
       GuiRender();
   }
@@ -4603,6 +4989,102 @@ bool GuiTryParseInteger(const string value, int &result)
    return true;
   }
 
+bool GuiParseEditableDropdownValue(const string key, const string value,
+                                   string &normalized, string &error)
+  {
+   normalized = value;
+   error = "";
+   string trimmed = value;
+   StringTrimLeft(trimmed);
+   StringTrimRight(trimmed);
+   if(key == "initial_lots" || key == "initial_lots_multiplier"
+      || key == "grid_lot_multiplier")
+     {
+      double parsed = 0.0;
+      if(!GuiTryParseDouble(trimmed, parsed))
+        {
+         error = "请输入有效的正数";
+         return false;
+        }
+      normalized = DoubleToString(parsed, 8);
+      return true;
+     }
+   if(key == "stop_loss_distance_points"
+      || key == "take_profit_distance_points"
+      || key == "candle_min_range_points"
+      || key == "candle_max_range_points"
+      || key == "grid_count" || key == "max_reversals")
+     {
+      int parsed = 0;
+      if(!GuiTryParseInteger(trimmed, parsed))
+        {
+         error = "请输入有效的整数";
+         return false;
+        }
+      if((key == "stop_loss_distance_points"
+          || key == "take_profit_distance_points"
+          || key == "candle_min_range_points"
+          || key == "candle_max_range_points") && parsed <= 0)
+        {
+         error = "距离和K线高度必须大于 0";
+         return false;
+        }
+      if(key == "grid_count" && parsed < 0)
+        {
+         error = "网格数量不能小于 0";
+         return false;
+        }
+      if(key == "max_reversals" && parsed < 0)
+        {
+         error = "最大反手次数不能小于 0";
+         return false;
+        }
+      if(key == "candle_max_range_points"
+         && parsed < g_gui_draft_config.candle_min_range_points)
+        {
+         error = "K线最大高度不能小于最小高度";
+         return false;
+        }
+      normalized = IntegerToString(parsed);
+      return true;
+     }
+   if(key == "magic_number")
+     {
+      long parsed = 0;
+      if(!GuiTryParseLong(trimmed, parsed) || parsed <= 0)
+        {
+         error = "订单识别编号必须是正整数";
+         return false;
+        }
+      normalized = IntegerToString(parsed);
+      return true;
+     }
+   if(key == "start_time" || key == "end_time")
+     {
+      string time_value = trimmed;
+      if(StringLen(time_value) == 4 && StringGetCharacter(time_value, 1) == 58)
+         time_value = "0" + time_value;
+      if(ParseTimeMinutes(time_value) < 0)
+        {
+         error = "时间格式必须为 HH:MM，范围为 00:00-23:59";
+         return false;
+        }
+      normalized = time_value;
+      return true;
+     }
+   if(key == "order_comment")
+     {
+      if(StringLen(trimmed) == 0)
+        {
+         error = "订单注释不能为空";
+         return false;
+        }
+      normalized = trimmed;
+      return true;
+     }
+   return false;
+  }
+
 bool GuiSyncEditValue(const string key)
   {
    if(!GuiIsEditableFieldKey(key))
@@ -4610,7 +5092,20 @@ bool GuiSyncEditValue(const string key)
    const string object_name = g_gui_object_prefix + "field." + key;
    if(ObjectFind(0, object_name) < 0)
       return false;
-   const string value = ObjectGetString(0, object_name, OBJPROP_TEXT);
+   string value = ObjectGetString(0, object_name, OBJPROP_TEXT);
+   string normalized = value;
+   string input_error = "";
+   if(!GuiParseEditableDropdownValue(key, value, normalized, input_error))
+     {
+      g_gui_notice = input_error;
+      GuiRefreshNoticeObject();
+      return false;
+     }
+   if(normalized != value)
+     {
+      ObjectSetString(0, object_name, OBJPROP_TEXT, normalized);
+      value = normalized;
+     }
    double parsed_double = 0.0;
    int parsed_integer = 0;
    long parsed_long = 0;
@@ -4737,6 +5232,7 @@ bool GuiLeaveEditSession()
      }
    g_gui_edit_key = "";
    g_gui_has_unapplied_changes = true;
+   g_gui_edit_original_value = "";
    return true;
   }
 
@@ -4757,8 +5253,35 @@ bool GuiHandleEditEnd(const string object_name)
    if(!GuiSyncEditValue(key))
       return false;
    g_gui_edit_key = "";
+   g_gui_edit_original_value = "";
    GuiMarkDraftChanged();
    return true;
+  }
+
+bool GuiHandleEditKeyDown(const long key_code)
+  {
+   if(StringLen(g_gui_edit_key) == 0)
+      return false;
+   if(key_code == 27)
+     {
+      const string edit_name = g_gui_object_prefix + "field." + g_gui_edit_key;
+      if(ObjectFind(0, edit_name) >= 0)
+         ObjectSetString(0, edit_name, OBJPROP_TEXT, g_gui_edit_original_value);
+      g_gui_edit_key = "";
+      g_gui_edit_original_value = "";
+      g_gui_notice = "已取消本次编辑";
+      GuiMarkDirty();
+      return true;
+     }
+   if(key_code == 13)
+     {
+      if(!GuiLeaveEditSession())
+         return true;
+      g_gui_edit_original_value = "";
+      GuiMarkDirty();
+      return true;
+     }
+   return false;
   }
 
 bool GuiHandleEnumClick(const string object_name)
@@ -4777,6 +5300,20 @@ bool GuiHandleEnumClick(const string object_name)
 bool GuiHandleFieldClick(const string object_name)
   {
    const string field_prefix = g_gui_object_prefix + "field.";
+   const string arrow_prefix = field_prefix + "arrow.";
+   if(StringFind(object_name, arrow_prefix) == 0)
+     {
+      const string arrow_key = StringSubstr(object_name, StringLen(arrow_prefix));
+      if(GuiAnyDropdownOptionCount(arrow_key) <= 0)
+         return false;
+      if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+         return true;
+      g_gui_edit_key = "";
+      g_gui_edit_original_value = "";
+      g_gui_dropdown_key = g_gui_dropdown_key == arrow_key ? "" : arrow_key;
+      GuiMarkDirty();
+      return true;
+     }
    if(StringFind(object_name, field_prefix) != 0)
       return false;
    const string key = StringSubstr(object_name, StringLen(field_prefix));
@@ -4788,6 +5325,9 @@ bool GuiHandleFieldClick(const string object_name)
             return true;
          g_gui_dropdown_key = "";
          g_gui_edit_key = key;
+         const string edit_name = field_prefix + key;
+         g_gui_edit_original_value = ObjectFind(0, edit_name) >= 0
+                                      ? ObjectGetString(0, edit_name, OBJPROP_TEXT) : "";
         }
       const string edit_name = field_prefix + key;
       if(ObjectFind(0, edit_name) >= 0)
@@ -4798,11 +5338,12 @@ bool GuiHandleFieldClick(const string object_name)
         }
       return true;
      }
-   if(GuiDropdownOptionCount(key) <= 0)
+   if(GuiAnyDropdownOptionCount(key) <= 0)
       return false;
    if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
       return true;
    g_gui_edit_key = "";
+   g_gui_edit_original_value = "";
    g_gui_dropdown_key = g_gui_dropdown_key == key ? "" : key;
    GuiMarkDirty();
    return true;
@@ -4819,7 +5360,7 @@ bool GuiHandleDropdownClick(const string object_name)
       return false;
    const string key = StringSubstr(payload, 0, separator);
    const int index = (int)StringToInteger(StringSubstr(payload, separator + 1));
-   if(!GuiSetDropdownValue(key, index))
+   if(!GuiSetAnyDropdownValue(key, index))
       return false;
    g_gui_dropdown_key = "";
    GuiMarkDraftChanged();
@@ -4981,16 +5522,20 @@ bool GuiHandleChartClick(const int x, const int y)
         {
          if(keys[index] != g_gui_dropdown_key)
             continue;
-         const int option_count = GuiDropdownOptionCount(keys[index]);
+         const int option_count = GuiAnyDropdownOptionCount(keys[index]);
          for(int option = 0; option < option_count; option++)
            {
             const int field_x = (index % 2 == 0) ? left_x : right_x;
-            const int option_y = first_y + (index / 2) * row_gap + 18
-                                 + GUI_FIELD_HEIGHT + option * GUI_FIELD_HEIGHT;
-            if(x >= field_x && x <= field_x + value_width
+            const int field_y = first_y + (index / 2) * row_gap + 18;
+            int option_x = field_x;
+            int option_y = field_y;
+            int option_width = value_width;
+            GuiDropdownOptionGeometry(keys[index], field_x, field_y, option,
+                                      option_x, option_y, option_width);
+            if(x >= option_x && x <= option_x + option_width
                && y >= option_y && y <= option_y + GUI_FIELD_HEIGHT)
               {
-               if(GuiSetDropdownValue(keys[index], option))
+               if(GuiSetAnyDropdownValue(keys[index], option))
                  {
                   g_gui_dropdown_key = "";
                   GuiMarkDraftChanged();
@@ -5010,9 +5555,20 @@ bool GuiHandleChartClick(const int x, const int y)
       if(x < field_x || x > field_x + value_width
          || y < field_y || y > field_y + GUI_FIELD_HEIGHT)
          continue;
-      if(GuiDropdownOptionCount(keys[index]) > 0)
+      const bool editable_dropdown = GuiIsEditableDropdownKey(keys[index]);
+      if(!editable_dropdown && GuiAnyDropdownOptionCount(keys[index]) > 0)
         {
          g_gui_edit_key = "";
+         g_gui_edit_original_value = "";
+         g_gui_dropdown_key = g_gui_dropdown_key == keys[index] ? "" : keys[index];
+         GuiMarkDirty();
+         return true;
+        }
+      if(editable_dropdown
+         && x >= field_x + value_width - GUI_DROPDOWN_ARROW_WIDTH)
+        {
+         g_gui_edit_key = "";
+         g_gui_edit_original_value = "";
          g_gui_dropdown_key = g_gui_dropdown_key == keys[index] ? "" : keys[index];
          GuiMarkDirty();
          return true;
@@ -5022,6 +5578,7 @@ bool GuiHandleChartClick(const int x, const int y)
         {
          g_gui_dropdown_key = "";
          g_gui_edit_key = keys[index];
+         g_gui_edit_original_value = ObjectGetString(0, edit_name, OBJPROP_TEXT);
          ObjectSetInteger(0, edit_name, OBJPROP_SELECTABLE, true);
          ObjectSetInteger(0, edit_name, OBJPROP_READONLY, false);
          ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, false);
@@ -5176,6 +5733,11 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(id == CHARTEVENT_KEYDOWN && StringLen(g_gui_edit_key) > 0)
      {
+      if(GuiHandleEditKeyDown(lparam))
+        {
+         GuiRender();
+         return;
+        }
       if(GuiSyncEditValue(g_gui_edit_key))
         {
          g_gui_has_unapplied_changes = true;

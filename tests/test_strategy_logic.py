@@ -331,6 +331,88 @@ def test_mt5_gui_does_not_toggle_a_dropdown_twice_for_one_mouse_click():
     )
 
 
+def test_mt5_gui_declares_all_requested_editable_dropdown_fields():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    keys = [
+        "initial_lots", "initial_lots_multiplier",
+        "stop_loss_distance_points", "take_profit_distance_points",
+        "candle_min_range_points", "candle_max_range_points",
+        "grid_count", "grid_lot_multiplier", "max_reversals",
+        "start_time", "end_time",
+    ]
+    assert "bool GuiIsEditableDropdownKey" in source
+    for key in keys:
+        assert f'"{key}"' in source
+    assert "0.03" in source
+
+
+def test_mt5_gui_editable_dropdowns_have_requested_common_options():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    for value in ["0.01", "0.02", "0.03", "0.04", "0.05", "0.1", "0.2", "0.3", "0.4", "0.5"]:
+        assert value in source
+    for value in ["1.2", "1.3", "1.5", "2.0", "1500", "5.0"]:
+        assert value in source
+    assert "for(int hour = 0; hour < 24; hour++)" in source
+    assert 'StringFormat("%02d:00", hour)' in source
+    assert "int GuiDropdownOptionColumns" in source
+    assert "return 2;" in source
+
+
+def test_mt5_gui_editable_dropdown_uses_large_dedicated_arrow():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "GUI_DROPDOWN_ARROW_WIDTH" in source
+    assert "bool GuiCreateDropdownArrow" in source
+    assert "GUI_DROPDOWN_ARROW_FONT_SIZE = 30" in source
+    assert "GuiCreateDropdownArrow" in source
+
+
+def test_mt5_gui_all_dropdowns_use_the_same_large_arrow():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    dropdown = re.search(
+        r"bool GuiRenderDropdownField\(.*?\n\s*\}\n\n"
+        r"bool GuiRenderEditableDropdownField",
+        source,
+        flags=re.DOTALL,
+    )
+    assert dropdown
+    body = dropdown.group(0)
+    assert "GuiCreateDropdownArrow" in body
+    assert "GUI_DROPDOWN_ARROW_WIDTH" in body
+    assert 'value + " ▾"' not in body
+
+
+def test_mt5_gui_overview_updates_data_in_place_without_rebuilding_panel():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiRefreshOverviewData" in source
+    refresh = re.search(
+        r"\nbool GuiRefreshOverviewData\(\)\n\s*\{.*?\n\s*\}\n\nvoid GuiMarkDirty",
+        source,
+        flags=re.DOTALL,
+    )
+    assert refresh
+    body = refresh.group(0)
+    assert "metric.value.direction" in body
+    assert "overview.positions" in body
+    assert "overview.profit" in body
+    assert "ObjectsDeleteAll" not in body
+    render_if_needed = re.search(
+        r"void GuiRenderIfNeeded\(\).*?\n\s*\}\n\nvoid GuiMarkDraftChanged",
+        source,
+        flags=re.DOTALL,
+    )
+    assert render_if_needed
+    body = render_if_needed.group(0)
+    assert "GuiRefreshOverviewData" in body
+
+
+def test_mt5_gui_editable_dropdown_accepts_valid_custom_values_and_rejects_invalid_text():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    assert "bool GuiParseEditableDropdownValue" in source
+    assert "GuiParseEditableDropdownValue(key, value" in source
+    assert "GuiHandleEditKeyDown" in source
+    assert "key_code == 27" in source
+
+
 def test_mt5_gui_panel_fits_compact_chart_viewport():
     source = MT5_SOURCE.read_text(encoding="utf-8")
     assert "GUI_WINDOW_WIDTH = 760" in source
@@ -448,7 +530,9 @@ def test_mt5_gui_uses_dropdowns_for_enum_parameters_and_edits_for_values():
         "initial_lots", "initial_lots_multiplier", "grid_count",
         "grid_lot_multiplier", "max_reversals", "magic_number", "order_comment",
     ):
-        assert f'GuiRenderEditField("{key}"' in body
+        renderer = "GuiRenderEditField" if key in ("magic_number", "order_comment") \
+            else "GuiRenderEditableDropdownField"
+        assert f'{renderer}("{key}"' in body
 
 
 def test_mt5_gui_keeps_dropdowns_and_edits_above_chart_objects():
