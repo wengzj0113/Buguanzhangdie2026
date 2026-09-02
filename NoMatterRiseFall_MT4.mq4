@@ -1693,7 +1693,8 @@ void Manage()
 
        if(TakeProfitReached(position_type, take_profit))
         {
-         DeleteAllPending();
+         if(!DeleteAllPending())
+            return;
          if(CloseAllPositions(position_type))
            {
             g_pending_index = -1;
@@ -2537,6 +2538,8 @@ bool MultiHandleReverseFill(MultiGroupState &group, const int type, const double
 
 bool MultiManageGroup(MultiGroupState &group)
   {
+   if(MultiHandleInitialPendingFill(group))
+      return true;
    int ticket = -1;
    int type = OP_BUY;
    double total = 0.0;
@@ -2545,8 +2548,6 @@ bool MultiManageGroup(MultiGroupState &group)
    double take_profit = 0.0;
    if(!MultiFindPosition(group.id, ticket, type, total, entry, stop_loss, take_profit))
      {
-      if(MultiHandleInitialPendingFill(group))
-         return true;
       const int status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(status == REVERSE_PENDING_ACTIVE || status == REVERSE_PENDING_FILLED)
          return true;
@@ -2595,7 +2596,8 @@ bool MultiManageGroup(MultiGroupState &group)
    if((type == OP_BUY && Bid >= desired_take_profit)
       || (type == OP_SELL && Ask <= desired_take_profit))
      {
-      MultiDeletePending(group.id);
+      if(!MultiDeletePending(group.id))
+         return true;
       if(MultiClosePositions(group.id)) group.active = false;
       return false;
      }
