@@ -220,6 +220,12 @@ int    g_cycle_index = 0;
 int    g_pending_index = -1;
 int    g_reversal_count = 0;
 ulong  g_pending_ticket = 0;
+ulong  g_initial_high_ticket = 0;
+ulong  g_initial_low_ticket = 0;
+double g_initial_high_price = 0.0;
+double g_initial_low_price = 0.0;
+long   g_initial_high_direction = ORDER_TYPE_BUY;
+long   g_initial_low_direction = ORDER_TYPE_SELL;
 int    g_execution_lock_handle = INVALID_HANDLE;
 bool   g_duplicate_exposure_logged = false;
 int    g_transition_phase = TRANSITION_NONE;
@@ -492,6 +498,12 @@ void SaveState()
    GlobalVariableSet(prefix + ".pending", (double)g_pending_index);
    GlobalVariableSet(prefix + ".reversals", (double)g_reversal_count);
    GlobalVariableSet(prefix + ".pendingticket", (double)g_pending_ticket);
+   GlobalVariableSet(prefix + ".initial_high_ticket", (double)g_initial_high_ticket);
+   GlobalVariableSet(prefix + ".initial_low_ticket", (double)g_initial_low_ticket);
+   GlobalVariableSet(prefix + ".initial_high_price", g_initial_high_price);
+   GlobalVariableSet(prefix + ".initial_low_price", g_initial_low_price);
+   GlobalVariableSet(prefix + ".initial_high_direction", (double)g_initial_high_direction);
+   GlobalVariableSet(prefix + ".initial_low_direction", (double)g_initial_low_direction);
    GlobalVariableSet(prefix + ".candleentrybar", (double)g_last_candle_entry_bar_time);
    GlobalVariableSet(prefix + ".meta", (double)(g_active_first_direction + g_active_cycle_mode * 2));
    GlobalVariableSet(prefix + ".slpoints", (double)g_group_stop_points);
@@ -523,6 +535,12 @@ void ClearState()
    GlobalVariableDel(prefix + ".pending");
    GlobalVariableDel(prefix + ".reversals");
    GlobalVariableDel(prefix + ".pendingticket");
+   GlobalVariableDel(prefix + ".initial_high_ticket");
+   GlobalVariableDel(prefix + ".initial_low_ticket");
+   GlobalVariableDel(prefix + ".initial_high_price");
+   GlobalVariableDel(prefix + ".initial_low_price");
+   GlobalVariableDel(prefix + ".initial_high_direction");
+   GlobalVariableDel(prefix + ".initial_low_direction");
    GlobalVariableDel(prefix + ".meta");
    GlobalVariableDel(prefix + ".slpoints");
    GlobalVariableDel(prefix + ".tppoints");
@@ -548,6 +566,12 @@ void ClearState()
    g_pending_index = -1;
    g_reversal_count = 0;
    g_pending_ticket = 0;
+   g_initial_high_ticket = 0;
+   g_initial_low_ticket = 0;
+   g_initial_high_price = 0.0;
+   g_initial_low_price = 0.0;
+   g_initial_high_direction = ORDER_TYPE_BUY;
+   g_initial_low_direction = ORDER_TYPE_SELL;
    g_transition_phase = TRANSITION_NONE;
    g_transition_id = 0;
    g_reset_pending = false;
@@ -612,6 +636,18 @@ bool LoadStateFromPrefix(const string prefix)
       g_reversal_count = (int)MathRound(GlobalVariableGet(prefix + ".reversals"));
    if(GlobalVariableCheck(prefix + ".pendingticket"))
       g_pending_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".pendingticket"));
+   if(GlobalVariableCheck(prefix + ".initial_high_ticket"))
+      g_initial_high_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_high_ticket"));
+   if(GlobalVariableCheck(prefix + ".initial_low_ticket"))
+      g_initial_low_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_low_ticket"));
+   if(GlobalVariableCheck(prefix + ".initial_high_price"))
+      g_initial_high_price = GlobalVariableGet(prefix + ".initial_high_price");
+   if(GlobalVariableCheck(prefix + ".initial_low_price"))
+      g_initial_low_price = GlobalVariableGet(prefix + ".initial_low_price");
+   if(GlobalVariableCheck(prefix + ".initial_high_direction"))
+      g_initial_high_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_high_direction"));
+   if(GlobalVariableCheck(prefix + ".initial_low_direction"))
+      g_initial_low_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_low_direction"));
    if(GlobalVariableCheck(prefix + ".cumlots"))
       g_cumulative_loss_lots = GlobalVariableGet(prefix + ".cumlots");
    if(GlobalVariableCheck(prefix + ".prevgridlots"))
@@ -1541,6 +1577,12 @@ bool IsGridPendingComment(const string comment)
    return StringFind(comment, ".Grid") >= 0;
   }
 
+bool IsInitialPendingComment(const string comment)
+  {
+   return StringFind(comment, ".InitialHigh") >= 0
+          || StringFind(comment, ".InitialLow") >= 0;
+  }
+
 bool FindPending(ulong &ticket, long &type, double &volume, double &price)
   {
    for(int index = 0; index < OrdersTotal(); index++)
@@ -1549,9 +1591,10 @@ bool FindPending(ulong &ticket, long &type, double &volume, double &price)
       if(candidate == 0)
          continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol
-         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
-         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
-         || IsGridPendingComment(OrderGetString(ORDER_COMMENT)))
+          || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+          || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+          || IsGridPendingComment(OrderGetString(ORDER_COMMENT))
+          || IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
          continue;
 
       ticket = candidate;
@@ -1571,9 +1614,10 @@ bool FindGridPending(ulong &ticket, long &type, double &volume, double &price)
       if(candidate == 0)
          continue;
       if(OrderGetString(ORDER_SYMBOL) != _Symbol
-         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
-         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
-         || !IsGridPendingComment(OrderGetString(ORDER_COMMENT)))
+          || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+          || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+          || !IsGridPendingComment(OrderGetString(ORDER_COMMENT))
+          || IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
          continue;
 
       ticket = candidate;
@@ -1612,9 +1656,10 @@ bool NormalizeSingleGroupPending(const bool grid, const long expected_direction,
       const ulong candidate = OrderGetTicket(index);
       if(candidate == 0
          || OrderGetString(ORDER_SYMBOL) != _Symbol
-         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
-         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
-         || IsGridPendingComment(OrderGetString(ORDER_COMMENT)) != grid)
+          || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+          || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+          || IsGridPendingComment(OrderGetString(ORDER_COMMENT)) != grid
+          || IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
          continue;
       if(!tracked_ticket_filled
          && PendingDirection(OrderGetInteger(ORDER_TYPE)) == expected_direction
@@ -1702,8 +1747,8 @@ bool DeleteAllPending()
       if(ticket == 0)
          continue;
       if(OrderGetString(ORDER_SYMBOL) == _Symbol
-         && (ulong)OrderGetInteger(ORDER_MAGIC) == g_gui_applied_config.magic_number
-         && IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
+          && (ulong)OrderGetInteger(ORDER_MAGIC) == g_gui_applied_config.magic_number
+          && IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
         {
          if(!DeletePendingTicket(ticket, "Delete all pending"))
              deleted = false;
@@ -1759,6 +1804,8 @@ bool HasOurPending()
    if(FindPending(ticket, type, volume, price))
       return true;
    if(FindGridPending(ticket, type, volume, price))
+      return true;
+   if(g_initial_high_ticket > 0 || g_initial_low_ticket > 0)
       return true;
    return false;
   }
@@ -1967,6 +2014,173 @@ double NextGroupLots(const double fallback_volume)
    else
       requested *= g_gui_applied_config.initial_lots_multiplier;
    return VolumeNormalize(requested);
+  }
+
+bool PlaceInitialPendingOrder(const long direction, const double entry,
+                              const int distance_points, const double volume,
+                              const string comment, ulong &ticket)
+  {
+   ticket = 0;
+   const long pending_type = PendingTypeForDirection(direction, entry);
+   const double normalized_entry = PriceNormalize(entry);
+   const double distance = distance_points * _Point;
+   double stop_loss = 0.0;
+   double take_profit = 0.0;
+   bool sent = false;
+   if(direction == ORDER_TYPE_BUY)
+     {
+      stop_loss = PriceNormalize(normalized_entry - distance);
+      take_profit = PriceNormalize(normalized_entry + distance);
+      sent = pending_type == ORDER_TYPE_BUY_STOP
+             ? g_trade.BuyStop(volume, normalized_entry, _Symbol, stop_loss, take_profit,
+                               ORDER_TIME_GTC, 0, comment)
+             : g_trade.BuyLimit(volume, normalized_entry, _Symbol, stop_loss, take_profit,
+                                ORDER_TIME_GTC, 0, comment);
+     }
+   else
+     {
+      stop_loss = PriceNormalize(normalized_entry + distance);
+      take_profit = PriceNormalize(normalized_entry - distance);
+      sent = pending_type == ORDER_TYPE_SELL_STOP
+             ? g_trade.SellStop(volume, normalized_entry, _Symbol, stop_loss, take_profit,
+                                ORDER_TIME_GTC, 0, comment)
+             : g_trade.SellLimit(volume, normalized_entry, _Symbol, stop_loss, take_profit,
+                                 ORDER_TIME_GTC, 0, comment);
+     }
+   const uint retcode = g_trade.ResultRetcode();
+   if(!sent || (retcode != TRADE_RETCODE_DONE && retcode != TRADE_RETCODE_PLACED)
+      || g_trade.ResultOrder() == 0)
+     {
+      PrintFormat("Initial pending failed, retcode=%u, %s",
+                  retcode, g_trade.ResultRetcodeDescription());
+      return false;
+     }
+   ticket = g_trade.ResultOrder();
+   return true;
+  }
+
+bool PlaceInitialPendingPair(const double previous_high, const double previous_low,
+                             const int range_points, const double volume)
+  {
+   if(g_initial_high_ticket > 0 || g_initial_low_ticket > 0
+      || range_points <= 0 || volume <= 0.0)
+      return false;
+   const long high_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                               ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   const long low_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                              ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   ulong high_ticket = 0;
+   ulong low_ticket = 0;
+   if(!PlaceInitialPendingOrder(high_direction, previous_high, range_points, volume,
+                                g_gui_applied_config.order_comment + ".InitialHigh",
+                                high_ticket))
+      return false;
+   if(!PlaceInitialPendingOrder(low_direction, previous_low, range_points, volume,
+                                g_gui_applied_config.order_comment + ".InitialLow",
+                                low_ticket))
+     {
+      DeletePendingTicket(high_ticket, "Initial pending rollback");
+      return false;
+     }
+   g_initial_high_ticket = high_ticket;
+   g_initial_low_ticket = low_ticket;
+   g_initial_high_price = PriceNormalize(previous_high);
+   g_initial_low_price = PriceNormalize(previous_low);
+   g_initial_high_direction = high_direction;
+   g_initial_low_direction = low_direction;
+   g_group_stop_points = range_points;
+   g_group_take_profit_points = range_points;
+   SaveState();
+   return true;
+  }
+
+int InitialPendingStatus(const ulong ticket)
+  {
+   if(ticket == 0)
+      return REVERSE_PENDING_UNKNOWN;
+   if(OrderSelect(ticket))
+     {
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol
+         && (ulong)OrderGetInteger(ORDER_MAGIC) == g_gui_applied_config.magic_number
+         && IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
+         return REVERSE_PENDING_ACTIVE;
+     }
+   if(!HistoryOrderSelect(ticket))
+      return REVERSE_PENDING_UNKNOWN;
+   const long state = HistoryOrderGetInteger(ticket, ORDER_STATE);
+   if(state == ORDER_STATE_FILLED)
+      return REVERSE_PENDING_FILLED;
+   if(state == ORDER_STATE_CANCELED || state == ORDER_STATE_EXPIRED
+      || state == ORDER_STATE_REJECTED)
+      return REVERSE_PENDING_CANCELED;
+   return REVERSE_PENDING_UNKNOWN;
+  }
+
+bool HandleInitialPendingFill()
+  {
+   if(g_initial_high_ticket == 0 && g_initial_low_ticket == 0)
+      return false;
+   const int high_status = InitialPendingStatus(g_initial_high_ticket);
+   const int low_status = InitialPendingStatus(g_initial_low_ticket);
+   if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
+      return true;
+   ulong filled_ticket = high_status == REVERSE_PENDING_FILLED
+                         ? g_initial_high_ticket : g_initial_low_ticket;
+   if(filled_ticket > 0)
+     {
+      const ulong other_ticket = filled_ticket == g_initial_high_ticket
+                                 ? g_initial_low_ticket : g_initial_high_ticket;
+      if(other_ticket > 0 && InitialPendingStatus(other_ticket) == REVERSE_PENDING_ACTIVE
+         && !DeletePendingTicket(other_ticket, "Initial OCO delete"))
+         return true;
+      ulong position_ticket = 0;
+      long position_type = POSITION_TYPE_BUY;
+      double volume = 0.0;
+      double entry = 0.0;
+      double stop_loss = 0.0;
+      double take_profit = 0.0;
+      if(!FindPositionByPendingOrder(filled_ticket, position_ticket, position_type,
+                                     volume, entry, stop_loss, take_profit))
+         return true;
+      g_active_first_direction = position_type == POSITION_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+      g_active_cycle_mode = g_gui_applied_config.cycle_mode;
+      g_cycle_index = 0;
+      g_pending_index = -1;
+      g_pending_ticket = 0;
+      g_group_anchor_price = entry;
+      g_group_last_entry = entry;
+      g_group_linear_extreme = entry;
+      g_group_total_lots = TotalPositionVolume(position_type);
+      g_grid_filled_levels = 0;
+      g_grid_pending_level = 0;
+      g_grid_pending_price = 0.0;
+      g_grid_lots = g_previous_grid_lots > 0.0
+                    ? VolumeNormalize(g_previous_grid_lots
+                                      * g_gui_applied_config.grid_lot_multiplier)
+                    : g_group_total_lots;
+      g_had_position = true;
+      g_last_position_type = position_type;
+      g_initial_high_ticket = 0;
+      g_initial_low_ticket = 0;
+      g_initial_high_price = 0.0;
+      g_initial_low_price = 0.0;
+      SetGroupStops(position_type);
+      EnsureNextPending(position_type, GroupStopPrice(position_type),
+                        GroupTakeProfitPrice(position_type), g_group_total_lots);
+      EnsureGridPending(position_type);
+      SaveState();
+      return true;
+     }
+   if(high_status != REVERSE_PENDING_ACTIVE && low_status != REVERSE_PENDING_ACTIVE)
+     {
+      g_initial_high_ticket = 0;
+      g_initial_low_ticket = 0;
+      g_initial_high_price = 0.0;
+      g_initial_low_price = 0.0;
+      SaveState();
+      return false;
+     }
+   return true;
   }
 
 bool PlaceNextPending(const long next_direction, const double stop_loss,
@@ -2377,6 +2591,9 @@ void Manage()
       SaveState();
      }
 
+   if(HandleInitialPendingFill())
+      return;
+
    ulong position_ticket = 0;
    long position_type = POSITION_TYPE_BUY;
    double volume = 0.0;
@@ -2554,6 +2771,21 @@ void Manage()
       const datetime current_bar_time = iTime(_Symbol, _Period, 0);
       if(current_bar_time > 0 && current_bar_time == g_last_candle_entry_bar_time)
          return;
+      double previous_high = 0.0;
+      double previous_low = 0.0;
+      int range_points = 0;
+      if(!GetPreviousCandleRange(previous_high, previous_low, range_points))
+         return;
+      const double initial_lots = g_cumulative_loss_lots > 0.0
+                                  ? VolumeNormalize(g_cumulative_loss_lots)
+                                  : VolumeNormalize(g_gui_applied_config.initial_lots);
+      if(PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots))
+        {
+         if(current_bar_time > 0)
+            g_last_candle_entry_bar_time = current_bar_time;
+         SaveState();
+        }
+      return;
      }
 
    int initial_stop_points = 0;
@@ -2628,6 +2860,12 @@ struct MultiGroupState
    int      pending_index;
    int      reversal_count;
    ulong    pending_ticket;
+   ulong    initial_high_ticket;
+   ulong    initial_low_ticket;
+   double   initial_high_price;
+   double   initial_low_price;
+   long     initial_high_direction;
+   long     initial_low_direction;
    ulong    grid_pending_ticket;
    int      stop_points;
    int      take_profit_points;
@@ -2660,6 +2898,12 @@ bool ResetInMemoryStrategyState()
    g_pending_index = -1;
    g_reversal_count = 0;
    g_pending_ticket = 0;
+   g_initial_high_ticket = 0;
+   g_initial_low_ticket = 0;
+   g_initial_high_price = 0.0;
+   g_initial_low_price = 0.0;
+   g_initial_high_direction = ORDER_TYPE_BUY;
+   g_initial_low_direction = ORDER_TYPE_SELL;
    g_last_candle_entry_bar_time = 0;
    g_transition_phase = TRANSITION_NONE;
    g_transition_id = 0;
@@ -2692,6 +2936,12 @@ string MultiGroupComment(const int group_id, const bool grid)
           + (grid ? ".Grid" : "");
   }
 
+string MultiInitialPendingComment(const int group_id, const bool high)
+  {
+   return g_gui_applied_config.order_comment + MultiGroupTag(group_id)
+          + (high ? ".InitialHigh" : ".InitialLow");
+  }
+
 string MultiStatePrefix(const int group_id)
   {
    return StatePrefix() + ".multi." + IntegerToString(group_id);
@@ -2707,6 +2957,12 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".pendingindex");
    GlobalVariableDel(prefix + ".reversals");
    GlobalVariableDel(prefix + ".pendingticket");
+   GlobalVariableDel(prefix + ".initial_high_ticket");
+   GlobalVariableDel(prefix + ".initial_low_ticket");
+   GlobalVariableDel(prefix + ".initial_high_price");
+   GlobalVariableDel(prefix + ".initial_low_price");
+   GlobalVariableDel(prefix + ".initial_high_direction");
+   GlobalVariableDel(prefix + ".initial_low_direction");
    GlobalVariableDel(prefix + ".gridticket");
    GlobalVariableDel(prefix + ".slpoints");
    GlobalVariableDel(prefix + ".tppoints");
@@ -2727,6 +2983,12 @@ bool MultiCommentMatches(const string comment, const int group_id)
    return StringFind(comment, MultiGroupTag(group_id)) >= 0;
   }
 
+bool MultiIsInitialPendingComment(const string comment)
+  {
+   return StringFind(comment, ".InitialHigh") >= 0
+          || StringFind(comment, ".InitialLow") >= 0;
+  }
+
 int MultiFindGroupIndex(const int group_id)
   {
    for(int index = 0; index < ArraySize(g_multi_groups); index++)
@@ -2745,6 +3007,12 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.pending_index = -1;
    group.reversal_count = 0;
    group.pending_ticket = 0;
+   group.initial_high_ticket = 0;
+   group.initial_low_ticket = 0;
+   group.initial_high_price = 0.0;
+   group.initial_low_price = 0.0;
+   group.initial_high_direction = ORDER_TYPE_BUY;
+   group.initial_low_direction = ORDER_TYPE_SELL;
    group.grid_pending_ticket = 0;
    group.stop_points = 0;
    group.take_profit_points = 0;
@@ -2831,7 +3099,9 @@ bool MultiFindPending(const int group_id, const bool grid, ulong &ticket, long &
          || !IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
          continue;
       const string comment = OrderGetString(ORDER_COMMENT);
-      if(!MultiCommentMatches(comment, group_id) || IsGridPendingComment(comment) != grid)
+      if(!MultiCommentMatches(comment, group_id)
+         || IsGridPendingComment(comment) != grid
+         || MultiIsInitialPendingComment(comment))
          continue;
       ticket = candidate;
       type = OrderGetInteger(ORDER_TYPE);
@@ -2852,6 +3122,12 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".pendingindex", (double)group.pending_index);
    GlobalVariableSet(prefix + ".reversals", (double)group.reversal_count);
    GlobalVariableSet(prefix + ".pendingticket", (double)group.pending_ticket);
+   GlobalVariableSet(prefix + ".initial_high_ticket", (double)group.initial_high_ticket);
+   GlobalVariableSet(prefix + ".initial_low_ticket", (double)group.initial_low_ticket);
+   GlobalVariableSet(prefix + ".initial_high_price", group.initial_high_price);
+   GlobalVariableSet(prefix + ".initial_low_price", group.initial_low_price);
+   GlobalVariableSet(prefix + ".initial_high_direction", (double)group.initial_high_direction);
+   GlobalVariableSet(prefix + ".initial_low_direction", (double)group.initial_low_direction);
    GlobalVariableSet(prefix + ".gridticket", (double)group.grid_pending_ticket);
    GlobalVariableSet(prefix + ".slpoints", (double)group.stop_points);
    GlobalVariableSet(prefix + ".tppoints", (double)group.take_profit_points);
@@ -2898,6 +3174,18 @@ void MultiLoadGroups()
       state.pending_index = (int)MathRound(GlobalVariableGet(prefix + ".pendingindex"));
       state.reversal_count = (int)MathRound(GlobalVariableGet(prefix + ".reversals"));
       state.pending_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".pendingticket"));
+      if(GlobalVariableCheck(prefix + ".initial_high_ticket"))
+         state.initial_high_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_high_ticket"));
+      if(GlobalVariableCheck(prefix + ".initial_low_ticket"))
+         state.initial_low_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_low_ticket"));
+      if(GlobalVariableCheck(prefix + ".initial_high_price"))
+         state.initial_high_price = GlobalVariableGet(prefix + ".initial_high_price");
+      if(GlobalVariableCheck(prefix + ".initial_low_price"))
+         state.initial_low_price = GlobalVariableGet(prefix + ".initial_low_price");
+      if(GlobalVariableCheck(prefix + ".initial_high_direction"))
+         state.initial_high_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_high_direction"));
+      if(GlobalVariableCheck(prefix + ".initial_low_direction"))
+         state.initial_low_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_low_direction"));
       state.grid_pending_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".gridticket"));
       state.stop_points = (int)MathRound(GlobalVariableGet(prefix + ".slpoints"));
       state.take_profit_points = (int)MathRound(GlobalVariableGet(prefix + ".tppoints"));
@@ -3086,6 +3374,124 @@ double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
    else
       requested *= g_gui_applied_config.initial_lots_multiplier;
    return VolumeNormalize(requested);
+  }
+
+int MultiInitialPendingStatus(const ulong ticket, const int group_id)
+  {
+   if(ticket == 0)
+      return REVERSE_PENDING_UNKNOWN;
+   if(OrderSelect(ticket))
+     {
+      const string comment = OrderGetString(ORDER_COMMENT);
+      if(OrderGetString(ORDER_SYMBOL) == _Symbol
+         && (ulong)OrderGetInteger(ORDER_MAGIC) == g_gui_applied_config.magic_number
+         && MultiCommentMatches(comment, group_id)
+         && MultiIsInitialPendingComment(comment))
+         return REVERSE_PENDING_ACTIVE;
+     }
+   if(!HistoryOrderSelect(ticket))
+      return REVERSE_PENDING_UNKNOWN;
+   const long state = HistoryOrderGetInteger(ticket, ORDER_STATE);
+   if(state == ORDER_STATE_FILLED)
+      return REVERSE_PENDING_FILLED;
+   if(state == ORDER_STATE_CANCELED || state == ORDER_STATE_EXPIRED
+      || state == ORDER_STATE_REJECTED)
+      return REVERSE_PENDING_CANCELED;
+   return REVERSE_PENDING_UNKNOWN;
+  }
+
+bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_high,
+                                  const double previous_low, const int range_points,
+                                  const double volume)
+  {
+   if(group.initial_high_ticket > 0 || group.initial_low_ticket > 0)
+      return true;
+   const long high_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                               ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   const long low_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                              ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   ulong high_ticket = 0;
+   ulong low_ticket = 0;
+   if(!PlaceInitialPendingOrder(high_direction, previous_high, range_points, volume,
+                                MultiInitialPendingComment(group.id, true), high_ticket))
+      return false;
+   if(!PlaceInitialPendingOrder(low_direction, previous_low, range_points, volume,
+                                MultiInitialPendingComment(group.id, false), low_ticket))
+     {
+      DeletePendingTicket(high_ticket, "Multi initial pending rollback");
+      return false;
+     }
+   group.initial_high_ticket = high_ticket;
+   group.initial_low_ticket = low_ticket;
+   group.initial_high_price = PriceNormalize(previous_high);
+   group.initial_low_price = PriceNormalize(previous_low);
+   group.initial_high_direction = high_direction;
+   group.initial_low_direction = low_direction;
+   group.stop_points = range_points;
+   group.take_profit_points = range_points;
+   return true;
+  }
+
+bool MultiHandleInitialPendingFill(MultiGroupState &group)
+  {
+   if(group.initial_high_ticket == 0 && group.initial_low_ticket == 0)
+      return false;
+   const int high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
+   const int low_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+   if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
+      return true;
+   const ulong filled_ticket = high_status == REVERSE_PENDING_FILLED
+                               ? group.initial_high_ticket : group.initial_low_ticket;
+   if(filled_ticket > 0)
+     {
+      const ulong other_ticket = filled_ticket == group.initial_high_ticket
+                                 ? group.initial_low_ticket : group.initial_high_ticket;
+      if(other_ticket > 0
+         && MultiInitialPendingStatus(other_ticket, group.id) == REVERSE_PENDING_ACTIVE
+         && !DeletePendingTicket(other_ticket, "Multi initial OCO delete"))
+         return true;
+      ulong position_ticket = 0;
+      long position_type = POSITION_TYPE_BUY;
+      double volume = 0.0;
+      double entry = 0.0;
+      double stop_loss = 0.0;
+      double take_profit = 0.0;
+      if(!FindPositionByPendingOrder(filled_ticket, position_ticket, position_type,
+                                     volume, entry, stop_loss, take_profit))
+         return true;
+      group.first_direction = position_type == POSITION_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+      group.cycle_index = 0;
+      group.pending_index = -1;
+      group.pending_ticket = 0;
+      group.anchor_price = entry;
+      group.last_entry = entry;
+      group.linear_extreme = entry;
+      group.total_lots = volume;
+      group.grid_filled_levels = 0;
+      group.grid_pending_level = 0;
+      group.grid_pending_price = 0.0;
+      group.grid_lots = group.previous_grid_lots > 0.0
+                        ? VolumeNormalize(group.previous_grid_lots
+                                          * g_gui_applied_config.grid_lot_multiplier)
+                        : group.total_lots;
+      group.initial_high_ticket = 0;
+      group.initial_low_ticket = 0;
+      group.initial_high_price = 0.0;
+      group.initial_low_price = 0.0;
+      MultiSetStops(group, position_type);
+      MultiPlaceReversePending(group, position_type);
+      MultiPlaceGridPending(group, position_type);
+      return true;
+     }
+   if(high_status != REVERSE_PENDING_ACTIVE && low_status != REVERSE_PENDING_ACTIVE)
+     {
+      group.initial_high_ticket = 0;
+      group.initial_low_ticket = 0;
+      group.initial_high_price = 0.0;
+      group.initial_low_price = 0.0;
+      return false;
+     }
+   return true;
   }
 
 bool MultiPlaceReversePending(MultiGroupState &group, const long current_type)
@@ -3284,6 +3690,8 @@ bool MultiManageGroup(MultiGroupState &group)
                                                stop_loss, take_profit);
    if(!has_position)
      {
+      if(MultiHandleInitialPendingFill(group))
+         return true;
       const int pending_status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(pending_status == REVERSE_PENDING_ACTIVE
          || pending_status == REVERSE_PENDING_FILLED)
@@ -3423,8 +3831,7 @@ bool MultiTryOpenCandleGroup()
    double previous_low = 0.0;
    int range_points = 0;
    long first_direction = ORDER_TYPE_BUY;
-   if(!GetPreviousCandleRange(previous_high, previous_low, range_points)
-      || !GetBreakoutDirection(previous_high, previous_low, first_direction))
+    if(!GetPreviousCandleRange(previous_high, previous_low, range_points))
       return false;
    const datetime current_bar = iTime(_Symbol, _Period, 0);
    if(g_gui_applied_config.candle_order_mode == KORDER_ONCE_PER_BAR
@@ -3443,8 +3850,28 @@ bool MultiTryOpenCandleGroup()
    MultiResetState(state, new_group_id);
    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
    state.cycle_mode = g_gui_applied_config.cycle_mode;
-   state.stop_points = range_points;
-   state.take_profit_points = range_points;
+    state.stop_points = range_points;
+    state.take_profit_points = range_points;
+    if(g_gui_applied_config.candle_order_mode == KORDER_ONCE_PER_BAR)
+      {
+       if(!MultiPlaceInitialPendingPair(state, previous_high, previous_low,
+                                        range_points, g_gui_applied_config.initial_lots))
+         {
+          MultiRemoveGroup(new_index);
+          return false;
+         }
+       g_multi_groups[new_index] = state;
+       MultiSaveGroup(g_multi_groups[new_index]);
+       if(current_bar > 0)
+          g_multi_last_trigger_bar = current_bar;
+       return true;
+      }
+    if(!GetBreakoutDirection(previous_high, previous_low, first_direction))
+      {
+       MultiRemoveGroup(new_index);
+       return false;
+      }
+    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
    if(!MultiOpenMarket(state, first_direction, g_gui_applied_config.initial_lots))
      {
       MultiRemoveGroup(new_index);
