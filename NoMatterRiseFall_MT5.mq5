@@ -255,6 +255,7 @@ bool GuiRenderMinimizedBar();
 void GuiRenderIfNeeded();
 void GuiMarkDirty();
 bool GuiHandleDropdownClick(const string object_name);
+bool GuiHandleFieldClick(const string object_name);
 bool GuiHandleChartClick(const int x, const int y);
 void GuiReleaseButtonState(const string object_name);
 bool GuiSyncEditValue(const string key);
@@ -4712,6 +4713,40 @@ bool GuiHandleEnumClick(const string object_name)
    return true;
   }
 
+bool GuiHandleFieldClick(const string object_name)
+  {
+   const string field_prefix = g_gui_object_prefix + "field.";
+   if(StringFind(object_name, field_prefix) != 0)
+      return false;
+   const string key = StringSubstr(object_name, StringLen(field_prefix));
+   if(GuiIsEditableFieldKey(key))
+     {
+      if(g_gui_edit_key != key)
+        {
+         if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+            return true;
+         g_gui_dropdown_key = "";
+         g_gui_edit_key = key;
+        }
+      const string edit_name = field_prefix + key;
+      if(ObjectFind(0, edit_name) >= 0)
+        {
+         ObjectSetInteger(0, edit_name, OBJPROP_SELECTABLE, true);
+         ObjectSetInteger(0, edit_name, OBJPROP_READONLY, false);
+         ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, false);
+        }
+      return true;
+     }
+   if(GuiDropdownOptionCount(key) <= 0)
+      return false;
+   if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+      return true;
+   g_gui_edit_key = "";
+   g_gui_dropdown_key = g_gui_dropdown_key == key ? "" : key;
+   GuiMarkDirty();
+   return true;
+  }
+
 bool GuiHandleDropdownClick(const string object_name)
   {
    const string dropdown_prefix = g_gui_object_prefix + "dropdown.";
@@ -4732,8 +4767,109 @@ bool GuiHandleDropdownClick(const string object_name)
 
 bool GuiHandleChartClick(const int x, const int y)
   {
-   if(!g_gui_full_window || g_gui_close_confirm_open)
+   if(g_gui_close_confirm_open)
       return false;
+
+   if(!g_gui_full_window)
+     {
+      const int restore_x = 18 + GUI_WINDOW_WIDTH - 58;
+      if(x >= restore_x && x <= restore_x + 46 && y >= 22 && y <= 52)
+        {
+         g_gui_dropdown_key = "";
+         g_gui_edit_key = "";
+         if(!GuiPrepareChartForWindow())
+           {
+            g_gui_run_state = GUI_RUN_ERROR;
+            g_gui_notice = "GUI无法隐藏图表交易叠加层";
+            GuiMarkDirty();
+            return true;
+           }
+         g_gui_full_window = true;
+         GuiMarkDirty();
+         return true;
+        }
+      return false;
+     }
+
+   const int navigation_x = 18 + 12;
+   const int navigation_width = GUI_NAV_WIDTH - 24;
+   for(int index = 0; index < 5; index++)
+     {
+      const int navigation_y = 60 + 48 + index * 48;
+      if(x < navigation_x || x > navigation_x + navigation_width
+         || y < navigation_y - 4 || y > navigation_y + 32)
+         continue;
+      if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+         return true;
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      g_gui_page = (GuiPage)index;
+      GuiMarkDirty();
+      return true;
+     }
+
+   const int content_x = GUI_CONTENT_X + GUI_CONTENT_WIDTH - 112;
+   if(x >= content_x && x <= content_x + 92 && y >= 72 && y <= 96)
+     {
+      if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+         return true;
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      g_gui_display_mode = g_gui_display_mode == GUI_MODE_EXPERT
+                           ? GUI_MODE_SIMPLE : GUI_MODE_EXPERT;
+      GuiMarkDirty();
+      return true;
+     }
+
+   const int actions_x = GUI_CONTENT_X + GUI_CONTENT_PADDING;
+   const int actions_y = GUI_WINDOW_HEIGHT - 44;
+   if(y >= actions_y && y <= actions_y + 28)
+     {
+      if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+         return true;
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      if(x >= actions_x && x <= actions_x + 88)
+        {
+         GuiApplyDraft();
+         return true;
+        }
+      if(x >= actions_x + 94 && x <= actions_x + 166)
+        {
+         if(g_gui_run_state == GUI_RUN_PAUSED_INITIAL)
+           {
+            g_gui_run_state = GUI_RUN_RUNNING;
+            g_gui_notice = "已恢复；不会强制开首单";
+           }
+         else if(g_gui_run_state != GUI_RUN_CLEANING)
+           {
+            g_gui_run_state = GUI_RUN_PAUSED_INITIAL;
+            g_gui_notice = "已暂停新首单；现有持仓及挂单继续管理";
+           }
+         GuiMarkDirty();
+         return true;
+        }
+      if(x >= actions_x + 172 && x <= actions_x + 274)
+        {
+         g_gui_close_confirm_open = true;
+         GuiMarkDirty();
+         return true;
+        }
+     }
+
+   const int minimize_x = 18 + GUI_WINDOW_WIDTH - 38;
+   if(x >= minimize_x && x <= minimize_x + 28 && y >= 25 && y <= 53)
+     {
+      if(StringLen(g_gui_edit_key) > 0 && !GuiLeaveEditSession())
+         return true;
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      GuiRestoreChartAfterWindow();
+      g_gui_full_window = false;
+      GuiMarkDirty();
+      return true;
+     }
+
    const int left_x = GUI_CONTENT_X + GUI_CONTENT_PADDING;
    const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
    const int value_width = GUI_FIELD_WIDTH;
@@ -4815,6 +4951,7 @@ bool GuiHandleChartClick(const int x, const int y)
          continue;
       if(GuiDropdownOptionCount(keys[index]) > 0)
         {
+         g_gui_edit_key = "";
          g_gui_dropdown_key = g_gui_dropdown_key == keys[index] ? "" : keys[index];
          GuiMarkDirty();
          return true;
@@ -4822,12 +4959,13 @@ bool GuiHandleChartClick(const int x, const int y)
       const string edit_name = g_gui_object_prefix + "field." + keys[index];
       if(ObjectFind(0, edit_name) >= 0)
         {
+         g_gui_dropdown_key = "";
          g_gui_edit_key = keys[index];
          ObjectSetInteger(0, edit_name, OBJPROP_SELECTABLE, true);
          ObjectSetInteger(0, edit_name, OBJPROP_READONLY, false);
          ObjectSetInteger(0, edit_name, OBJPROP_SELECTED, false);
         }
-      return false;
+      return true;
      }
    if(StringLen(g_gui_dropdown_key) > 0)
      {
@@ -4967,6 +5105,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
    if(!g_gui_objects_created || StringFind(sparam, g_gui_object_prefix) != 0)
       return;
 
+   if(id == CHARTEVENT_OBJECT_CLICK && GuiHandleFieldClick(sparam))
+     {
+      GuiRender();
+      return;
+     }
+
    if(id == CHARTEVENT_OBJECT_CLICK && StringLen(g_gui_edit_key) > 0
       && StringFind(sparam, g_gui_object_prefix + "field.") != 0)
      {
@@ -4985,18 +5129,6 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam,
      }
    if(id != CHARTEVENT_OBJECT_CLICK)
       return;
-
-   const string field_prefix = g_gui_object_prefix + "field.";
-   if(StringFind(sparam, field_prefix) == 0)
-     {
-      const string key = StringSubstr(sparam, StringLen(field_prefix));
-      if(GuiIsEditableFieldKey(key))
-        {
-         g_gui_edit_key = key;
-         g_gui_dropdown_key = "";
-         return;
-        }
-     }
 
       if(sparam == g_gui_object_prefix + "minimize")
      {

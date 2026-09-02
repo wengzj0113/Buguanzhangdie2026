@@ -175,6 +175,22 @@ def test_mt5_gui_has_chart_coordinate_fallback_for_control_clicks():
     assert "GuiHandleChartClick((int)lparam, (int)dparam)" in body
 
 
+def test_mt5_gui_chart_fallback_covers_navigation_and_actions():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_click = re.search(
+        r"^bool GuiHandleChartClick\(.*?\n\s*\}\n\nbool GuiApplyDraft",
+        source,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    assert chart_click
+    body = chart_click.group(0)
+    assert "nav." in body
+    assert "g_gui_page = (GuiPage)index" in body
+    assert '"mode.toggle"' in body
+    assert '"apply"' in body
+    assert '"pause"' in body
+
+
 def test_mt5_gui_chart_fallback_does_not_swallow_object_click_dispatch():
     source = MT5_SOURCE.read_text(encoding="utf-8")
     chart_event = re.search(
@@ -228,6 +244,36 @@ def test_mt5_gui_dropdown_layer_is_above_other_interactive_controls():
 
     assert dropdown
     assert "OBJPROP_ZORDER, 2000" in dropdown.group(0)
+
+
+def test_mt5_gui_field_click_dispatch_is_before_active_edit_guard():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    chart_event = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    )
+    assert chart_event
+    body = chart_event.group(0)
+    assert "GuiHandleFieldClick(sparam)" in body
+    assert body.index("GuiHandleFieldClick(sparam)") < body.index(
+        "id == CHARTEVENT_OBJECT_CLICK && StringLen(g_gui_edit_key) > 0"
+    )
+
+
+def test_mt5_gui_field_clicks_switch_edit_and_dropdown_sessions_cleanly():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    field_click = re.search(
+        r"bool GuiHandleFieldClick\(.*?\n\s*\}\n\nbool GuiHandleChartClick",
+        source,
+        flags=re.DOTALL,
+    )
+    assert field_click
+    body = field_click.group(0)
+    assert "g_gui_dropdown_key = \"\"" in body
+    assert "g_gui_edit_key = \"\"" in body
+    assert "GuiLeaveEditSession()" in body
+    assert "OBJPROP_READONLY, false" in body
 
 
 def test_mt5_gui_panel_fits_compact_chart_viewport():
