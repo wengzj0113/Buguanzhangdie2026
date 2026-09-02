@@ -459,6 +459,14 @@ bool GetPreviousCandleRange(double &previous_high, double &previous_low,
    return true;
   }
 
+bool PreviousCandleDataReady()
+  {
+   if(iBars(Symbol(), Period()) < 2)
+      return false;
+   return iHigh(Symbol(), Period(), 1) > 0.0
+          && iLow(Symbol(), Period(), 1) > 0.0;
+  }
+
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(InpDistanceMode == DISTANCE_FIXED)
@@ -1558,7 +1566,7 @@ void MarkCandleEntryBarProcessed(const datetime current_bar_time)
    if(current_bar_time <= 0)
       return;
    g_last_candle_entry_bar_time = current_bar_time;
-   SaveState();
+   GlobalVariableSet(StatePrefix() + ".candleentrybar", (double)g_last_candle_entry_bar_time);
   }
 
 void Manage()
@@ -1781,7 +1789,8 @@ void Manage()
       int range_points = 0;
       if(!GetPreviousCandleRange(previous_high, previous_low, range_points))
         {
-         MarkCandleEntryBarProcessed(current_bar_time);
+         if(PreviousCandleDataReady())
+            MarkCandleEntryBarProcessed(current_bar_time);
          return;
         }
       const double initial_lots = g_cumulative_loss_lots > 0.0
@@ -1962,6 +1971,7 @@ void MultiClearAll()
    g_multi_last_trigger_bar = 0;
    g_multi_next_id = 1;
    GlobalVariableDel(StatePrefix() + ".multi.nextid");
+   GlobalVariableDel(StatePrefix() + ".multi.lasttriggerbar");
   }
 
 void MultiRemoveGroup(const int index)
@@ -2086,6 +2096,9 @@ void MultiSaveGroup(const MultiGroupState &group)
 void MultiLoadGroups()
   {
    const string next_key = StatePrefix() + ".multi.nextid";
+   const string last_trigger_key = StatePrefix() + ".multi.lasttriggerbar";
+   if(GlobalVariableCheck(last_trigger_key))
+      g_multi_last_trigger_bar = (datetime)MathRound(GlobalVariableGet(last_trigger_key));
    if(!GlobalVariableCheck(next_key)) return;
    g_multi_next_id = MathMax(1, (int)MathRound(GlobalVariableGet(next_key)));
    for(int id = 1; id < g_multi_next_id; id++)
@@ -2583,8 +2596,10 @@ bool MultiManageGroup(MultiGroupState &group)
       const int status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(status == REVERSE_PENDING_ACTIVE || status == REVERSE_PENDING_FILLED)
          return true;
-      MultiDeletePending(group.id);
+      if(!MultiDeletePending(group.id))
+         return true;
       group.active = false;
+      MarkMultiCandleTriggerBar();
       return false;
      }
    if(MultiHandleReverseFill(group, type, entry, total))
@@ -2732,7 +2747,7 @@ bool MultiTryOpenCandleGroup()
       g_multi_groups[new_index] = state;
       MultiSaveGroup(g_multi_groups[new_index]);
       if(current_bar > 0)
-         g_multi_last_trigger_bar = current_bar;
+         MarkMultiCandleTriggerBar();
       return true;
      }
    if(!GetBreakoutDirection(previous_high, previous_low, first_direction))
@@ -2779,6 +2794,7 @@ void MarkMultiCandleTriggerBar()
    const datetime current_bar = iTime(Symbol(), Period(), 0);
    if(current_bar > 0)
       g_multi_last_trigger_bar = current_bar;
+   GlobalVariableSet(StatePrefix() + ".multi.lasttriggerbar", (double)g_multi_last_trigger_bar);
   }
 
 void ManageMultipleCandleGroups()

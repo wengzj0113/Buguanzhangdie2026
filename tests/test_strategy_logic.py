@@ -2043,7 +2043,16 @@ def test_multi_once_per_bar_does_not_open_another_group_until_next_candle_after_
     )[0]
 
     assert "MarkMultiCandleTriggerBar" in multi_manage
-    assert multi_manage.index("MultiClosePositions(group.id)") < multi_manage.index(
+    assert multi_manage.index("MultiClosePositions(group.id)") < multi_manage.rindex(
+        "MarkMultiCandleTriggerBar"
+    )
+
+    orphan_start = "if(!has_position" if source_name.endswith(".mq5") else "if(!MultiFindPosition"
+    orphan_path = multi_manage.split(orphan_start, 1)[1].split(
+        "if(MultiHandleReverseFill", 1,
+    )[0]
+    assert "if(!MultiDeletePending(group.id))" in orphan_path
+    assert orphan_path.index("MultiDeletePending(group.id)") < orphan_path.index(
         "MarkMultiCandleTriggerBar"
     )
 
