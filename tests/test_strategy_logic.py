@@ -1983,6 +1983,45 @@ def test_initial_pending_source_contract(source_name):
     assert "KORDER_ONCE_PER_BAR" in source
 
 
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_group_take_profit_cleanup_does_not_skip_adjacent_pending_orders(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    cleanup = source.split("bool MultiDeletePending", 1)[1].split(
+        "int MultiInitialPendingStatus", 1,
+    )[0]
+
+    assert "for(int index = OrdersTotal() - 1; index >= 0; index--)" in cleanup
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_take_profit_keeps_state_until_all_group_pending_orders_are_deleted(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    single_take_profit = source.split("if(TakeProfitReached", 1)[1].split(
+        "if(StopReached", 1,
+    )[0]
+    multi_take_profit = source.split("bool MultiManageGroup", 1)[1].split(
+        "const double desired_take_profit", 1,
+    )[1].split(
+        "desired_stop_loss", 1,
+    )[0]
+
+    assert "if(!DeleteAllPending())" in single_take_profit
+    assert "if(!MultiDeletePending(group.id))" in multi_take_profit
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_multi_group_handles_initial_fill_before_position_management(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    multi_manage = source.split("bool MultiManageGroup", 1)[1].split(
+        "bool MultiTryOpenCandleGroup", 1,
+    )[0]
+
+    assert multi_manage.index("MultiHandleInitialPendingFill(group)") < multi_manage.index(
+        "MultiFindPosition(group.id",
+    )
+
+
 def test_gui_draft_does_not_change_applied_config_until_apply():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
 
