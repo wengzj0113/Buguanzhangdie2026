@@ -1541,6 +1541,26 @@ bool ResumePreparedTransition()
    return true;
   }
 
+bool PrepareCandleOnceEntry(const datetime current_bar_time)
+  {
+   if(current_bar_time <= 0 || current_bar_time == g_last_candle_entry_bar_time)
+      return true;
+   if(!HasOurPending())
+      return true;
+   if(!DeleteAllPending())
+      return false;
+   ClearState();
+   return true;
+  }
+
+void MarkCandleEntryBarProcessed(const datetime current_bar_time)
+  {
+   if(current_bar_time <= 0)
+      return;
+   g_last_candle_entry_bar_time = current_bar_time;
+   SaveState();
+  }
+
 void Manage()
   {
    if(g_reset_pending)
@@ -1697,8 +1717,10 @@ void Manage()
             return;
          if(CloseAllPositions(position_type))
            {
+            const datetime completed_bar_time = iTime(Symbol(), Period(), 0);
             g_pending_index = -1;
             ClearState();
+            MarkCandleEntryBarProcessed(completed_bar_time);
            }
          return;
         }
@@ -1723,40 +1745,50 @@ void Manage()
 
    if(PastLastTakeProfit())
      {
-      DeleteAllPending();
+      if(!DeleteAllPending())
+         return;
+      const datetime completed_bar_time = iTime(Symbol(), Period(), 0);
       g_had_position = false;
       g_last_take_profit = 0.0;
       g_pending_index = -1;
       ClearState();
+      MarkCandleEntryBarProcessed(completed_bar_time);
       return;
      }
 
-   if(HasOurPending())
+   const bool candle_once_mode = InpDistanceMode == DISTANCE_CANDLE_RANGE
+                                 && Korder_type == KORDER_ONCE_PER_BAR;
+   const datetime current_bar_time = candle_once_mode ? iTime(Symbol(), Period(), 0) : 0;
+   if(candle_once_mode && current_bar_time > 0
+      && current_bar_time != g_last_candle_entry_bar_time
+      && !PrepareCandleOnceEntry(current_bar_time))
+      return;
+
+   const bool has_pending = HasOurPending();
+   if(has_pending)
      {
       ReconcileOrphanSingleGroupPending();
       return;
      }
    if(!IsInitialEntryAllowed())
       return;
-   if(InpDistanceMode == DISTANCE_CANDLE_RANGE && Korder_type == KORDER_ONCE_PER_BAR)
+   if(candle_once_mode)
      {
-      const datetime current_bar_time = iTime(Symbol(), Period(), 0);
       if(current_bar_time > 0 && current_bar_time == g_last_candle_entry_bar_time)
          return;
       double previous_high = 0.0;
       double previous_low = 0.0;
       int range_points = 0;
       if(!GetPreviousCandleRange(previous_high, previous_low, range_points))
+        {
+         MarkCandleEntryBarProcessed(current_bar_time);
          return;
+        }
       const double initial_lots = g_cumulative_loss_lots > 0.0
                                   ? VolumeNormalize(g_cumulative_loss_lots)
                                   : VolumeNormalize(InpInitialLots);
       if(PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots))
-        {
-         if(current_bar_time > 0)
-            g_last_candle_entry_bar_time = current_bar_time;
-         SaveState();
-        }
+         MarkCandleEntryBarProcessed(current_bar_time);
       return;
      }
 
@@ -1796,9 +1828,9 @@ void Manage()
      {
       if(InpDistanceMode == DISTANCE_CANDLE_RANGE && Korder_type == KORDER_ONCE_PER_BAR)
         {
-         const datetime current_bar_time = iTime(Symbol(), Period(), 0);
-         if(current_bar_time > 0)
-            g_last_candle_entry_bar_time = current_bar_time;
+         const datetime market_entry_bar_time = iTime(Symbol(), Period(), 0);
+         if(market_entry_bar_time > 0)
+            g_last_candle_entry_bar_time = market_entry_bar_time;
         }
       if(FindPosition(position_ticket, position_type, volume, entry,
                       stop_loss, take_profit))
@@ -2598,7 +2630,11 @@ bool MultiManageGroup(MultiGroupState &group)
      {
       if(!MultiDeletePending(group.id))
          return true;
-      if(MultiClosePositions(group.id)) group.active = false;
+      if(MultiClosePositions(group.id))
+        {
+         group.active = false;
+         MarkMultiCandleTriggerBar();
+        }
       return false;
      }
    if((type == OP_BUY && Bid <= desired_stop_loss)
@@ -2734,6 +2770,15 @@ bool MultiTryOpenCandleGroup()
    if(Korder_type == KORDER_ONCE_PER_BAR && current_bar > 0)
       g_multi_last_trigger_bar = current_bar;
    return true;
+  }
+
+void MarkMultiCandleTriggerBar()
+  {
+   if(Korder_type != KORDER_ONCE_PER_BAR)
+      return;
+   const datetime current_bar = iTime(Symbol(), Period(), 0);
+   if(current_bar > 0)
+      g_multi_last_trigger_bar = current_bar;
   }
 
 void ManageMultipleCandleGroups()

@@ -2022,6 +2022,32 @@ def test_multi_group_handles_initial_fill_before_position_management(source_name
     )
 
 
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_once_per_bar_reentry_cleans_stale_pending_only_on_a_new_candle(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    manage = source.split("void Manage()", 1)[1].split("void ManageMultipleCandleGroups", 1)[0]
+    prepare = source.split("bool PrepareCandleOnceEntry", 1)[1].split("void Manage()", 1)[0]
+
+    assert "current_bar_time != g_last_candle_entry_bar_time" in manage
+    assert manage.index("PrepareCandleOnceEntry") < manage.index("const bool has_pending")
+    assert prepare.index("DeleteAllPending()") < prepare.index("ClearState()")
+    assert "MarkCandleEntryBarProcessed" in manage
+    assert manage.index("ClearState();") < manage.index("MarkCandleEntryBarProcessed")
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_multi_once_per_bar_does_not_open_another_group_until_next_candle_after_tp(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    multi_manage = source.split("bool MultiManageGroup", 1)[1].split(
+        "bool MultiTryOpenCandleGroup", 1,
+    )[0]
+
+    assert "MarkMultiCandleTriggerBar" in multi_manage
+    assert multi_manage.index("MultiClosePositions(group.id)") < multi_manage.index(
+        "MarkMultiCandleTriggerBar"
+    )
+
+
 def test_gui_draft_does_not_change_applied_config_until_apply():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
 
