@@ -260,6 +260,7 @@ class StrategyModel:
         self.last_entry_candle_id = None
         self.position = None
         self.pending = None
+        self.initial_pending = []
         self.grid_pending = None
         self.current_index = 0
         self.reversal_count = 0
@@ -326,6 +327,7 @@ class StrategyModel:
     def _reset_after_no_money(self):
         self.position = None
         self.pending = None
+        self.initial_pending = []
         self.grid_pending = None
         self.current_index = 0
         self.reversal_count = 0
@@ -408,6 +410,25 @@ class StrategyModel:
             "order_type": self.pending.order_type,
         }
 
+    def _initial_pending_directions(self):
+        if self.order_type is OrderType.FORWARD:
+            return Direction.BUY, Direction.SELL
+        return Direction.SELL, Direction.BUY
+
+    @staticmethod
+    def _initial_pending_order_type(direction, price, bid, ask):
+        if direction is Direction.BUY:
+            return "BUY_STOP" if price >= ask else "BUY_LIMIT"
+        return "SELL_STOP" if price <= bid else "SELL_LIMIT"
+
+    @staticmethod
+    def _initial_pending_action(pending):
+        return {
+            "kind": "initial_pending", "direction": pending.direction,
+            "lots": pending.lots, "price": pending.price,
+            "order_type": pending.order_type,
+        }
+
     def _grid_level(self, level):
         distance = self.group_stop_points * self.point * level / self.grid_count
         if self.position.direction is Direction.BUY:
@@ -468,6 +489,8 @@ class StrategyModel:
     def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None,
                 now_minute=None, candle_id=None):
         if self.position is None and self.pending is None:
+            if self.initial_pending:
+                return []
             if not self._is_initial_entry_allowed(now_minute):
                 return []
             distance_points = self._distance(candle_range_points)
@@ -480,6 +503,27 @@ class StrategyModel:
                     return []
                 if previous_high is None or previous_low is None:
                     return []
+                if self.korder_type == 0:
+                    high_direction, low_direction = self._initial_pending_directions()
+                    self.initial_pending = [
+                        Pending(
+                            high_direction, self.initial_lots, previous_high,
+                            self._initial_pending_order_type(
+                                high_direction, previous_high, bid, ask,
+                            ), distance_points, kind="initial_pending",
+                        ),
+                        Pending(
+                            low_direction, self.initial_lots, previous_low,
+                            self._initial_pending_order_type(
+                                low_direction, previous_low, bid, ask,
+                            ), distance_points, kind="initial_pending",
+                        ),
+                    ]
+                    self.last_entry_candle_id = candle_id
+                    return [
+                        self._initial_pending_action(pending)
+                        for pending in self.initial_pending
+                    ]
                 breakout_direction = self._breakout_direction(
                     bid, ask, previous_high, previous_low,
                 )
@@ -586,6 +630,40 @@ class StrategyModel:
             entry_price if pending.direction is Direction.BUY else entry_price + 0.0002,
         )
 
+    def fill_initial_pending(self, direction, entry_price):
+        pending = next(
+            (pending for pending in self.initial_pending
+             if pending.direction is direction),
+            None,
+        )
+        if pending is None:
+            return []
+        other_direction = (
+            Direction.SELL if direction is Direction.BUY else Direction.BUY
+        )
+        self.initial_pending = []
+        self.initial_direction = direction
+        self.cycle_mode = (
+            CycleMode.MODE_1
+            if self.order_type is OrderType.FORWARD
+            else CycleMode.MODE_2
+        )
+        self.sequence = cycle_directions(direction, self.cycle_mode)
+        self.current_index = 0
+        self._open(direction, entry_price, pending.lots, pending.distance_points)
+        bid = entry_price - 0.0002 if direction is Direction.BUY else entry_price
+        ask = entry_price if direction is Direction.BUY else entry_price + 0.0002
+        self._next_pending(bid, ask, pending.distance_points)
+        self._ensure_grid_pending(bid, ask)
+        actions = [{
+            "kind": "cancel_initial_pending", "direction": other_direction,
+        }]
+        if self.pending is not None:
+            actions.append(self._pending_action())
+        if self.grid_pending is not None:
+            actions.append(self._grid_pending_action())
+        return actions
+
     def handle_stop_event(self, bid, ask, pending_filled=False):
         if pending_filled and self.pending is not None:
             pending = self.pending
@@ -667,7 +745,7 @@ class ParallelStrategyModel:
                 now_minute, candle_id,
             )
             actions.extend(self._with_group_id(group_actions, group.group_id))
-            if group.position is None:
+            if group.position is None and not group.initial_pending:
                 self.groups.remove(group)
                 closed_group = True
             if any(action["kind"] in {"no_money", "reset_max_reversals"}
@@ -693,7 +771,7 @@ class ParallelStrategyModel:
             bid, ask, candle_range_points, previous_high, previous_low,
             now_minute, candle_id,
         )
-        if group.position is None:
+        if group.position is None and not group.initial_pending:
             return actions
         self.groups.append(group)
         if candle_id is not None and self.korder_type == 0:
@@ -706,4 +784,11 @@ class ParallelStrategyModel:
             if group.group_id == group_id:
                 group.strategy.fill_pending(entry_price)
                 return
+        raise ValueError(f"unknown group_id: {group_id}")
+
+    def fill_initial_pending(self, group_id, direction, entry_price):
+        for group in self.groups:
+            if group.group_id == group_id:
+                actions = group.strategy.fill_initial_pending(direction, entry_price)
+                return self._with_group_id(actions, group_id)
         raise ValueError(f"unknown group_id: {group_id}")

@@ -1068,6 +1068,7 @@ def test_candle_range_mode_accepts_boundary_and_middle_values(range_points):
         distance_mode=DistanceMode.CANDLE_RANGE,
         min_range_points=500,
         max_range_points=1000,
+        korder_type=1,
     )
 
     actions = model.on_tick(
@@ -1111,6 +1112,7 @@ def test_candle_breakout_selects_first_direction_and_cycle_from_order_type(
         min_range_points=500,
         max_range_points=1000,
         order_type=order_type,
+        korder_type=1,
     )
 
     actions = model.on_tick(
@@ -1130,6 +1132,7 @@ def test_candle_range_mode_waits_for_a_breakout_before_opening():
         min_range_points=500,
         max_range_points=1000,
         order_type=OrderType.FORWARD,
+        korder_type=1,
     )
 
     actions = model.on_tick(
@@ -1142,6 +1145,92 @@ def test_candle_range_mode_waits_for_a_breakout_before_opening():
     assert model.pending is None
 
 
+def test_candle_once_places_buy_at_high_and_sell_at_low_without_market_entry():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.FORWARD, korder_type=0,
+    )
+
+    actions = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+
+    assert [action["kind"] for action in actions] == [
+        "initial_pending", "initial_pending",
+    ]
+    assert {(action["direction"], action["price"]) for action in actions} == {
+        (Direction.BUY, 1.1000), (Direction.SELL, 1.0400),
+    }
+    assert [pending.kind for pending in model.initial_pending] == [
+        "initial_pending", "initial_pending",
+    ]
+    assert all(action["kind"] != "market" for action in actions)
+
+
+def test_candle_once_reverse_places_sell_at_high_and_buy_at_low_once():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.REVERSE, korder_type=0,
+    )
+
+    first = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    second = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+
+    assert {(action["direction"], action["price"]) for action in first} == {
+        (Direction.SELL, 1.1000), (Direction.BUY, 1.0400),
+    }
+    assert second == []
+
+
+def test_candle_repeat_still_waits_for_breakout_and_opens_market_order():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.FORWARD, korder_type=1,
+    )
+
+    actions = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    assert actions == []
+
+    actions = model.on_tick(
+        bid=1.1001, ask=1.1003, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    assert actions[0]["kind"] == "market"
+    assert all(action["kind"] != "initial_pending" for action in actions)
+
+
+def test_initial_pending_fill_cancels_the_other_side_and_starts_group():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.CANDLE_RANGE,
+        order_type=OrderType.FORWARD, korder_type=0,
+    )
+    model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+
+    actions = model.fill_initial_pending(Direction.BUY, 1.1000)
+
+    assert actions[0] == {"kind": "cancel_initial_pending", "direction": Direction.SELL}
+    assert model.position.direction is Direction.BUY
+    assert model.position.entry == 1.1000
+    assert model.initial_pending == []
+
+
 def test_candle_mode_ignores_user_first_direction_and_cycle_mode_inputs():
     forward_model = StrategyModel(
         Direction.SELL, CycleMode.MODE_2, 0.01, 2.0, 500, 0.0001,
@@ -1149,6 +1238,7 @@ def test_candle_mode_ignores_user_first_direction_and_cycle_mode_inputs():
         min_range_points=500,
         max_range_points=1000,
         order_type=OrderType.FORWARD,
+        korder_type=1,
     )
     forward_actions = forward_model.on_tick(
         bid=1.1010, ask=1.1012, candle_range_points=600,
@@ -1161,6 +1251,7 @@ def test_candle_mode_ignores_user_first_direction_and_cycle_mode_inputs():
         min_range_points=500,
         max_range_points=1000,
         order_type=OrderType.REVERSE,
+        korder_type=1,
     )
     reverse_actions = reverse_model.on_tick(
         bid=1.0390, ask=1.0392, candle_range_points=600,
@@ -1179,6 +1270,7 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         distance_mode=DistanceMode.CANDLE_RANGE,
         min_range_points=500,
         max_range_points=1000,
+        korder_type=1,
     )
 
     model.on_tick(
@@ -1223,7 +1315,7 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
     }
 
 
-def test_candle_order_mode_zero_allows_only_one_initial_entry_per_current_candle():
+def test_candle_order_mode_zero_places_initial_pending_once_per_current_candle():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
         distance_mode=DistanceMode.CANDLE_RANGE,
@@ -1234,24 +1326,17 @@ def test_candle_order_mode_zero_allows_only_one_initial_entry_per_current_candle
         bid=1.1002, ask=1.1004, candle_range_points=600,
         previous_high=1.1000, previous_low=1.0400, candle_id=10,
     )
-    model.on_tick(
-        bid=model.position.take_profit, ask=model.position.take_profit + 0.0002,
-        candle_range_points=600, previous_high=1.1000, previous_low=1.0400,
-        candle_id=10,
-    )
-
     same_candle = model.on_tick(
         bid=1.2000, ask=1.2002, candle_range_points=600,
         previous_high=1.1000, previous_low=1.0400, candle_id=10,
     )
-    next_candle = model.on_tick(
-        bid=1.2000, ask=1.2002, candle_range_points=600,
-        previous_high=1.1000, previous_low=1.0400, candle_id=11,
-    )
 
-    assert first[0]["kind"] == "market"
+    assert [action["kind"] for action in first] == [
+        "initial_pending", "initial_pending",
+    ]
     assert same_candle == []
-    assert next_candle[0]["kind"] == "market"
+    assert model.position is None
+    assert len(model.initial_pending) == 2
 
 
 def test_candle_order_mode_one_allows_repeated_initial_entries_per_current_candle():
@@ -1285,6 +1370,7 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
         distance_mode=DistanceMode.CANDLE_RANGE,
         min_range_points=500,
         max_range_points=1000,
+        korder_type=1,
     )
 
     first_actions = model.on_tick(
@@ -1413,6 +1499,7 @@ def test_no_money_dynamic_mode_rechecks_current_breakout_after_reset():
         min_range_points=500, max_range_points=1000,
         order_type=OrderType.FORWARD,
         market_order_failures=1,
+        korder_type=1,
     )
 
     waiting = model.on_tick(
@@ -1566,7 +1653,7 @@ def test_new_cycle_after_max_reversals_uses_base_lot_on_next_tick():
     assert actions[0]["lots"] == pytest.approx(0.01)
 
 
-def dynamic_parallel_model(multiple, korder_type=0):
+def dynamic_parallel_model(multiple, korder_type=1):
     return ParallelStrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
         distance_mode=DistanceMode.CANDLE_RANGE,
@@ -1635,6 +1722,60 @@ def test_parallel_groups_keep_reverse_and_grid_pending_separate():
     model.fill_pending(first.group_id, first_pending_price)
     assert second.pending is not None
     assert second.grid_pending is not None
+
+
+def test_parallel_multiple_groups_create_two_initial_pending_orders_per_candle():
+    model = dynamic_parallel_model(1, korder_type=0)
+
+    first = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    duplicate = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+    second = model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=700,
+        previous_high=1.1100, previous_low=1.0400, candle_id=11,
+    )
+
+    assert [action["kind"] for action in first] == [
+        "initial_pending", "initial_pending",
+    ]
+    assert duplicate == []
+    assert [action["kind"] for action in second] == [
+        "initial_pending", "initial_pending",
+    ]
+    assert len(model.groups) == 2
+    assert all(len(group.initial_pending) == 2 for group in model.groups)
+
+
+def test_parallel_repeat_mode_still_opens_market_order_after_breakout():
+    model = dynamic_parallel_model(1, korder_type=1)
+
+    actions = parallel_breakout(model, 10, 600)
+
+    assert actions[0]["kind"] == "market"
+    assert all(action["kind"] != "initial_pending" for action in actions)
+
+
+def test_parallel_fill_initial_pending_forwards_group_action_and_keeps_followups():
+    model = dynamic_parallel_model(1, korder_type=0)
+    model.on_tick(
+        bid=1.0500, ask=1.0502, candle_range_points=600,
+        previous_high=1.1000, previous_low=1.0400, candle_id=10,
+    )
+
+    actions = model.fill_initial_pending(1, Direction.BUY, 1.1000)
+
+    assert actions[0] == {
+        "kind": "cancel_initial_pending", "direction": Direction.SELL,
+        "group_id": 1,
+    }
+    assert model.groups[0].position.direction is Direction.BUY
+    assert model.groups[0].pending is not None
+    assert model.groups[0].grid_pending is not None
 
 
 def test_parallel_group_stop_deletes_unfilled_pending_before_market_reversal():
@@ -1825,6 +1966,21 @@ def test_cycle_mode_parameter_describes_each_direction_sequence(source_name):
     assert "模式一：首单多=多空空多空空；首单空=空多多空多多" in source
     assert "模式二：首单多=多空多空多多；首单空=空多空多空空" in source
     assert "模式三：首单多=多空多多空多；首单空=空多空空多空" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_initial_pending_source_contract(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "PlaceInitialPendingPair" in source
+    assert "HandleInitialPendingFill" in source
+    assert "MultiPlaceInitialPendingPair" in source
+    assert "MultiHandleInitialPendingFill" in source
+    assert "initial_high_ticket" in source
+    assert "initial_low_ticket" in source
+    assert ".InitialHigh" in source
+    assert ".InitialLow" in source
+    assert "KORDER_ONCE_PER_BAR" in source
 
 
 def test_gui_draft_does_not_change_applied_config_until_apply():
