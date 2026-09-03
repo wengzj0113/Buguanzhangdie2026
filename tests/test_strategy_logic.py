@@ -2057,6 +2057,37 @@ def test_multi_once_per_bar_does_not_open_another_group_until_next_candle_after_
     )
 
 
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_pending_cleanup_ignores_stale_initial_ticket_tracking(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    cleanup = source.split("bool DeleteAllPending", 1)[1].split(
+        "int GetReversePendingStatus", 1,
+    )[0]
+    has_pending = source.split("bool HasOurPending", 1)[1].split(
+        "void BeginFullReset", 1,
+    )[0]
+
+    assert "HasActiveInitialPending()" in has_pending
+    assert "ResetInitialPendingTracking()" in cleanup
+    assert cleanup.index("ResetInitialPendingTracking()") < cleanup.index("return deleted")
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_initial_pending_pair_preserves_oco_cancel_on_fill(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    fill_handler = source.split("bool HandleInitialPendingFill", 1)[1].split(
+        "bool PlaceNextPending", 1,
+    )[0]
+    multi_fill_handler = source.split("bool MultiHandleInitialPendingFill", 1)[1].split(
+        "bool MultiPlaceReversePending", 1,
+    )[0]
+
+    assert "Initial OCO delete" in fill_handler or "OrderDelete(other_ticket" in fill_handler
+    assert "Multi initial OCO delete" in multi_fill_handler or "OrderDelete(other_ticket" in multi_fill_handler
+    assert "FindPositionByPendingOrder(filled_ticket" in fill_handler or "FindPositionByTicket(filled_ticket" in fill_handler
+    assert "FindPositionByPendingOrder(filled_ticket" in multi_fill_handler or "FindPositionByTicket(filled_ticket" in multi_fill_handler
+
+
 def test_gui_draft_does_not_change_applied_config_until_apply():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
 

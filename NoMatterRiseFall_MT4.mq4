@@ -706,6 +706,25 @@ bool FindGridPending(int &ticket, int &type, double &volume, double &price)
    return false;
   }
 
+bool HasActiveInitialPending()
+  {
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+      if(OrderSelect(index, SELECT_BY_POS, MODE_TRADES)
+         && IsOurPendingOrder() && IsInitialPendingComment())
+         return true;
+   return false;
+  }
+
+void ResetInitialPendingTracking()
+  {
+   g_initial_high_ticket = -1;
+   g_initial_low_ticket = -1;
+   g_initial_high_price = 0.0;
+   g_initial_low_price = 0.0;
+   g_initial_high_direction = OP_BUY;
+   g_initial_low_direction = OP_SELL;
+  }
+
 bool NormalizeSingleGroupPending(const bool grid, const int expected_direction,
                                  const double expected_price,
                                  const double expected_volume, int &keep_ticket)
@@ -831,6 +850,8 @@ bool DeleteAllPending()
            && OrderSelect(tracked_ticket, SELECT_BY_TICKET, MODE_HISTORY)
            && IsOurPendingOrder())
       g_pending_ticket = -1;
+   if(!HasActiveInitialPending())
+      ResetInitialPendingTracking();
    return deleted && !HasOurPending();
   }
 
@@ -863,7 +884,7 @@ bool HasOurPending()
       if(OrderSelect(index, SELECT_BY_POS, MODE_TRADES)
          && IsOurPendingOrder())
          return true;
-   if(g_initial_high_ticket >= 0 || g_initial_low_ticket >= 0)
+   if(HasActiveInitialPending())
       return true;
    return false;
   }
@@ -1147,6 +1168,8 @@ int InitialPendingStatus(const int ticket)
 
 bool HandleInitialPendingFill()
   {
+   // The two initial orders form one OCO pair: once either side fills,
+   // cancel the still-active opposite order before managing the position.
    if(g_initial_high_ticket < 0 && g_initial_low_ticket < 0)
       return false;
    const int high_status = InitialPendingStatus(g_initial_high_ticket);

@@ -1648,6 +1648,33 @@ bool DeletePendingTicket(const ulong ticket, const string operation)
    return false;
   }
 
+bool HasActiveInitialPending()
+  {
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0)
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+         || !IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
+         continue;
+      return true;
+     }
+   return false;
+  }
+
+void ResetInitialPendingTracking()
+  {
+   g_initial_high_ticket = 0;
+   g_initial_low_ticket = 0;
+   g_initial_high_price = 0.0;
+   g_initial_low_price = 0.0;
+   g_initial_high_direction = ORDER_TYPE_BUY;
+   g_initial_low_direction = ORDER_TYPE_SELL;
+  }
+
 bool NormalizeSingleGroupPending(const bool grid, const long expected_direction,
                                  const double expected_price,
                                  const double expected_volume, ulong &keep_ticket)
@@ -1775,6 +1802,8 @@ bool DeleteAllPending()
          || tracked_state == ORDER_STATE_REJECTED)
          g_pending_ticket = 0;
      }
+   if(!HasActiveInitialPending())
+      ResetInitialPendingTracking();
    return deleted && !HasOurPending();
   }
 
@@ -1813,7 +1842,7 @@ bool HasOurPending()
       return true;
    if(FindGridPending(ticket, type, volume, price))
       return true;
-   if(g_initial_high_ticket > 0 || g_initial_low_ticket > 0)
+   if(HasActiveInitialPending())
       return true;
    return false;
   }
@@ -2126,6 +2155,8 @@ int InitialPendingStatus(const ulong ticket)
 
 bool HandleInitialPendingFill()
   {
+   // The two initial orders form one OCO pair: once either side fills,
+   // cancel the still-active opposite order before managing the position.
    if(g_initial_high_ticket == 0 && g_initial_low_ticket == 0)
       return false;
    const int high_status = InitialPendingStatus(g_initial_high_ticket);
