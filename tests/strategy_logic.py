@@ -16,6 +16,7 @@ class CycleMode(Enum):
 class DistanceMode(Enum):
     FIXED = "fixed"
     CANDLE_RANGE = "candle_range"
+    AVERAGE_CANDLE_RANGE = "average_candle_range"
 
 
 class OrderType(Enum):
@@ -212,6 +213,23 @@ def cycle_directions(initial_direction, cycle_mode):
             else [Direction.SELL, Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY, Direction.SELL])
 
 
+def average_candle_distances(candle_ranges, candle_count=20, stop_multiplier=2.0,
+                             take_profit_multiplier=2.0):
+    if candle_count <= 0 or stop_multiplier <= 0 or take_profit_multiplier <= 0:
+        raise ValueError("average candle count and multipliers must be positive")
+    if len(candle_ranges) < candle_count:
+        raise ValueError("not enough completed candles")
+    completed_ranges = list(candle_ranges[:candle_count])
+    if any(candle_range <= 0 for candle_range in completed_ranges):
+        raise ValueError("candle ranges must be positive")
+    average_range_points = round(sum(completed_ranges) / candle_count)
+    stop_points = round(average_range_points * stop_multiplier)
+    take_profit_points = round(stop_points * take_profit_multiplier)
+    if stop_points <= 0 or take_profit_points <= 0:
+        raise ValueError("calculated distances must be positive")
+    return stop_points, take_profit_points
+
+
 @dataclass
 class Position:
     direction: Direction
@@ -230,6 +248,7 @@ class Pending:
     distance_points: float
     kind: str = "reverse"
     level: int = 0
+    take_profit_distance_points: float | None = None
 
 
 class StrategyModel:
@@ -238,7 +257,8 @@ class StrategyModel:
                  order_type=OrderType.FORWARD, grid_count=0,
                  take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0,
                  start_minute=0, end_minute=24 * 60, market_order_failures=0,
-                 max_reversals=5, korder_type=0):
+                 max_reversals=5, korder_type=0, average_candle_count=20,
+                 average_stop_multiplier=2.0, average_take_profit_multiplier=2.0):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
@@ -257,6 +277,9 @@ class StrategyModel:
         self.market_order_failures = market_order_failures
         self.max_reversals = max_reversals
         self.korder_type = korder_type
+        self.average_candle_count = average_candle_count
+        self.average_stop_multiplier = average_stop_multiplier
+        self.average_take_profit_multiplier = average_take_profit_multiplier
         self.last_entry_candle_id = None
         self.position = None
         self.pending = None
@@ -275,12 +298,23 @@ class StrategyModel:
         self.group_take_profit_points = None
         self.linear_extreme = None
 
-    def _distance(self, candle_range_points):
+    def _distance(self, candle_range_points, average_candle_ranges=None):
         if self.distance_mode is DistanceMode.FIXED:
-            return self.distance
+            return self.distance, self.distance
+        if self.distance_mode is DistanceMode.AVERAGE_CANDLE_RANGE:
+            if average_candle_ranges is None:
+                return None
+            try:
+                return average_candle_distances(
+                    average_candle_ranges, self.average_candle_count,
+                    self.average_stop_multiplier,
+                    self.average_take_profit_multiplier,
+                )
+            except ValueError:
+                return None
         if candle_range_points is None or not (self.min_range_points <= candle_range_points <= self.max_range_points):
             return None
-        return candle_range_points
+        return candle_range_points, candle_range_points
 
     def _is_initial_entry_allowed(self, now_minute):
         if now_minute is None or self.start_minute == self.end_minute:
@@ -289,10 +323,10 @@ class StrategyModel:
             return self.start_minute <= now_minute < self.end_minute
         return now_minute >= self.start_minute or now_minute < self.end_minute
 
-    def _active_distance(self):
+    def _active_distances(self):
         if self.group_take_profit_points is not None:
-            return self.group_take_profit_points
-        return self.distance
+            return self.group_stop_points, self.group_take_profit_points
+        return self.distance, self.distance
 
     def _levels(self, direction, entry, distance_points):
         distance = distance_points * self.point
@@ -300,9 +334,13 @@ class StrategyModel:
             return round(entry - distance, 10), round(entry + distance, 10)
         return round(entry + distance, 10), round(entry - distance, 10)
 
-    def _open(self, direction, entry, lots, distance_points, grid_lots=None):
+    def _open(self, direction, entry, lots, distance_points,
+              take_profit_distance_points=None, grid_lots=None):
         self.group_stop_points = distance_points
-        self.group_take_profit_points = distance_points
+        self.group_take_profit_points = (
+            distance_points if take_profit_distance_points is None
+            else take_profit_distance_points
+        )
         self.group_anchor_entry = entry
         self.linear_extreme = entry
         self.grid_filled_levels = 0
@@ -314,14 +352,16 @@ class StrategyModel:
             self.grid_lots = lots
         else:
             self.grid_lots = self.previous_grid_lots * self.multiplier
-        stop_loss, take_profit = self._levels(direction, entry, distance_points)
+        stop_loss, _ = self._levels(direction, entry, distance_points)
+        _, take_profit = self._levels(direction, entry, self.group_take_profit_points)
         self.position = Position(direction, entry, lots, stop_loss, take_profit)
 
-    def _try_open(self, direction, entry, lots, distance_points):
+    def _try_open(self, direction, entry, lots, distance_points,
+                  take_profit_distance_points=None):
         if self.market_order_failures > 0:
             self.market_order_failures -= 1
             return False
-        self._open(direction, entry, lots, distance_points)
+        self._open(direction, entry, lots, distance_points, take_profit_distance_points)
         return True
 
     def _reset_after_no_money(self):
@@ -364,7 +404,7 @@ class StrategyModel:
             )
         return True
 
-    def _next_pending(self, bid, ask, distance_points):
+    def _next_pending(self, bid, ask, distance_points, take_profit_distance_points=None):
         if self.reversal_count >= self.max_reversals:
             self.pending = None
             return None
@@ -375,7 +415,10 @@ class StrategyModel:
         else:
             order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
         next_group_lots = (self.cumulative_loss_lots + self.group_total_lots) * self.initial_lot_multiplier
-        self.pending = Pending(direction, next_group_lots, price, order_type, distance_points)
+        self.pending = Pending(
+            direction, next_group_lots, price, order_type, distance_points,
+            take_profit_distance_points=take_profit_distance_points,
+        )
 
     def _grid_pending_action(self):
         return {
@@ -461,20 +504,24 @@ class StrategyModel:
             self.position.take_profit = moved_take_profit
         else:
             self._update_linear_take_profit(bid, ask)
-        self._next_pending(bid, ask, self.group_stop_points)
+        self._next_pending(
+            bid, ask, self.group_stop_points, self.group_take_profit_points,
+        )
         self._ensure_grid_pending(bid, ask)
         return [{
             "kind": "grid", "direction": self.position.direction,
             "lots": self.grid_lots, "price": entry,
         }]
 
-    def _start_next_group(self, direction, entry, distance_points):
+    def _start_next_group(self, direction, entry, distance_points,
+                          take_profit_distance_points=None):
         self.cumulative_loss_lots += self.group_total_lots
         self.previous_grid_lots = self.grid_lots
         self.current_index = (self.current_index + 1) % len(self.sequence)
         self.reversal_count += 1
         next_lots = self.cumulative_loss_lots * self.initial_lot_multiplier
-        if not self._try_open(direction, entry, next_lots, distance_points):
+        if not self._try_open(direction, entry, next_lots, distance_points,
+                              take_profit_distance_points):
             self._reset_after_no_money()
             return False
         return True
@@ -487,15 +534,16 @@ class StrategyModel:
         return None
 
     def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None,
-                now_minute=None, candle_id=None):
+                now_minute=None, candle_id=None, average_candle_ranges=None):
         if self.position is None and self.pending is None:
             if self.initial_pending:
                 return []
             if not self._is_initial_entry_allowed(now_minute):
                 return []
-            distance_points = self._distance(candle_range_points)
-            if distance_points is None:
+            distances = self._distance(candle_range_points, average_candle_ranges)
+            if distances is None:
                 return []
+            stop_points, take_profit_points = distances
             self.current_index = 0
             if self.distance_mode is DistanceMode.CANDLE_RANGE:
                 if (self.korder_type == 0 and candle_id is not None
@@ -510,13 +558,13 @@ class StrategyModel:
                             high_direction, self.initial_lots, previous_high,
                             self._initial_pending_order_type(
                                 high_direction, previous_high, bid, ask,
-                            ), distance_points, kind="initial_pending",
+                            ), stop_points, kind="initial_pending",
                         ),
                         Pending(
                             low_direction, self.initial_lots, previous_low,
                             self._initial_pending_order_type(
                                 low_direction, previous_low, bid, ask,
-                            ), distance_points, kind="initial_pending",
+                            ), stop_points, kind="initial_pending",
                         ),
                     ]
                     self.last_entry_candle_id = candle_id
@@ -545,12 +593,13 @@ class StrategyModel:
                 direction = self.sequence[self.current_index]
             entry = ask if direction is Direction.BUY else bid
             opening_lots = self.initial_lots
-            if not self._try_open(direction, entry, opening_lots, distance_points):
+            if not self._try_open(direction, entry, opening_lots, stop_points,
+                                  take_profit_points):
                 self._reset_after_no_money()
                 return [{"kind": "no_money"}]
             if self.distance_mode is DistanceMode.CANDLE_RANGE and self.korder_type == 0:
                 self.last_entry_candle_id = candle_id
-            self._next_pending(bid, ask, distance_points)
+            self._next_pending(bid, ask, stop_points, take_profit_points)
             actions = [{"kind": "market", "direction": direction, "lots": opening_lots}]
             if self.pending is not None:
                 actions.append(self._pending_action())
@@ -579,11 +628,17 @@ class StrategyModel:
             next_direction = self.sequence[(self.current_index + 1) % len(self.sequence)]
             next_entry = bid if next_direction is Direction.SELL else ask
             pending_distance = self.pending.distance_points if self.pending else None
+            pending_take_profit_distance = (
+                self.pending.take_profit_distance_points if self.pending else None
+            )
             had_pending = self.pending is not None or self.grid_pending is not None
             self.pending = None
             self.grid_pending = None
-            next_distance = pending_distance if pending_distance is not None else self._active_distance()
-            if next_distance is None:
+            next_distances = (
+                (pending_distance, pending_take_profit_distance)
+                if pending_distance is not None else self._active_distances()
+            )
+            if next_distances is None:
                 self.position = None
                 actions = []
                 if had_pending:
@@ -591,9 +646,12 @@ class StrategyModel:
                 actions.append({"kind": "close", "direction": old_direction})
                 self.position = None
                 return actions
-            if not self._start_next_group(next_direction, next_entry, next_distance):
+            next_stop_points, next_take_profit_points = next_distances
+            if not self._start_next_group(
+                    next_direction, next_entry, next_stop_points,
+                    next_take_profit_points):
                 return [{"kind": "no_money"}]
-            self._next_pending(bid, ask, next_distance)
+            self._next_pending(bid, ask, next_stop_points, next_take_profit_points)
             actions = []
             if had_pending:
                 actions.append({"kind": "delete_pending"})
@@ -609,8 +667,8 @@ class StrategyModel:
 
         created_pending = self.pending is None and self.reversal_count < self.max_reversals
         if created_pending:
-            distance_points = self._active_distance()
-            self._next_pending(bid, ask, distance_points)
+            stop_points, take_profit_points = self._active_distances()
+            self._next_pending(bid, ask, stop_points, take_profit_points)
         self._ensure_grid_pending(bid, ask)
         return [self._pending_action()] if created_pending and self.pending is not None else []
 
@@ -619,11 +677,14 @@ class StrategyModel:
     def fill_pending(self, entry_price):
         pending = self.pending
         self.pending = None
-        self._start_next_group(pending.direction, entry_price, pending.distance_points)
+        self._start_next_group(
+            pending.direction, entry_price, pending.distance_points,
+            pending.take_profit_distance_points,
+        )
         self._next_pending(
             entry_price - 0.0002 if pending.direction is Direction.BUY else entry_price,
             entry_price if pending.direction is Direction.BUY else entry_price + 0.0002,
-            pending.distance_points,
+            pending.distance_points, pending.take_profit_distance_points,
         )
         self._ensure_grid_pending(
             entry_price - 0.0002 if pending.direction is Direction.BUY else entry_price,
@@ -650,10 +711,15 @@ class StrategyModel:
         )
         self.sequence = cycle_directions(direction, self.cycle_mode)
         self.current_index = 0
-        self._open(direction, entry_price, pending.lots, pending.distance_points)
+        self._open(
+            direction, entry_price, pending.lots, pending.distance_points,
+            pending.take_profit_distance_points,
+        )
         bid = entry_price - 0.0002 if direction is Direction.BUY else entry_price
         ask = entry_price if direction is Direction.BUY else entry_price + 0.0002
-        self._next_pending(bid, ask, pending.distance_points)
+        self._next_pending(
+            bid, ask, pending.distance_points, pending.take_profit_distance_points,
+        )
         self._ensure_grid_pending(bid, ask)
         actions = [{
             "kind": "cancel_initial_pending", "direction": other_direction,
@@ -693,7 +759,9 @@ class ParallelStrategyModel:
                  order_type=OrderType.FORWARD, grid_count=0,
                  take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0,
                  start_minute=0, end_minute=24 * 60, market_order_failures=0,
-                 max_reversals=5, korder_type=0, kline_enable_multiple=0):
+                 max_reversals=5, korder_type=0, kline_enable_multiple=0,
+                 average_candle_count=20, average_stop_multiplier=2.0,
+                 average_take_profit_multiplier=2.0):
         self._config = {
             "initial_direction": initial_direction,
             "cycle_mode": cycle_mode,
@@ -713,6 +781,9 @@ class ParallelStrategyModel:
             "market_order_failures": market_order_failures,
             "max_reversals": max_reversals,
             "korder_type": korder_type,
+            "average_candle_count": average_candle_count,
+            "average_stop_multiplier": average_stop_multiplier,
+            "average_take_profit_multiplier": average_take_profit_multiplier,
         }
         self.kline_enable_multiple = kline_enable_multiple
         self.korder_type = korder_type
@@ -736,13 +807,13 @@ class ParallelStrategyModel:
         self._triggered_candles.clear()
 
     def on_tick(self, bid, ask, candle_range_points=None, previous_high=None, previous_low=None,
-                now_minute=None, candle_id=None):
+                now_minute=None, candle_id=None, average_candle_ranges=None):
         actions = []
         closed_group = False
         for group in list(self.groups):
             group_actions = group.strategy.on_tick(
                 bid, ask, candle_range_points, previous_high, previous_low,
-                now_minute, candle_id,
+                now_minute, candle_id, average_candle_ranges,
             )
             actions.extend(self._with_group_id(group_actions, group.group_id))
             if group.position is None and not group.initial_pending:
@@ -769,7 +840,7 @@ class ParallelStrategyModel:
         group = self._new_group()
         group_actions = group.strategy.on_tick(
             bid, ask, candle_range_points, previous_high, previous_low,
-            now_minute, candle_id,
+            now_minute, candle_id, average_candle_ranges,
         )
         if group.position is None and not group.initial_pending:
             return actions

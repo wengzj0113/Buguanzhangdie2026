@@ -18,7 +18,8 @@ enum CycleMode
 enum DistanceMode
   {
    DISTANCE_FIXED = 0,         // 固定止盈止损距离
-   DISTANCE_CANDLE_RANGE = 1   // 上一根K线高度
+   DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
+   DISTANCE_AVERAGE_CANDLE_RANGE = 2 // 过去N根K线平均高度
   };
 
 enum OrderTypeMode
@@ -58,7 +59,7 @@ enum TransitionPhase
 input FirstDirection 首单方向 = FIRST_BUY;
 // 固定距离和K线高度模式均使用用户选择的循环模式
 input CycleMode      循环模式 = CYCLE_MODE_1;
-// 止盈止损距离来源：固定距离或上一根K线高度
+// 止盈止损距离来源：固定距离、上一根K线高度或过去N根K线平均高度
 input DistanceMode   距离模式 = DISTANCE_FIXED;
 // K线高度模式下的正向或逆向开单方式
 input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
@@ -86,6 +87,12 @@ input int            固定止盈距离 = 500;
 input int            K线最小高度 = 500;
 // 上一根K线允许使用的最大高度点数
 input int            K线最大高度 = 1000;
+// 平均K线模式使用的已完成K线根数
+input int            平均K线根数 = 20;
+// 平均K线高度计算的止损倍数
+input double         平均止损倍数 = 2.0;
+// 平均K线模式中止盈距离相对止损距离的倍数
+input double         平均止盈倍数 = 2.0;
 // 用于识别本EA订单的唯一编号
 input int            订单识别编号 = 20260830;
 // 订单注释；网格单会自动追加网格标记
@@ -109,6 +116,9 @@ input string         结束时间 = "23:00";
 #define InpTakeProfitDistancePoints 固定止盈距离
 #define InpCandleMinRangePoints K线最小高度
 #define InpCandleMaxRangePoints K线最大高度
+#define InpAverageCandleCount 平均K线根数
+#define InpAverageStopMultiplier 平均止损倍数
+#define InpAverageTakeProfitMultiplier 平均止盈倍数
 #define InpMagicNumber 订单识别编号
 #define InpOrderComment 订单注释
 
@@ -467,12 +477,44 @@ bool PreviousCandleDataReady()
           && iLow(Symbol(), Period(), 1) > 0.0;
   }
 
+bool GetAverageCandleRangePoints(int &average_range_points)
+  {
+   if(InpAverageCandleCount <= 0
+      || iBars(Symbol(), Period()) < InpAverageCandleCount + 1)
+      return false;
+   double total_range_points = 0.0;
+   for(int shift = 1; shift <= InpAverageCandleCount; shift++)
+     {
+      const double high = iHigh(Symbol(), Period(), shift);
+      const double low = iLow(Symbol(), Period(), shift);
+      if(high <= 0.0 || low <= 0.0 || high <= low)
+         return false;
+      total_range_points += (high - low) / Point;
+     }
+   average_range_points = (int)MathRound(total_range_points / InpAverageCandleCount);
+   return average_range_points > 0;
+  }
+
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(InpDistanceMode == DISTANCE_FIXED)
      {
       stop_loss_points = InpStopLossDistancePoints;
       take_profit_points = InpTakeProfitDistancePoints;
+      return stop_loss_points > 0 && take_profit_points > 0;
+     }
+
+   if(InpDistanceMode == DISTANCE_AVERAGE_CANDLE_RANGE)
+     {
+      int average_range_points = 0;
+      if(!GetAverageCandleRangePoints(average_range_points)
+         || InpAverageStopMultiplier <= 0.0
+         || InpAverageTakeProfitMultiplier <= 0.0)
+         return false;
+      stop_loss_points = (int)MathRound(average_range_points
+                                        * InpAverageStopMultiplier);
+      take_profit_points = (int)MathRound(stop_loss_points
+                                          * InpAverageTakeProfitMultiplier);
       return stop_loss_points > 0 && take_profit_points > 0;
      }
 
@@ -2893,7 +2935,9 @@ int OnInit()
    if(InpInitialLots <= 0.0 || 首单手数倍数 <= 0.0
       || InpGridCount < 0 || InpGridLotMultiplier <= 0.0
       || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0
-       || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
+      || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
+       || InpAverageCandleCount <= 0 || InpAverageStopMultiplier <= 0.0
+       || InpAverageTakeProfitMultiplier <= 0.0
        || 最大反手次数 < 0
        || (kline_enable_multiple != 0 && kline_enable_multiple != 1)
        || (Korder_type != KORDER_ONCE_PER_BAR && Korder_type != KORDER_REPEAT_PER_BAR)

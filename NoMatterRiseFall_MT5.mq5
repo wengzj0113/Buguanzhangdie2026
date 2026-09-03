@@ -20,7 +20,8 @@ enum CycleMode
 enum DistanceMode
   {
    DISTANCE_FIXED = 0,         // 固定止盈止损距离
-   DISTANCE_CANDLE_RANGE = 1   // 上一根K线高度
+   DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
+   DISTANCE_AVERAGE_CANDLE_RANGE = 2 // 过去N根K线平均高度
   };
 
 enum OrderTypeMode
@@ -60,7 +61,7 @@ enum TransitionPhase
 input FirstDirection 首单方向 = FIRST_BUY;
 // 固定距离和K线高度模式均使用用户选择的循环模式
 input CycleMode      循环模式 = CYCLE_MODE_1;
-// 止盈止损距离来源：固定距离或上一根K线高度
+// 止盈止损距离来源：固定距离、上一根K线高度或过去N根K线平均高度
 input DistanceMode   距离模式 = DISTANCE_FIXED;
 // K线高度模式下的正向或逆向开单方式
 input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
@@ -88,6 +89,12 @@ input int            固定止盈距离 = 500;
 input int            K线最小高度 = 500;
 // 上一根K线允许使用的最大高度点数
 input int            K线最大高度 = 1000;
+// 平均K线模式使用的已完成K线根数
+input int            平均K线根数 = 20;
+// 平均K线高度计算的止损倍数
+input double         平均止损倍数 = 2.0;
+// 平均K线模式中止盈距离相对止损距离的倍数
+input double         平均止盈倍数 = 2.0;
 // 用于识别本EA订单的唯一编号
 input ulong          订单识别编号 = 20260830;
 // 订单注释；网格单会自动追加网格标记
@@ -180,6 +187,9 @@ struct GuiConfig
    int take_profit_distance_points;
    int candle_min_range_points;
    int candle_max_range_points;
+   int average_candle_count;
+   double average_stop_multiplier;
+   double average_take_profit_multiplier;
    ulong magic_number;
    string order_comment;
    string start_time;
@@ -422,6 +432,9 @@ string GuiConfigFingerprintText(const GuiConfig &config)
           + IntegerToString(config.take_profit_distance_points) + "|"
           + IntegerToString(config.candle_min_range_points) + "|"
           + IntegerToString(config.candle_max_range_points) + "|"
+          + IntegerToString(config.average_candle_count) + "|"
+          + DoubleToString(config.average_stop_multiplier, 16) + "|"
+          + DoubleToString(config.average_take_profit_multiplier, 16) + "|"
           + IntegerToString((long)config.magic_number) + "|"
           + config.order_comment + "|" + config.start_time + "|" + config.end_time;
   }
@@ -1010,7 +1023,8 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       return false;
      }
    if(config.distance_mode != DISTANCE_FIXED
-      && config.distance_mode != DISTANCE_CANDLE_RANGE)
+      && config.distance_mode != DISTANCE_CANDLE_RANGE
+      && config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE)
      {
       error = "Invalid distance mode.";
       return false;
@@ -1065,7 +1079,10 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
      }
    if(config.stop_loss_distance_points <= 0 || config.take_profit_distance_points <= 0
       || config.candle_min_range_points <= 0
-      || config.candle_max_range_points < config.candle_min_range_points)
+      || config.candle_max_range_points < config.candle_min_range_points
+      || config.average_candle_count <= 0
+      || !IsFinitePositive(config.average_stop_multiplier)
+      || !IsFinitePositive(config.average_take_profit_multiplier))
      {
       error = "Distance and candle range values are invalid.";
       return false;
@@ -1276,6 +1293,9 @@ GuiConfig LoadConfigFromInputs()
    config.take_profit_distance_points = 固定止盈距离;
    config.candle_min_range_points = K线最小高度;
    config.candle_max_range_points = K线最大高度;
+   config.average_candle_count = 平均K线根数;
+   config.average_stop_multiplier = 平均止损倍数;
+   config.average_take_profit_multiplier = 平均止盈倍数;
    config.magic_number = 订单识别编号;
    config.order_comment = 订单注释;
    config.start_time = 开始时间;
@@ -1360,12 +1380,45 @@ bool PreviousCandleDataReady()
           && iLow(_Symbol, _Period, 1) > 0.0;
   }
 
+bool GetAverageCandleRangePoints(int &average_range_points)
+  {
+   if(g_gui_applied_config.average_candle_count <= 0
+      || Bars(_Symbol, _Period) < g_gui_applied_config.average_candle_count + 1)
+      return false;
+   double total_range_points = 0.0;
+   for(int shift = 1; shift <= g_gui_applied_config.average_candle_count; shift++)
+     {
+      const double high = iHigh(_Symbol, _Period, shift);
+      const double low = iLow(_Symbol, _Period, shift);
+      if(high <= 0.0 || low <= 0.0 || high <= low)
+         return false;
+      total_range_points += (high - low) / _Point;
+     }
+   average_range_points = (int)MathRound(
+      total_range_points / g_gui_applied_config.average_candle_count);
+   return average_range_points > 0;
+  }
+
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(g_gui_applied_config.distance_mode == DISTANCE_FIXED)
      {
       stop_loss_points = g_gui_applied_config.stop_loss_distance_points;
       take_profit_points = g_gui_applied_config.take_profit_distance_points;
+      return stop_loss_points > 0 && take_profit_points > 0;
+     }
+
+   if(g_gui_applied_config.distance_mode == DISTANCE_AVERAGE_CANDLE_RANGE)
+     {
+      int average_range_points = 0;
+      if(!GetAverageCandleRangePoints(average_range_points)
+         || !IsFinitePositive(g_gui_applied_config.average_stop_multiplier)
+         || !IsFinitePositive(g_gui_applied_config.average_take_profit_multiplier))
+         return false;
+      stop_loss_points = (int)MathRound(
+         average_range_points * g_gui_applied_config.average_stop_multiplier);
+      take_profit_points = (int)MathRound(
+         stop_loss_points * g_gui_applied_config.average_take_profit_multiplier);
       return stop_loss_points > 0 && take_profit_points > 0;
      }
 
@@ -4245,7 +4298,21 @@ string GuiCycleModeText(const CycleMode value)
 
 string GuiDistanceModeText(const DistanceMode value)
   {
-   return value == DISTANCE_CANDLE_RANGE ? "K线高度" : "固定距离";
+   if(value == DISTANCE_CANDLE_RANGE)
+      return "K线高度";
+   if(value == DISTANCE_AVERAGE_CANDLE_RANGE)
+      return "平均K线高度";
+   return "固定距离";
+  }
+
+string GuiDistanceSummaryText(const GuiConfig &config)
+  {
+   if(config.distance_mode == DISTANCE_AVERAGE_CANDLE_RANGE)
+      return "均高N=" + IntegerToString(config.average_candle_count)
+             + " ×止损" + DoubleToString(config.average_stop_multiplier, 2)
+             + " / 止盈" + DoubleToString(config.average_take_profit_multiplier, 2);
+   return IntegerToString(config.stop_loss_distance_points) + "/"
+          + IntegerToString(config.take_profit_distance_points);
   }
 
 string GuiOrderTypeText(const OrderTypeMode value)
@@ -4275,6 +4342,9 @@ bool GuiIsEditableDropdownKey(const string key)
           || key == "take_profit_distance_points"
           || key == "candle_min_range_points"
           || key == "candle_max_range_points"
+          || key == "average_candle_count"
+          || key == "average_stop_multiplier"
+          || key == "average_take_profit_multiplier"
           || key == "grid_count" || key == "grid_lot_multiplier"
           || key == "max_reversals" || key == "start_time"
           || key == "end_time";
@@ -4291,6 +4361,10 @@ int GuiEditableDropdownOptionCount(const string key)
       || key == "candle_min_range_points"
       || key == "candle_max_range_points")
       return 11;
+   if(key == "average_candle_count")
+      return 6;
+   if(key == "average_stop_multiplier" || key == "average_take_profit_multiplier")
+      return 6;
    if(key == "grid_count")
       return 10;
    if(key == "grid_lot_multiplier")
@@ -4324,6 +4398,24 @@ string GuiEditableDropdownOptionText(const string key, const int index)
       if(index == 2) return "1.3";
       if(index == 3) return "1.5";
       if(index == 4) return "2.0";
+     }
+   if(key == "average_candle_count")
+     {
+      if(index == 0) return "5";
+      if(index == 1) return "10";
+      if(index == 2) return "20";
+      if(index == 3) return "30";
+      if(index == 4) return "50";
+      if(index == 5) return "100";
+     }
+   if(key == "average_stop_multiplier" || key == "average_take_profit_multiplier")
+     {
+      if(index == 0) return "0.5";
+      if(index == 1) return "1.0";
+      if(index == 2) return "1.5";
+      if(index == 3) return "2.0";
+      if(index == 4) return "3.0";
+      if(index == 5) return "4.0";
      }
    if(key == "stop_loss_distance_points"
       || key == "take_profit_distance_points"
@@ -4361,7 +4453,7 @@ int GuiDropdownOptionCount(const string key)
    if(key == "first_direction" || key == "distance_mode" || key == "order_type"
       || key == "candle_order_mode" || key == "candle_enable_multiple"
       || key == "take_profit_mode")
-      return 2;
+      return key == "distance_mode" ? 3 : 2;
    if(key == "cycle_mode")
       return 3;
    return 0;
@@ -4380,7 +4472,11 @@ string GuiDropdownOptionText(const string key, const int index)
       return "模式1";
      }
    if(key == "distance_mode")
-      return index == 1 ? "K线高度" : "固定距离";
+     {
+      if(index == 1) return "K线高度";
+      if(index == 2) return "平均K线高度";
+      return "固定距离";
+     }
    if(key == "order_type")
       return index == 1 ? "逆向" : "正向";
    if(key == "candle_order_mode")
@@ -4399,7 +4495,7 @@ int GuiDropdownValueIndex(const string key)
    if(key == "cycle_mode")
       return (int)g_gui_draft_config.cycle_mode;
    if(key == "distance_mode")
-      return g_gui_draft_config.distance_mode == DISTANCE_CANDLE_RANGE ? 1 : 0;
+      return (int)g_gui_draft_config.distance_mode;
    if(key == "order_type")
       return g_gui_draft_config.order_type == ORDERTYPE_REVERSE ? 1 : 0;
    if(key == "candle_order_mode")
@@ -4420,7 +4516,7 @@ bool GuiSetDropdownValue(const string key, const int index)
    else if(key == "cycle_mode")
       g_gui_draft_config.cycle_mode = (CycleMode)index;
    else if(key == "distance_mode")
-      g_gui_draft_config.distance_mode = index == 1 ? DISTANCE_CANDLE_RANGE : DISTANCE_FIXED;
+      g_gui_draft_config.distance_mode = (DistanceMode)index;
    else if(key == "order_type")
       g_gui_draft_config.order_type = index == 1 ? ORDERTYPE_REVERSE : ORDERTYPE_FORWARD;
    else if(key == "candle_order_mode")
@@ -4472,6 +4568,12 @@ int GuiAnyDropdownValueIndex(const string key)
       current = IntegerToString(g_gui_draft_config.candle_min_range_points);
    else if(key == "candle_max_range_points")
       current = IntegerToString(g_gui_draft_config.candle_max_range_points);
+   else if(key == "average_candle_count")
+      current = IntegerToString(g_gui_draft_config.average_candle_count);
+   else if(key == "average_stop_multiplier")
+      current = DoubleToString(g_gui_draft_config.average_stop_multiplier, 8);
+   else if(key == "average_take_profit_multiplier")
+      current = DoubleToString(g_gui_draft_config.average_take_profit_multiplier, 8);
    else if(key == "max_reversals")
       current = IntegerToString(g_gui_draft_config.max_reversals);
    else if(key == "start_time")
@@ -4508,6 +4610,12 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.candle_min_range_points = (int)StringToInteger(value);
    else if(key == "candle_max_range_points")
       g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+   else if(key == "average_candle_count")
+      g_gui_draft_config.average_candle_count = (int)StringToInteger(value);
+   else if(key == "average_stop_multiplier")
+      g_gui_draft_config.average_stop_multiplier = StringToDouble(value);
+   else if(key == "average_take_profit_multiplier")
+      g_gui_draft_config.average_take_profit_multiplier = StringToDouble(value);
    else if(key == "grid_count")
       g_gui_draft_config.grid_count = (int)StringToInteger(value);
    else if(key == "grid_lot_multiplier")
@@ -4890,9 +4998,7 @@ bool GuiRefreshOverviewData()
                            : "");
    const string first_direction = GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
                                                         ? FIRST_SELL : FIRST_BUY);
-   const string stops = IntegerToString(g_gui_applied_config.stop_loss_distance_points)
-                        + "/"
-                        + IntegerToString(g_gui_applied_config.take_profit_distance_points);
+   const string stops = GuiDistanceSummaryText(g_gui_applied_config);
    const string schedule = g_gui_applied_config.start_time + " - "
                            + g_gui_applied_config.end_time;
 
@@ -5129,7 +5235,7 @@ bool GuiRenderContent()
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
       section_title = "距离与止盈";
-      section_note = "6项";
+      section_note = "9项";
      }
    else if(g_gui_page == GUI_PAGE_GRID)
      {
@@ -5226,8 +5332,7 @@ bool GuiRenderContent()
                                  DoubleToString(g_gui_applied_config.grid_lot_multiplier, 8),
                                  left_x, summary_y + row_gap * 7, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.stops", "止损 / 止盈(点)",
-                                 IntegerToString(g_gui_applied_config.stop_loss_distance_points)
-                                 + "/" + IntegerToString(g_gui_applied_config.take_profit_distance_points),
+                                 GuiDistanceSummaryText(g_gui_applied_config),
                                  right_x, summary_y + row_gap * 7, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.take_profit_mode", "止盈移动模式",
                                  GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode),
@@ -5300,6 +5405,18 @@ bool GuiRenderContent()
       if(!GuiRenderEditableDropdownField("candle_max_range_points", "K线最大高度(点)",
                                          IntegerToString(g_gui_draft_config.candle_max_range_points),
                                          left_x, row + row_gap * 2, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("average_candle_count", "平均K线根数",
+                                         IntegerToString(g_gui_draft_config.average_candle_count),
+                                         right_x, row + row_gap * 3, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("average_stop_multiplier", "平均止损倍数",
+                                         DoubleToString(g_gui_draft_config.average_stop_multiplier, 8),
+                                         left_x, row + row_gap * 3, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("average_take_profit_multiplier", "平均止盈倍数",
+                                         DoubleToString(g_gui_draft_config.average_take_profit_multiplier, 8),
+                                         right_x, row + row_gap * 4, ok))
          ok = false;
       if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
                              GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), right_x,

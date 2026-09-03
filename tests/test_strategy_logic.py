@@ -5,12 +5,14 @@ import pytest
 
 
 MT5_SOURCE = Path(__file__).resolve().parents[1] / "NoMatterRiseFall_MT5.mq5"
+MT4_SOURCE = Path(__file__).resolve().parents[1] / "NoMatterRiseFall_MT4.mq4"
 
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
     ExposureSnapshot, GuiStateModel, OrderType, ParallelStrategyModel, PendingRecord,
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
-    normalize_pending_records, recover_prepared_transition, cycle_directions,
+    average_candle_distances, normalize_pending_records, recover_prepared_transition,
+    cycle_directions,
 )
 
 
@@ -86,7 +88,9 @@ def test_mt5_gui_exposes_every_input_parameter_on_an_editable_page():
         "initial_lots", "initial_lots_multiplier", "max_reversals",
         "grid_count", "grid_lot_multiplier", "stop_loss_distance_points",
         "take_profit_distance_points", "candle_min_range_points",
-        "candle_max_range_points", "magic_number", "order_comment",
+        "candle_max_range_points", "average_candle_count",
+        "average_stop_multiplier", "average_take_profit_multiplier",
+        "magic_number", "order_comment",
         "start_time", "end_time",
     ):
         assert f'"{key}"' in body, f"GUI is missing input parameter: {key}"
@@ -337,6 +341,8 @@ def test_mt5_gui_declares_all_requested_editable_dropdown_fields():
         "initial_lots", "initial_lots_multiplier",
         "stop_loss_distance_points", "take_profit_distance_points",
         "candle_min_range_points", "candle_max_range_points",
+        "average_candle_count", "average_stop_multiplier",
+        "average_take_profit_multiplier",
         "grid_count", "grid_lot_multiplier", "max_reversals",
         "start_time", "end_time",
     ]
@@ -1092,6 +1098,89 @@ def test_fixed_distance_mode_ignores_an_invalid_candle_range():
     actions = model.on_tick(bid=1.1000, ask=1.1002, candle_range_points=300)
 
     assert actions[0] == {"kind": "market", "direction": Direction.SELL, "lots": 0.01}
+
+
+def test_average_candle_distances_uses_only_completed_candles_and_applies_multipliers():
+    stop_points, take_profit_points = average_candle_distances(
+        [100, 200, 300], candle_count=2, stop_multiplier=2.0,
+        take_profit_multiplier=2.0,
+    )
+
+    assert stop_points == 300
+    assert take_profit_points == 600
+
+
+@pytest.mark.parametrize(
+    ("ranges", "candle_count", "stop_multiplier", "take_profit_multiplier"),
+    [
+        ([100], 2, 2.0, 2.0),
+        ([100, 0], 2, 2.0, 2.0),
+        ([100, -20], 2, 2.0, 2.0),
+        ([100, 200], 2, 0.0, 2.0),
+        ([100, 200], 2, 2.0, -1.0),
+    ],
+)
+def test_average_candle_distances_rejects_invalid_inputs(
+    ranges, candle_count, stop_multiplier, take_profit_multiplier,
+):
+    with pytest.raises(ValueError):
+        average_candle_distances(
+            ranges, candle_count=candle_count,
+            stop_multiplier=stop_multiplier,
+            take_profit_multiplier=take_profit_multiplier,
+        )
+
+
+def test_average_distance_mode_uses_market_entry_and_keeps_distances_for_group():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.AVERAGE_CANDLE_RANGE,
+        average_candle_count=3, average_stop_multiplier=2.0,
+        average_take_profit_multiplier=2.0, korder_type=0,
+    )
+
+    actions = model.on_tick(
+        bid=1.1000, ask=1.1002, previous_high=1.2000, previous_low=1.0000,
+        average_candle_ranges=[100, 200, 300], candle_id=10,
+    )
+
+    assert actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
+    assert all(action["kind"] != "initial_pending" for action in actions)
+    assert model.group_stop_points == 400
+    assert model.group_take_profit_points == 800
+    assert model.position.stop_loss == pytest.approx(1.1002 - 400 * 0.0001)
+    assert model.position.take_profit == pytest.approx(1.1002 + 800 * 0.0001)
+
+
+def test_average_distance_mode_does_not_use_single_candle_min_max_filter():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.AVERAGE_CANDLE_RANGE,
+        average_candle_count=2, average_stop_multiplier=1.0,
+        average_take_profit_multiplier=1.0,
+        min_range_points=500, max_range_points=1000,
+    )
+
+    actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=1,
+        average_candle_ranges=[100, 200],
+    )
+
+    assert actions[0]["kind"] == "market"
+    assert model.group_stop_points == 150
+
+
+def test_mt4_and_mt5_expose_matching_average_distance_contract():
+    mt4_source = MT4_SOURCE.read_text(encoding="utf-8")
+    mt5_source = MT5_SOURCE.read_text(encoding="utf-8")
+    for source in (mt4_source, mt5_source):
+        assert "DISTANCE_AVERAGE_CANDLE_RANGE" in source
+        assert "平均K线根数" in source
+        assert "平均止损倍数" in source
+        assert "平均止盈倍数" in source
+        assert "for(int shift = 1; shift <=" in source
+    assert 'config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE' in mt5_source
+    assert 'key == "average_candle_count"' in mt5_source
 
 
 @pytest.mark.parametrize(
