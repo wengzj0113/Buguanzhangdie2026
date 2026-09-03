@@ -253,6 +253,7 @@ double g_group_anchor_price = 0.0;
 double g_group_last_entry = 0.0;
 double g_group_linear_extreme = 0.0;
 int    g_grid_filled_levels = 0;
+long   g_grid_filled_mask = 0;
 int    g_grid_pending_level = 0;
 double g_grid_pending_price = 0.0;
 bool   g_reset_pending = false;
@@ -529,6 +530,7 @@ void SaveState()
    GlobalVariableSet(prefix + ".lastentry", g_group_last_entry);
    GlobalVariableSet(prefix + ".linearextreme", g_group_linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", (double)g_grid_filled_levels);
+   GlobalVariableSet(prefix + ".gridmask", (double)g_grid_filled_mask);
    GlobalVariableSet(prefix + ".gridpendinglevel", (double)g_grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
@@ -565,6 +567,7 @@ void ClearState()
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
    GlobalVariableDel(prefix + ".gridlevel");
+   GlobalVariableDel(prefix + ".gridmask");
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
    GlobalVariableDel(prefix + ".reset");
@@ -598,6 +601,7 @@ void ClearState()
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
    g_grid_filled_levels = 0;
+   g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    string migration_error = "";
@@ -677,6 +681,10 @@ bool LoadStateFromPrefix(const string prefix)
       g_group_linear_extreme = GlobalVariableGet(prefix + ".linearextreme");
    if(GlobalVariableCheck(prefix + ".gridlevel"))
       g_grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".gridlevel"));
+   if(GlobalVariableCheck(prefix + ".gridmask"))
+      g_grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".gridmask"));
+   else if(g_grid_filled_levels > 0)
+      g_grid_filled_mask = ((long)1 << g_grid_filled_levels) - 1;
    if(GlobalVariableCheck(prefix + ".gridpendinglevel"))
       g_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
    if(GlobalVariableCheck(prefix + ".gridpendingprice"))
@@ -1924,6 +1932,7 @@ void BeginFullReset(const string reason)
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
    g_grid_filled_levels = 0;
+   g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    SaveState();
@@ -2248,6 +2257,7 @@ bool HandleInitialPendingFill()
       g_group_linear_extreme = entry;
       g_group_total_lots = TotalPositionVolume(position_type);
       g_grid_filled_levels = 0;
+      g_grid_filled_mask = 0;
       g_grid_pending_level = 0;
       g_grid_pending_price = 0.0;
       g_grid_lots = g_previous_grid_lots > 0.0
@@ -2383,6 +2393,114 @@ double GridLevelPrice(const long position_type, const int level)
    return PriceNormalize(g_group_anchor_price + distance);
   }
 
+long GridLevelBit(const int level)
+  {
+   if(level <= 0 || level > 62)
+      return 0;
+   return ((long)1 << (level - 1));
+  }
+
+int GridFilledLevelCount()
+  {
+   int count = 0;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+      if((g_grid_filled_mask & GridLevelBit(level)) != 0)
+         count++;
+   return count;
+  }
+
+int GridPendingLevelFromComment(const string comment)
+  {
+   const int marker = StringFind(comment, ".Grid.");
+   if(marker < 0)
+      return 0;
+   return (int)StringToInteger(StringSubstr(comment, marker + 6));
+  }
+
+bool IsGridPendingAtLevel(const long order_type, const string comment,
+                          const double order_price, const double order_volume,
+                          const long expected_direction, const int expected_level,
+                          const double expected_price, const double expected_volume)
+  {
+   const int comment_level = GridPendingLevelFromComment(comment);
+   if(comment_level > 0 && comment_level != expected_level)
+      return false;
+   return IsReversePendingType(order_type) && IsGridPendingComment(comment)
+          && !IsInitialPendingComment(comment)
+          && PendingDirection(order_type) == expected_direction
+          && MathAbs(order_price - expected_price) <= _Point * 0.5
+          && MathAbs(order_volume - expected_volume)
+             <= SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
+  }
+
+bool NormalizeGridPendingLevel(const long expected_direction, const int expected_level,
+                               const double expected_price, const double expected_volume,
+                               ulong &keep_ticket)
+  {
+   keep_ticket = 0;
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsGridPendingAtLevel(OrderGetInteger(ORDER_TYPE),
+                                  OrderGetString(ORDER_COMMENT),
+                                  OrderGetDouble(ORDER_PRICE_OPEN),
+                                  OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                  expected_direction, expected_level,
+                                  expected_price, expected_volume))
+         continue;
+      if(keep_ticket == 0 || candidate < keep_ticket)
+         keep_ticket = candidate;
+     }
+   bool normalized = true;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsGridPendingAtLevel(OrderGetInteger(ORDER_TYPE),
+                                  OrderGetString(ORDER_COMMENT),
+                                  OrderGetDouble(ORDER_PRICE_OPEN),
+                                  OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                  expected_direction, expected_level,
+                                  expected_price, expected_volume))
+         continue;
+      if(!DeletePendingTicket(candidate, "Grid level duplicate delete"))
+         normalized = false;
+     }
+   return normalized;
+  }
+
+bool FindFilledGridOrder(const long position_type, const int level,
+                         const double expected_price, double &fill_price)
+  {
+   if(!HistorySelect(0, TimeCurrent()))
+      return false;
+   for(int index = HistoryOrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong ticket = HistoryOrderGetTicket(index);
+      const string comment = ticket == 0 ? "" : HistoryOrderGetString(ticket, ORDER_COMMENT);
+      const int comment_level = GridPendingLevelFromComment(comment);
+      if(ticket == 0
+         || HistoryOrderGetString(ticket, ORDER_SYMBOL) != _Symbol
+         || (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
+            != g_gui_applied_config.magic_number
+         || HistoryOrderGetInteger(ticket, ORDER_STATE) != ORDER_STATE_FILLED
+         || !IsGridPendingComment(comment)
+         || (comment_level > 0 && comment_level != level)
+         || PendingDirection(HistoryOrderGetInteger(ticket, ORDER_TYPE)) != position_type
+         || MathAbs(HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN) - expected_price)
+            > _Point * 0.5)
+         continue;
+      fill_price = HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN);
+      return true;
+     }
+   return false;
+  }
+
 bool PlaceGridPending(const long position_type, const int level)
   {
    if(g_gui_applied_config.grid_count < 2 || level <= 0
@@ -2399,7 +2517,8 @@ bool PlaceGridPending(const long position_type, const int level)
    const long pending_type = PendingTypeForDirection(position_type == POSITION_TYPE_BUY
                                                      ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
                                                      entry);
-   const string grid_comment = g_gui_applied_config.order_comment + ".Grid";
+   const string grid_comment = g_gui_applied_config.order_comment + ".Grid."
+                               + IntegerToString(level);
    bool sent = false;
    if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
      {
@@ -2435,27 +2554,38 @@ bool PlaceGridPending(const long position_type, const int level)
 
 bool HandleGridFill(const long position_type, const double previous_total_lots)
   {
-   if(g_grid_pending_level <= 0)
+   if(g_gui_applied_config.grid_count < 2 || g_group_anchor_price <= 0.0)
       return false;
-   ulong grid_ticket = 0;
-   long grid_type = 0;
-   double grid_volume = 0.0;
-   double grid_price = 0.0;
-   if(FindGridPending(grid_ticket, grid_type, grid_volume, grid_price))
-      return false;
-
    const double current_total_lots = TotalPositionVolume(position_type);
    const double volume_tolerance = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
    if(current_total_lots <= previous_total_lots + volume_tolerance)
       return false;
 
-   const int filled_level = g_grid_pending_level;
-   const double pending_price = g_grid_pending_price;
-   g_grid_filled_levels = filled_level;
+   bool changed = false;
+   double latest_entry = 0.0;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+     {
+      const long level_bit = GridLevelBit(level);
+      if(level_bit == 0 || (g_grid_filled_mask & level_bit) != 0)
+         continue;
+      double fill_price = 0.0;
+      if(FindFilledGridOrder(position_type, level,
+                             GridLevelPrice(position_type, level), fill_price))
+        {
+         g_grid_filled_mask |= level_bit;
+         latest_entry = fill_price;
+         changed = true;
+        }
+     }
+   if(!changed)
+      return false;
+
+   g_grid_filled_levels = GridFilledLevelCount();
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    g_group_total_lots = current_total_lots;
-   g_group_last_entry = pending_price > 0.0 ? pending_price : GridLevelPrice(position_type, filled_level);
+   if(latest_entry > 0.0)
+      g_group_last_entry = latest_entry;
    SetGroupStops(position_type);
    SaveState();
    return true;
@@ -2463,32 +2593,36 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
 
 void EnsureGridPending(const long position_type)
   {
-   if(g_gui_applied_config.grid_count < 2
-      || g_grid_filled_levels >= g_gui_applied_config.grid_count - 1)
-      return;
-   const int expected_level = g_grid_filled_levels + 1;
-   const long expected_direction = position_type == POSITION_TYPE_BUY
-                                   ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   const double expected_price = GridLevelPrice(position_type, expected_level);
-   const double expected_volume = VolumeNormalize(g_grid_lots);
-   ulong grid_ticket = 0;
-   if(!NormalizeSingleGroupPending(true, expected_direction, expected_price,
-                                   expected_volume, grid_ticket))
-      return;
-   if(grid_ticket > 0)
+   if(g_gui_applied_config.grid_count < 2)
      {
-      if(g_grid_pending_level != expected_level
-         || MathAbs(g_grid_pending_price - expected_price) > _Point * 0.5)
-        {
-         g_grid_pending_level = expected_level;
-         g_grid_pending_price = expected_price;
-         SaveState();
-        }
+      g_grid_pending_level = 0;
+      g_grid_pending_price = 0.0;
       return;
      }
+   const long expected_direction = position_type == POSITION_TYPE_BUY
+                                   ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   const double expected_volume = VolumeNormalize(g_grid_lots);
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
-   PlaceGridPending(position_type, expected_level);
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+     {
+      if((g_grid_filled_mask & GridLevelBit(level)) != 0)
+         continue;
+      const double expected_price = GridLevelPrice(position_type, level);
+      ulong grid_ticket = 0;
+      if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
+                                    expected_volume, grid_ticket))
+         continue;
+      if(grid_ticket == 0)
+         PlaceGridPending(position_type, level);
+      if(grid_ticket > 0 || g_grid_pending_level == level)
+        {
+         g_grid_pending_level = level;
+         g_grid_pending_price = expected_price;
+        }
+     }
+   g_grid_filled_levels = GridFilledLevelCount();
+   SaveState();
   }
 
 void EnsureNextPending(const long position_type, const double stop_loss,
@@ -2533,19 +2667,7 @@ bool ReconcileOrphanSingleGroupPending()
                                    reverse_volume, reverse_ticket))
       return false;
 
-   ulong grid_ticket = 0;
-   if(g_gui_applied_config.grid_count >= 2
-      && g_grid_filled_levels < g_gui_applied_config.grid_count - 1)
-     {
-      const int level = g_grid_filled_levels + 1;
-      const double grid_price = GridLevelPrice(current_direction, level);
-      const double grid_volume = VolumeNormalize(g_grid_lots);
-      if(!NormalizeSingleGroupPending(true, current_direction, grid_price,
-                                      grid_volume, grid_ticket))
-         return false;
-     }
-   else if(!NormalizeSingleGroupPending(true, current_direction, 0.0, 0.0, grid_ticket))
-      return false;
+   EnsureGridPending(current_direction);
    return true;
   }
 
@@ -2606,6 +2728,7 @@ bool Transition(const long position_type, const double volume,
     g_group_linear_extreme = next_entry;
    g_group_total_lots = TotalPositionVolume(next_position_type);
    g_grid_filled_levels = 0;
+   g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    g_grid_lots = VolumeNormalize(
@@ -2657,6 +2780,7 @@ bool ResumePreparedTransition()
    g_group_linear_extreme = entry;
    g_group_total_lots = TotalPositionVolume(position_type);
    g_grid_filled_levels = 0;
+   g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    g_grid_lots = VolumeNormalize(
@@ -2780,6 +2904,7 @@ void Manage()
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
          g_grid_filled_levels = 0;
+         g_grid_filled_mask = 0;
          g_grid_pending_level = 0;
          g_grid_pending_price = 0.0;
          g_grid_lots = VolumeNormalize(
@@ -2974,8 +3099,9 @@ void Manage()
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
           g_group_total_lots = TotalPositionVolume(position_type);
-          g_grid_filled_levels = 0;
-          g_grid_pending_level = 0;
+         g_grid_filled_levels = 0;
+         g_grid_filled_mask = 0;
+         g_grid_pending_level = 0;
           g_grid_pending_price = 0.0;
          g_grid_lots = g_previous_grid_lots > 0.0
                        ? VolumeNormalize(g_previous_grid_lots
@@ -3014,6 +3140,7 @@ struct MultiGroupState
    double   last_entry;
    double   linear_extreme;
    int      grid_filled_levels;
+   long     grid_filled_mask;
    int      grid_pending_level;
    double   grid_pending_price;
   };
@@ -3057,6 +3184,7 @@ bool ResetInMemoryStrategyState()
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
    g_grid_filled_levels = 0;
+   g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
    return true;
@@ -3111,6 +3239,7 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
    GlobalVariableDel(prefix + ".gridlevel");
+   GlobalVariableDel(prefix + ".gridmask");
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
   }
@@ -3161,6 +3290,7 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.last_entry = 0.0;
    group.linear_extreme = 0.0;
    group.grid_filled_levels = 0;
+   group.grid_filled_mask = 0;
    group.grid_pending_level = 0;
    group.grid_pending_price = 0.0;
   }
@@ -3250,6 +3380,104 @@ bool MultiFindPending(const int group_id, const bool grid, ulong &ticket, long &
    return false;
   }
 
+bool MultiIsGridPendingAtLevel(const MultiGroupState &group, const long order_type,
+                               const string comment, const double order_price,
+                               const double order_volume, const long expected_direction,
+                               const int expected_level, const double expected_price,
+                               const double expected_volume)
+  {
+   const int comment_level = GridPendingLevelFromComment(comment);
+   if(comment_level > 0 && comment_level != expected_level)
+      return false;
+   return MultiCommentMatches(comment, group.id)
+          && IsGridPendingComment(comment)
+          && !MultiIsInitialPendingComment(comment)
+          && IsReversePendingType(order_type)
+          && PendingDirection(order_type) == expected_direction
+          && MathAbs(order_price - expected_price) <= _Point * 0.5
+          && MathAbs(order_volume - expected_volume)
+             <= SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
+  }
+
+bool MultiNormalizeGridPendingLevel(const MultiGroupState &group,
+                                    const long expected_direction, const int expected_level,
+                                    const double expected_price, const double expected_volume,
+                                    ulong &keep_ticket)
+  {
+   keep_ticket = 0;
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !MultiIsGridPendingAtLevel(group, OrderGetInteger(ORDER_TYPE),
+                                       OrderGetString(ORDER_COMMENT),
+                                       OrderGetDouble(ORDER_PRICE_OPEN),
+                                       OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                       expected_direction, expected_level,
+                                       expected_price, expected_volume))
+         continue;
+      if(keep_ticket == 0 || candidate < keep_ticket)
+         keep_ticket = candidate;
+     }
+   bool normalized = true;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !MultiIsGridPendingAtLevel(group, OrderGetInteger(ORDER_TYPE),
+                                       OrderGetString(ORDER_COMMENT),
+                                       OrderGetDouble(ORDER_PRICE_OPEN),
+                                       OrderGetDouble(ORDER_VOLUME_CURRENT),
+                                       expected_direction, expected_level,
+                                       expected_price, expected_volume))
+         continue;
+      if(!DeletePendingTicket(candidate, "Multi grid level duplicate delete"))
+         normalized = false;
+     }
+   return normalized;
+  }
+
+bool MultiFindFilledGridOrder(const MultiGroupState &group, const long position_type,
+                              const int level, const double expected_price,
+                              double &fill_price)
+  {
+   if(!HistorySelect(0, TimeCurrent()))
+      return false;
+   for(int index = HistoryOrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong ticket = HistoryOrderGetTicket(index);
+      if(ticket == 0
+         || HistoryOrderGetString(ticket, ORDER_SYMBOL) != _Symbol
+         || (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
+            != g_gui_applied_config.magic_number
+         || HistoryOrderGetInteger(ticket, ORDER_STATE) != ORDER_STATE_FILLED
+         || !MultiIsGridPendingAtLevel(group,
+                                       HistoryOrderGetInteger(ticket, ORDER_TYPE),
+                                       HistoryOrderGetString(ticket, ORDER_COMMENT),
+                                       HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN),
+                                       HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL),
+                                       position_type, level, expected_price,
+                                       HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL)))
+         continue;
+      fill_price = HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN);
+      return true;
+     }
+   return false;
+  }
+
+int MultiGridFilledLevelCount(const MultiGroupState &group)
+  {
+   int count = 0;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+      if((group.grid_filled_mask & GridLevelBit(level)) != 0)
+         count++;
+   return count;
+  }
+
 void MultiSaveGroup(const MultiGroupState &group)
   {
    const string prefix = MultiStatePrefix(group.id);
@@ -3277,6 +3505,7 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".lastentry", group.last_entry);
    GlobalVariableSet(prefix + ".linearextreme", group.linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", (double)group.grid_filled_levels);
+   GlobalVariableSet(prefix + ".gridmask", (double)group.grid_filled_mask);
    GlobalVariableSet(prefix + ".gridpendinglevel", (double)group.grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", group.grid_pending_price);
    GlobalVariableSet(StatePrefix() + ".multi.nextid", (double)g_multi_next_id);
@@ -3338,6 +3567,10 @@ void MultiLoadGroups()
       state.last_entry = GlobalVariableGet(prefix + ".lastentry");
       state.linear_extreme = GlobalVariableGet(prefix + ".linearextreme");
       state.grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".gridlevel"));
+      if(GlobalVariableCheck(prefix + ".gridmask"))
+         state.grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".gridmask"));
+      else if(state.grid_filled_levels > 0)
+         state.grid_filled_mask = ((long)1 << state.grid_filled_levels) - 1;
       state.grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
       state.grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
       g_multi_groups[index] = state;
@@ -3723,79 +3956,96 @@ double MultiGridLevelPrice(const MultiGroupState &group, const long type, const 
 bool MultiPlaceGridPending(MultiGroupState &group, const long type)
   {
    if(g_gui_applied_config.grid_count < 2
-      || group.grid_filled_levels >= g_gui_applied_config.grid_count - 1
       || group.grid_lots <= 0.0 || group.anchor_price <= 0.0)
       return false;
-   ulong existing_ticket = 0;
-   long existing_type = 0;
-   double existing_volume = 0.0;
-   double existing_price = 0.0;
-   if(MultiFindPending(group.id, true, existing_ticket, existing_type,
-                       existing_volume, existing_price))
-     {
-      group.grid_pending_ticket = existing_ticket;
-      return true;
-     }
-   const int level = group.grid_filled_levels + 1;
-   const double entry = MultiGridLevelPrice(group, type, level);
-   const long pending_type = PendingTypeForDirection(type, entry);
    const double volume = VolumeNormalize(group.grid_lots);
-   const double stop_loss = MultiStopPrice(group, type);
-   const double take_profit = type == POSITION_TYPE_BUY
-                              ? PriceNormalize(entry + group.take_profit_points * _Point)
-                              : PriceNormalize(entry - group.take_profit_points * _Point);
-   const string comment = MultiGroupComment(group.id, true);
-   bool sent = false;
-   if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
-      sent = pending_type == ORDER_TYPE_BUY_STOP
-             ? g_trade.BuyStop(volume, entry, _Symbol, stop_loss, take_profit,
-                               ORDER_TIME_GTC, 0, comment)
-             : g_trade.BuyLimit(volume, entry, _Symbol, stop_loss, take_profit,
-                                ORDER_TIME_GTC, 0, comment);
-   else
-      sent = pending_type == ORDER_TYPE_SELL_STOP
-             ? g_trade.SellStop(volume, entry, _Symbol, stop_loss, take_profit,
-                                ORDER_TIME_GTC, 0, comment)
-             : g_trade.SellLimit(volume, entry, _Symbol, stop_loss, take_profit,
-                                 ORDER_TIME_GTC, 0, comment);
-   if(!sent)
+   bool placed = false;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
      {
-      PrintFormat("Multi group grid pending failed, group=%d, retcode=%u, %s",
-                  group.id, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
-      return false;
+      if((group.grid_filled_mask & GridLevelBit(level)) != 0)
+         continue;
+      const double entry = MultiGridLevelPrice(group, type, level);
+      ulong existing_ticket = 0;
+      if(!MultiNormalizeGridPendingLevel(group,
+                                         type == POSITION_TYPE_BUY
+                                         ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                                         level, entry, volume, existing_ticket))
+         continue;
+      if(existing_ticket == 0)
+        {
+         const long pending_type = PendingTypeForDirection(type, entry);
+         const double stop_loss = MultiStopPrice(group, type);
+         const double take_profit = type == POSITION_TYPE_BUY
+                                    ? PriceNormalize(entry + group.take_profit_points * _Point)
+                                    : PriceNormalize(entry - group.take_profit_points * _Point);
+         const string comment = g_gui_applied_config.order_comment
+                                + MultiGroupTag(group.id) + ".Grid."
+                                + IntegerToString(level);
+         bool sent = false;
+         if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
+            sent = pending_type == ORDER_TYPE_BUY_STOP
+                   ? g_trade.BuyStop(volume, entry, _Symbol, stop_loss, take_profit,
+                                     ORDER_TIME_GTC, 0, comment)
+                   : g_trade.BuyLimit(volume, entry, _Symbol, stop_loss, take_profit,
+                                      ORDER_TIME_GTC, 0, comment);
+         else
+            sent = pending_type == ORDER_TYPE_SELL_STOP
+                   ? g_trade.SellStop(volume, entry, _Symbol, stop_loss, take_profit,
+                                      ORDER_TIME_GTC, 0, comment)
+                   : g_trade.SellLimit(volume, entry, _Symbol, stop_loss, take_profit,
+                                       ORDER_TIME_GTC, 0, comment);
+         if(!sent)
+           {
+            PrintFormat("Multi group grid pending failed, group=%d, level=%d, retcode=%u, %s",
+                        group.id, level, g_trade.ResultRetcode(),
+                        g_trade.ResultRetcodeDescription());
+            continue;
+           }
+         existing_ticket = g_trade.ResultOrder();
+        }
+      group.grid_pending_ticket = existing_ticket;
+      group.grid_pending_level = level;
+      group.grid_pending_price = entry;
+      placed = true;
      }
-   group.grid_pending_ticket = g_trade.ResultOrder();
-   group.grid_pending_level = level;
-   group.grid_pending_price = entry;
-   return true;
+   group.grid_filled_levels = MultiGridFilledLevelCount(group);
+   return placed;
   }
 
 bool MultiHandleGridFill(MultiGroupState &group, const long type, const double current_total)
   {
-   if(group.grid_pending_level <= 0 || group.grid_pending_ticket == 0)
+   if(g_gui_applied_config.grid_count < 2 || group.anchor_price <= 0.0)
       return false;
-   const int status = MultiPendingStatus(group.grid_pending_ticket, group.id, true);
-   if(status == REVERSE_PENDING_ACTIVE)
-      return false;
-   if(status == REVERSE_PENDING_FILLED
-      && current_total > group.total_lots
+   if(current_total <= group.total_lots
       + SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5)
+      return false;
+   bool changed = false;
+   double latest_entry = 0.0;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
      {
-      group.grid_filled_levels = group.grid_pending_level;
-      group.grid_pending_level = 0;
-      group.grid_pending_ticket = 0;
-      group.total_lots = current_total;
-      group.last_entry = group.grid_pending_price;
-      MultiSetStops(group, type);
-      return true;
+      const long level_bit = GridLevelBit(level);
+      if(level_bit == 0 || (group.grid_filled_mask & level_bit) != 0)
+         continue;
+      double fill_price = 0.0;
+      if(MultiFindFilledGridOrder(group, type, level,
+                                  MultiGridLevelPrice(group, type, level), fill_price))
+        {
+         group.grid_filled_mask |= level_bit;
+         latest_entry = fill_price;
+         changed = true;
+        }
      }
-   if(status == REVERSE_PENDING_CANCELED)
-     {
-      group.grid_pending_level = 0;
-      group.grid_pending_ticket = 0;
-      group.grid_pending_price = 0.0;
-     }
-   return false;
+   if(!changed)
+      return false;
+   group.grid_filled_levels = MultiGridFilledLevelCount(group);
+   group.grid_pending_level = 0;
+   group.grid_pending_ticket = 0;
+   group.grid_pending_price = 0.0;
+   group.total_lots = current_total;
+   if(latest_entry > 0.0)
+      group.last_entry = latest_entry;
+   MultiSetStops(group, type);
+   return true;
   }
 
 bool MultiHandleReverseFill(MultiGroupState &group, const long type, const double entry,
