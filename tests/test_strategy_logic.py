@@ -2088,6 +2088,42 @@ def test_initial_pending_pair_preserves_oco_cancel_on_fill(source_name):
     assert "FindPositionByPendingOrder(filled_ticket" in multi_fill_handler or "FindPositionByTicket(filled_ticket" in multi_fill_handler
 
 
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_once_per_bar_cleanup_runs_before_initial_fill_short_circuit(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    manage = source.split("void Manage()", 1)[1].split(
+        "void ManageMultipleCandleGroups", 1,
+    )[0]
+    prepare = source.split("bool PrepareCandleOnceEntry", 1)[1].split(
+        "void Manage()", 1,
+    )[0]
+
+    assert manage.index("PrepareCandleOnceEntry") < manage.index("HandleInitialPendingFill")
+    assert "HasOurPosition()" in prepare
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_initial_fill_requires_a_real_filled_side_before_promoting_position(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    handler = source.split("bool HandleInitialPendingFill", 1)[1].split(
+        "bool PlaceNextPending", 1,
+    )[0]
+
+    assert "const bool high_filled" in handler
+    assert "const bool low_filled" in handler
+    assert "if(high_filled || low_filled)" in handler
+    assert "if(high_status == REVERSE_PENDING_UNKNOWN" in handler
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_mt5_and_mt4_have_a_fast_initial_oco_event_path(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "void OnTimer()" in source
+    if source_name.endswith(".mq5"):
+        assert "void OnTradeTransaction" in source
+
+
 def test_gui_draft_does_not_change_applied_config_until_apply():
     model = GuiStateModel(applied={"initial_lots": 0.01, "cycle_mode": "mode1"})
 

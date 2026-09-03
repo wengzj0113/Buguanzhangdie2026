@@ -1174,15 +1174,19 @@ bool HandleInitialPendingFill()
       return false;
    const int high_status = InitialPendingStatus(g_initial_high_ticket);
    const int low_status = InitialPendingStatus(g_initial_low_ticket);
+   const bool high_filled = high_status == REVERSE_PENDING_FILLED;
+   const bool low_filled = low_status == REVERSE_PENDING_FILLED;
    if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
       return true;
-   const int filled_ticket = high_status == REVERSE_PENDING_FILLED
-                             ? g_initial_high_ticket : g_initial_low_ticket;
-   if(filled_ticket > 0)
+   if(high_filled || low_filled)
      {
+      const int filled_ticket = high_filled ? g_initial_high_ticket : g_initial_low_ticket;
       const int other_ticket = filled_ticket == g_initial_high_ticket
                                ? g_initial_low_ticket : g_initial_high_ticket;
-      if(other_ticket > 0 && InitialPendingStatus(other_ticket) == REVERSE_PENDING_ACTIVE)
+      const int other_status = high_filled ? low_status : high_status;
+      if(other_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(other_ticket > 0 && other_status == REVERSE_PENDING_ACTIVE)
         {
          if(!OrderDelete(other_ticket, clrRed))
             return true;
@@ -1224,12 +1228,18 @@ bool HandleInitialPendingFill()
       SaveState();
       return true;
      }
-   if(high_status != REVERSE_PENDING_ACTIVE && low_status != REVERSE_PENDING_ACTIVE)
+   if(high_status == REVERSE_PENDING_UNKNOWN || low_status == REVERSE_PENDING_UNKNOWN)
+      return true;
+   if(high_status == REVERSE_PENDING_ACTIVE || low_status == REVERSE_PENDING_ACTIVE)
      {
-      g_initial_high_ticket = -1;
-      g_initial_low_ticket = -1;
-      g_initial_high_price = 0.0;
-      g_initial_low_price = 0.0;
+      const int active_ticket = high_status == REVERSE_PENDING_ACTIVE
+                                ? g_initial_high_ticket : g_initial_low_ticket;
+      if(active_ticket > 0 && !OrderDelete(active_ticket, clrRed))
+         return true;
+     }
+   if(!HasActiveInitialPending())
+     {
+      ResetInitialPendingTracking();
       SaveState();
       return false;
      }
@@ -1576,6 +1586,8 @@ bool PrepareCandleOnceEntry(const datetime current_bar_time)
   {
    if(current_bar_time <= 0 || current_bar_time == g_last_candle_entry_bar_time)
       return true;
+   if(HasOurPosition())
+      return true;
    if(!HasOurPending())
       return true;
    if(!DeleteAllPending())
@@ -1620,6 +1632,14 @@ void Manage()
       g_transition_phase = TRANSITION_NONE;
       SaveState();
      }
+
+   const bool candle_once_mode = InpDistanceMode == DISTANCE_CANDLE_RANGE
+                                 && Korder_type == KORDER_ONCE_PER_BAR;
+   const datetime current_bar_time = candle_once_mode ? iTime(Symbol(), Period(), 0) : 0;
+   if(candle_once_mode && current_bar_time > 0
+      && current_bar_time != g_last_candle_entry_bar_time
+      && !PrepareCandleOnceEntry(current_bar_time))
+      return;
 
    if(HandleInitialPendingFill())
       return;
@@ -1786,14 +1806,6 @@ void Manage()
       MarkCandleEntryBarProcessed(completed_bar_time);
       return;
      }
-
-   const bool candle_once_mode = InpDistanceMode == DISTANCE_CANDLE_RANGE
-                                 && Korder_type == KORDER_ONCE_PER_BAR;
-   const datetime current_bar_time = candle_once_mode ? iTime(Symbol(), Period(), 0) : 0;
-   if(candle_once_mode && current_bar_time > 0
-      && current_bar_time != g_last_candle_entry_bar_time
-      && !PrepareCandleOnceEntry(current_bar_time))
-      return;
 
    const bool has_pending = HasOurPending();
    if(has_pending)
@@ -2395,16 +2407,20 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       return false;
    const int high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
    const int low_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+   const bool high_filled = high_status == REVERSE_PENDING_FILLED;
+   const bool low_filled = low_status == REVERSE_PENDING_FILLED;
    if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
       return true;
-   const int filled_ticket = high_status == REVERSE_PENDING_FILLED
-                             ? group.initial_high_ticket : group.initial_low_ticket;
-   if(filled_ticket > 0)
+   if(high_filled || low_filled)
      {
+      const int filled_ticket = high_filled ? group.initial_high_ticket : group.initial_low_ticket;
       const int other_ticket = filled_ticket == group.initial_high_ticket
                                ? group.initial_low_ticket : group.initial_high_ticket;
-      if(other_ticket > 0 && MultiInitialPendingStatus(other_ticket, group.id)
-         == REVERSE_PENDING_ACTIVE && !OrderDelete(other_ticket, clrRed))
+      const int other_status = high_filled ? low_status : high_status;
+      if(other_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(other_ticket > 0 && other_status == REVERSE_PENDING_ACTIVE
+         && !OrderDelete(other_ticket, clrRed))
          return true;
       int position_ticket = -1;
       int position_type = OP_BUY;
@@ -2438,7 +2454,17 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       MultiPlaceGridPending(group, position_type);
       return true;
      }
-   if(high_status != REVERSE_PENDING_ACTIVE && low_status != REVERSE_PENDING_ACTIVE)
+   if(high_status == REVERSE_PENDING_UNKNOWN || low_status == REVERSE_PENDING_UNKNOWN)
+      return true;
+   if(high_status == REVERSE_PENDING_ACTIVE || low_status == REVERSE_PENDING_ACTIVE)
+     {
+      const int active_ticket = high_status == REVERSE_PENDING_ACTIVE
+                                ? group.initial_high_ticket : group.initial_low_ticket;
+      if(active_ticket > 0 && !OrderDelete(active_ticket, clrRed))
+         return true;
+     }
+   if(MultiInitialPendingStatus(group.initial_high_ticket, group.id) != REVERSE_PENDING_ACTIVE
+      && MultiInitialPendingStatus(group.initial_low_ticket, group.id) != REVERSE_PENDING_ACTIVE)
      {
       group.initial_high_ticket = -1;
       group.initial_low_ticket = -1;
@@ -2736,6 +2762,21 @@ bool MultiManageGroup(MultiGroupState &group)
    return true;
   }
 
+void ProcessInitialPendingFillEvent()
+  {
+   if(g_reset_pending)
+      return;
+   if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
+     {
+      for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
+         if(g_multi_groups[index].active
+            && MultiHandleInitialPendingFill(g_multi_groups[index]))
+            MultiSaveGroup(g_multi_groups[index]);
+      return;
+     }
+   HandleInitialPendingFill();
+  }
+
 bool MultiTryOpenCandleGroup()
   {
    if(!IsInitialEntryAllowed()) return false;
@@ -2865,7 +2906,14 @@ int OnInit()
    LoadState();
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
       MultiLoadGroups();
+   if(!EventSetTimer(1))
+      Print("Unable to start the initial pending OCO timer.");
    return INIT_SUCCEEDED;
+  }
+
+void OnTimer()
+  {
+   ProcessInitialPendingFillEvent();
   }
 
 void OnTick()
@@ -2880,5 +2928,6 @@ void OnTick()
 
 void OnDeinit(const int reason)
   {
+   EventKillTimer();
    ReleaseExecutionOwnership();
   }
