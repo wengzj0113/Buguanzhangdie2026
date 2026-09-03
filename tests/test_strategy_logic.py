@@ -919,6 +919,46 @@ def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot()
     assert model.grid_pending.lots == pytest.approx(0.01)
 
 
+def test_grid_count_five_places_all_internal_levels_at_once():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=5,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+    grid_actions = [action for action in actions if action["kind"] == "grid_pending"]
+
+    assert [action["level"] for action in grid_actions] == [1, 2, 3, 4]
+    assert [action["price"] for action in grid_actions] == [
+        pytest.approx(1.0902), pytest.approx(1.0802),
+        pytest.approx(1.0702), pytest.approx(1.0602),
+    ]
+    assert all(action["order_type"] == "BUY_LIMIT" for action in grid_actions)
+
+
+def test_filling_one_grid_level_keeps_other_pending_levels_without_replacement():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=5,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.fill_grid_pending()
+
+    pending_levels = sorted(
+        pending.level
+        for pending in getattr(model, "grid_pendings", {}).values()
+    )
+    assert pending_levels == [2, 3, 4]
+
+    model.on_tick(bid=1.0950, ask=1.0952)
+    pending_levels_after_tick = sorted(
+        pending.level
+        for pending in getattr(model, "grid_pendings", {}).values()
+    )
+    assert pending_levels_after_tick == [2, 3, 4]
+
+
 def test_linear_buy_tp_follows_adverse_move_and_does_not_retrace():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
@@ -2002,7 +2042,6 @@ def test_dedup_source_contract(source_name):
     assert "if(!AcquireExecutionOwnership())" in source
     assert "ReleaseExecutionOwnership();" in source
     assert "NormalizeSingleGroupPending(false," in source
-    assert "NormalizeSingleGroupPending(true," in source
     assert "if(HasDuplicateSingleGroupExposure())" in source
 
     ensure_next = source.split("void EnsureNextPending", 1)[1].split("bool Transition", 1)[0]
@@ -2012,7 +2051,16 @@ def test_dedup_source_contract(source_name):
     ensure_grid = source.split("void EnsureGridPending", 1)[1].split(
         "void EnsureNextPending", 1,
     )[0]
-    assert "if(!NormalizeSingleGroupPending(true," in ensure_grid
+    assert "grid_filled_mask" in source
+    assert "NormalizeGridPendingLevel" in source
+    assert "for(int level = 1; level <" in ensure_grid
+    assert "g_grid_filled_levels + 1" not in ensure_grid
+    multi_place = source.split("bool MultiPlaceGridPending", 1)[1].split(
+        "bool MultiHandleGridFill", 1,
+    )[0]
+    assert "for(int level = 1; level <" in multi_place
+    assert "MultiNormalizeGridPendingLevel" in multi_place
+    assert "grid_filled_levels + 1" not in multi_place
 
     if source_name.endswith("MT5.mq5"):
         assert "retcode == TRADE_RETCODE_DONE" in source
