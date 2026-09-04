@@ -943,20 +943,20 @@ def test_filling_one_grid_level_keeps_other_pending_levels_without_replacement()
     )
 
     model.on_tick(bid=1.1000, ask=1.1002)
-    model.fill_grid_pending()
+    model.fill_grid_pending(level=2)
 
     pending_levels = sorted(
         pending.level
         for pending in getattr(model, "grid_pendings", {}).values()
     )
-    assert pending_levels == [2, 3, 4]
+    assert pending_levels == [1, 3, 4]
 
     model.on_tick(bid=1.0950, ask=1.0952)
     pending_levels_after_tick = sorted(
         pending.level
         for pending in getattr(model, "grid_pendings", {}).values()
     )
-    assert pending_levels_after_tick == [2, 3, 4]
+    assert pending_levels_after_tick == [1, 3, 4]
 
 
 def test_linear_buy_tp_follows_adverse_move_and_does_not_retrace():
@@ -2053,6 +2053,7 @@ def test_dedup_source_contract(source_name):
     )[0]
     assert "grid_filled_mask" in source
     assert "NormalizeGridPendingLevel" in source
+    assert source.count("group.grid_filled_mask = 0;") >= 4
     assert "for(int level = 1; level <" in ensure_grid
     assert "g_grid_filled_levels + 1" not in ensure_grid
     multi_place = source.split("bool MultiPlaceGridPending", 1)[1].split(

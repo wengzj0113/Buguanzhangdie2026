@@ -3847,6 +3847,7 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       group.linear_extreme = entry;
       group.total_lots = volume;
       group.grid_filled_levels = 0;
+      group.grid_filled_mask = 0;
       group.grid_pending_level = 0;
       group.grid_pending_price = 0.0;
       group.grid_lots = group.previous_grid_lots > 0.0
@@ -4073,6 +4074,7 @@ bool MultiHandleReverseFill(MultiGroupState &group, const long type, const doubl
    group.linear_extreme = entry;
    group.total_lots = current_total;
    group.grid_filled_levels = 0;
+   group.grid_filled_mask = 0;
    group.grid_pending_level = 0;
    group.grid_pending_ticket = 0;
    group.grid_pending_price = 0.0;
@@ -4214,6 +4216,7 @@ bool MultiManageGroup(MultiGroupState &group)
       group.linear_extreme = entry;
       group.total_lots = total;
       group.grid_filled_levels = 0;
+      group.grid_filled_mask = 0;
       group.grid_pending_level = 0;
       group.grid_pending_ticket = 0;
       group.grid_pending_price = 0.0;

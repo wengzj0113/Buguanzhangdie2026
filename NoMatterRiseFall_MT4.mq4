@@ -1463,10 +1463,8 @@ bool FindFilledGridOrder(const int position_type, const int level,
          continue;
       const int comment_level = GridPendingLevelFromComment(OrderComment());
       if((comment_level > 0 && comment_level != level)
-         || (comment_level <= 0
-             && MathAbs(OrderOpenPrice() - expected_price) > Point * 10.0)
          || PendingDirection(OrderType()) != position_type
-         )
+         || MathAbs(OrderOpenPrice() - expected_price) > Point * 10.0)
          continue;
       fill_price = OrderOpenPrice();
       return true;
@@ -2322,10 +2320,8 @@ bool MultiFindFilledGridOrder(const MultiGroupState &group, const int position_t
          continue;
       const int comment_level = GridPendingLevelFromComment(OrderComment());
       if((comment_level > 0 && comment_level != level)
-         || (comment_level <= 0
-             && MathAbs(OrderOpenPrice() - expected_price) > Point * 10.0)
          || PendingDirection(OrderType()) != position_type
-         )
+         || MathAbs(OrderOpenPrice() - expected_price) > Point * 10.0)
          continue;
       fill_price = OrderOpenPrice();
       return true;
