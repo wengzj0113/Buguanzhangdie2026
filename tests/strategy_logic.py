@@ -284,7 +284,7 @@ class StrategyModel:
         self.position = None
         self.pending = None
         self.initial_pending = []
-        self.grid_pending = None
+        self.grid_pendings = {}
         self.current_index = 0
         self.reversal_count = 0
         self.sequence = cycle_directions(initial_direction, cycle_mode)
@@ -293,10 +293,23 @@ class StrategyModel:
         self.grid_lots = 0.0
         self.group_total_lots = 0.0
         self.grid_filled_levels = 0
+        self.grid_filled_mask = 0
         self.group_anchor_entry = None
         self.group_stop_points = None
         self.group_take_profit_points = None
         self.linear_extreme = None
+
+    @property
+    def grid_pending(self):
+        if not self.grid_pendings:
+            return None
+        return self.grid_pendings[min(self.grid_pendings)]
+
+    @grid_pending.setter
+    def grid_pending(self, pending):
+        self.grid_pendings.clear()
+        if pending is not None:
+            self.grid_pendings[pending.level] = pending
 
     def _distance(self, candle_range_points, average_candle_ranges=None):
         if self.distance_mode is DistanceMode.FIXED:
@@ -344,7 +357,8 @@ class StrategyModel:
         self.group_anchor_entry = entry
         self.linear_extreme = entry
         self.grid_filled_levels = 0
-        self.grid_pending = None
+        self.grid_filled_mask = 0
+        self.grid_pendings.clear()
         self.group_total_lots = lots
         if grid_lots is not None:
             self.grid_lots = grid_lots
@@ -368,7 +382,7 @@ class StrategyModel:
         self.position = None
         self.pending = None
         self.initial_pending = []
-        self.grid_pending = None
+        self.grid_pendings.clear()
         self.current_index = 0
         self.reversal_count = 0
         self.cumulative_loss_lots = 0.0
@@ -376,6 +390,7 @@ class StrategyModel:
         self.grid_lots = 0.0
         self.group_total_lots = 0.0
         self.grid_filled_levels = 0
+        self.grid_filled_mask = 0
         self.group_anchor_entry = None
         self.group_stop_points = None
         self.group_take_profit_points = None
@@ -420,31 +435,38 @@ class StrategyModel:
             take_profit_distance_points=take_profit_distance_points,
         )
 
-    def _grid_pending_action(self):
+    def _grid_pending_action(self, pending=None):
+        if pending is None:
+            pending = self.grid_pending
         return {
-            "kind": "grid_pending", "direction": self.grid_pending.direction,
-            "lots": self.grid_pending.lots, "price": self.grid_pending.price,
-            "order_type": self.grid_pending.order_type,
-            "level": self.grid_pending.level,
+            "kind": "grid_pending", "direction": pending.direction,
+            "lots": pending.lots, "price": pending.price,
+            "order_type": pending.order_type,
+            "level": pending.level,
         }
 
     def _ensure_grid_pending(self, bid, ask):
-        if self.grid_count < 2 or self.grid_filled_levels >= self.grid_count - 1:
-            self.grid_pending = None
-            return None
-        if self.grid_pending is not None:
-            return self.grid_pending
-        level = self.grid_filled_levels + 1
-        price = self._grid_level(level)
-        if self.position.direction is Direction.BUY:
-            order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
-        else:
-            order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
-        self.grid_pending = Pending(
-            self.position.direction, self.grid_lots, price, order_type,
-            self.group_stop_points, kind="grid", level=level,
-        )
-        return self.grid_pending
+        if self.grid_count < 2:
+            self.grid_pendings.clear()
+            return []
+        created = []
+        for level in range(1, self.grid_count):
+            if self.grid_filled_mask & (1 << (level - 1)):
+                continue
+            if level in self.grid_pendings:
+                continue
+            price = self._grid_level(level)
+            if self.position.direction is Direction.BUY:
+                order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
+            else:
+                order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
+            pending = Pending(
+                self.position.direction, self.grid_lots, price, order_type,
+                self.group_stop_points, kind="grid", level=level,
+            )
+            self.grid_pendings[level] = pending
+            created.append(pending)
+        return created
 
     def _pending_action(self):
         return {
@@ -478,12 +500,16 @@ class StrategyModel:
             return round(self.group_anchor_entry - distance, 10)
         return round(self.group_anchor_entry + distance, 10)
 
-    def fill_grid_pending(self, entry_price=None, bid=None, ask=None):
-        pending = self.grid_pending
+    def fill_grid_pending(self, entry_price=None, bid=None, ask=None, level=None):
+        if level is None:
+            pending = self.grid_pending
+        else:
+            pending = self.grid_pendings.get(level)
         if pending is None:
             return []
-        self.grid_pending = None
-        self.grid_filled_levels = pending.level
+        self.grid_pendings.pop(pending.level, None)
+        self.grid_filled_mask |= 1 << (pending.level - 1)
+        self.grid_filled_levels = self.grid_filled_mask.bit_count()
         self.group_total_lots += self.grid_lots
         self.position = Position(
             self.position.direction,
@@ -603,8 +629,9 @@ class StrategyModel:
             actions = [{"kind": "market", "direction": direction, "lots": opening_lots}]
             if self.pending is not None:
                 actions.append(self._pending_action())
-            if self._ensure_grid_pending(bid, ask) is not None:
-                actions.append(self._grid_pending_action())
+            grid_pendings = self._ensure_grid_pending(bid, ask)
+            actions.extend(self._grid_pending_action(pending)
+                           for pending in grid_pendings)
             return actions
 
         if self.position is None:
@@ -616,7 +643,7 @@ class StrategyModel:
                 or (self.position.direction is Direction.SELL and ask <= self.position.take_profit)):
             self.position = None
             self.pending = None
-            self.grid_pending = None
+            self.grid_pendings.clear()
             return [{"kind": "cancel_pending"}]
 
         if ((self.position.direction is Direction.BUY and bid <= self.position.stop_loss)
@@ -631,9 +658,9 @@ class StrategyModel:
             pending_take_profit_distance = (
                 self.pending.take_profit_distance_points if self.pending else None
             )
-            had_pending = self.pending is not None or self.grid_pending is not None
+            had_pending = self.pending is not None or bool(self.grid_pendings)
             self.pending = None
-            self.grid_pending = None
+            self.grid_pendings.clear()
             next_distances = (
                 (pending_distance, pending_take_profit_distance)
                 if pending_distance is not None else self._active_distances()
@@ -661,8 +688,9 @@ class StrategyModel:
             ])
             if self.pending is not None:
                 actions.append(self._pending_action())
-            if self._ensure_grid_pending(bid, ask) is not None:
-                actions.append(self._grid_pending_action())
+            grid_pendings = self._ensure_grid_pending(bid, ask)
+            actions.extend(self._grid_pending_action(pending)
+                           for pending in grid_pendings)
             return actions
 
         created_pending = self.pending is None and self.reversal_count < self.max_reversals
@@ -726,8 +754,8 @@ class StrategyModel:
         }]
         if self.pending is not None:
             actions.append(self._pending_action())
-        if self.grid_pending is not None:
-            actions.append(self._grid_pending_action())
+        actions.extend(self._grid_pending_action(pending)
+                       for pending in self.grid_pendings.values())
         return actions
 
     def handle_stop_event(self, bid, ask, pending_filled=False):
