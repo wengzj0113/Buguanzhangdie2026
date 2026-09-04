@@ -1070,6 +1070,18 @@ def test_grid_count_is_bounded_by_grid_fill_mask_capacity():
     assert 'if(key == "grid_count" && parsed > MAX_GRID_COUNT)' in mt5_source
 
 
+def test_grid_fill_mask_persistence_uses_exact_integer_parts():
+    mt4_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT4.mq4").read_text(encoding="utf-8")
+    mt5_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT5.mq5").read_text(encoding="utf-8")
+
+    for source in (mt4_source, mt5_source):
+        assert ".gridmask.low" in source
+        assert ".gridmask.high" in source
+        assert "mask = (high << 32) | low;" in source
+        assert "SaveGridMask(prefix, g_grid_filled_mask);" in source
+        assert "GlobalVariableSet(prefix + \".gridmask\", (double)" not in source
+
+
 def test_take_profit_resets_loss_accumulation_for_the_next_cycle():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,

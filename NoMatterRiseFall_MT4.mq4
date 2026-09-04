@@ -220,6 +220,42 @@ void ReleaseExecutionOwnership()
    g_execution_lock_handle = INVALID_HANDLE;
   }
 
+long GridMaskLowPart(const long mask)
+  {
+   return mask & 0xFFFFFFFF;
+  }
+
+long GridMaskHighPart(const long mask)
+  {
+   return (mask >> 32) & 0xFFFFFFFF;
+  }
+
+void SaveGridMask(const string prefix, const long mask)
+  {
+   GlobalVariableSet(prefix + ".gridmask.low", (double)GridMaskLowPart(mask));
+   GlobalVariableSet(prefix + ".gridmask.high", (double)GridMaskHighPart(mask));
+   GlobalVariableDel(prefix + ".gridmask");
+  }
+
+bool LoadGridMask(const string prefix, long &mask)
+  {
+   const string low_key = prefix + ".gridmask.low";
+   const string high_key = prefix + ".gridmask.high";
+   if(!GlobalVariableCheck(low_key) || !GlobalVariableCheck(high_key))
+      return false;
+   const long low = (long)MathRound(GlobalVariableGet(low_key));
+   const long high = (long)MathRound(GlobalVariableGet(high_key));
+   mask = (high << 32) | low;
+   return true;
+  }
+
+void DeleteGridMask(const string prefix)
+  {
+   GlobalVariableDel(prefix + ".gridmask.low");
+   GlobalVariableDel(prefix + ".gridmask.high");
+   GlobalVariableDel(prefix + ".gridmask");
+  }
+
 void SaveState()
   {
    const string prefix = StatePrefix();
@@ -245,7 +281,7 @@ void SaveState()
    GlobalVariableSet(prefix + ".lastentry", g_group_last_entry);
    GlobalVariableSet(prefix + ".linearextreme", g_group_linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", g_grid_filled_levels);
-   GlobalVariableSet(prefix + ".gridmask", (double)g_grid_filled_mask);
+   SaveGridMask(prefix, g_grid_filled_mask);
    GlobalVariableSet(prefix + ".gridpendinglevel", g_grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
@@ -277,7 +313,7 @@ void ClearState()
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
    GlobalVariableDel(prefix + ".gridlevel");
-   GlobalVariableDel(prefix + ".gridmask");
+   DeleteGridMask(prefix);
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
    GlobalVariableDel(prefix + ".reset");
@@ -387,7 +423,8 @@ void LoadState()
       g_group_linear_extreme = GlobalVariableGet(prefix + ".linearextreme");
    if(GlobalVariableCheck(prefix + ".gridlevel"))
       g_grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".gridlevel"));
-   if(GlobalVariableCheck(prefix + ".gridmask"))
+   if(!LoadGridMask(prefix, g_grid_filled_mask)
+      && GlobalVariableCheck(prefix + ".gridmask"))
       g_grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".gridmask"));
    else if(g_grid_filled_levels > 0)
       g_grid_filled_mask = ((long)1 << g_grid_filled_levels) - 1;
@@ -1847,7 +1884,7 @@ void Manage()
          g_pending_ticket = -1;
          g_group_anchor_price = entry;
          g_group_last_entry = entry;
-          g_group_linear_extreme = entry;
+         g_group_linear_extreme = entry;
          g_grid_filled_levels = 0;
          g_grid_filled_mask = 0;
          g_grid_pending_level = 0;
@@ -2135,7 +2172,7 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
    GlobalVariableDel(prefix + ".gridlevel");
-   GlobalVariableDel(prefix + ".gridmask");
+   DeleteGridMask(prefix);
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
   }
@@ -2366,7 +2403,7 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".lastentry", group.last_entry);
    GlobalVariableSet(prefix + ".linearextreme", group.linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", group.grid_filled_levels);
-   GlobalVariableSet(prefix + ".gridmask", (double)group.grid_filled_mask);
+   SaveGridMask(prefix, group.grid_filled_mask);
    GlobalVariableSet(prefix + ".gridpendinglevel", group.grid_pending_level);
    GlobalVariableSet(prefix + ".gridpendingprice", group.grid_pending_price);
    GlobalVariableSet(StatePrefix() + ".multi.nextid", g_multi_next_id);
@@ -2419,7 +2456,8 @@ void MultiLoadGroups()
       state.last_entry = GlobalVariableGet(prefix + ".lastentry");
       state.linear_extreme = GlobalVariableGet(prefix + ".linearextreme");
       state.grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".gridlevel"));
-      if(GlobalVariableCheck(prefix + ".gridmask"))
+      if(!LoadGridMask(prefix, state.grid_filled_mask)
+         && GlobalVariableCheck(prefix + ".gridmask"))
          state.grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".gridmask"));
       else if(state.grid_filled_levels > 0)
          state.grid_filled_mask = ((long)1 << state.grid_filled_levels) - 1;
