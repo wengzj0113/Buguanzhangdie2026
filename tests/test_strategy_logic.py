@@ -1059,6 +1059,17 @@ def test_grid_count_is_number_of_intervals_and_outer_boundary_still_stops_group(
     assert stop_actions[2]["direction"] is Direction.SELL
 
 
+def test_grid_count_is_bounded_by_grid_fill_mask_capacity():
+    mt4_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT4.mq4").read_text(encoding="utf-8")
+    mt5_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT5.mq5").read_text(encoding="utf-8")
+
+    assert "#define MAX_GRID_COUNT 63" in mt4_source
+    assert "#define MAX_GRID_COUNT 63" in mt5_source
+    assert "InpGridCount > MAX_GRID_COUNT" in mt4_source
+    assert "config.grid_count > MAX_GRID_COUNT" in mt5_source
+    assert 'if(key == "grid_count" && parsed > MAX_GRID_COUNT)' in mt5_source
+
+
 def test_take_profit_resets_loss_accumulation_for_the_next_cycle():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,

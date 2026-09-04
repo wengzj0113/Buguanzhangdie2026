@@ -111,6 +111,7 @@ input string         结束时间 = "23:00";
 #define InpTakeProfitMode 止盈移动模式
 #define InpInitialLots 首单手数
 #define InpGridCount 网格数量
+#define MAX_GRID_COUNT 63
 #define InpGridLotMultiplier 网格手数倍数
 #define InpStopLossDistancePoints 固定止损距离
 #define InpTakeProfitDistancePoints 固定止盈距离
@@ -3162,7 +3163,8 @@ int OnInit()
    g_start_operation_minutes = ParseTimeMinutes(开始时间);
    g_end_operation_minutes = ParseTimeMinutes(结束时间);
    if(InpInitialLots <= 0.0 || 首单手数倍数 <= 0.0
-      || InpGridCount < 0 || InpGridLotMultiplier <= 0.0
+      || InpGridCount < 0 || InpGridCount > MAX_GRID_COUNT
+      || InpGridLotMultiplier <= 0.0
       || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0
       || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
        || InpAverageCandleCount <= 0 || InpAverageStopMultiplier <= 0.0

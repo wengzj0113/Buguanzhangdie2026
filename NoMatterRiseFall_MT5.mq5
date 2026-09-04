@@ -113,6 +113,7 @@ input string         结束时间 = "23:00";
 #define InpTakeProfitMode 止盈移动模式
 #define InpInitialLots 首单手数
 #define InpGridCount 网格数量
+#define MAX_GRID_COUNT 63
 #define InpGridLotMultiplier 网格手数倍数
 #define InpStopLossDistancePoints 固定止损距离
 #define InpTakeProfitDistancePoints 固定止盈距离
@@ -1067,6 +1068,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       return false;
      }
    if(config.max_reversals < 0 || config.grid_count < 0
+      || config.grid_count > MAX_GRID_COUNT
       || config.magic_number == 0
       || config.magic_number > (ulong)0x7FFFFFFFFFFFFFFF)
      {
@@ -5963,7 +5965,12 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
         }
       if(key == "grid_count" && parsed < 0)
         {
-         error = "网格数量不能小于 0";
+         error = "网格数量必须在 0 到 63 之间";
+         return false;
+        }
+      if(key == "grid_count" && parsed > MAX_GRID_COUNT)
+        {
+         error = "网格数量必须在 0 到 63 之间";
          return false;
         }
       if(key == "max_reversals" && parsed < 0)
