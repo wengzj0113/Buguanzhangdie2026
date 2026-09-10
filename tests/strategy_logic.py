@@ -258,7 +258,8 @@ class StrategyModel:
                  take_profit_mode=TakeProfitMode.GRID, initial_lot_multiplier=1.0,
                  start_minute=0, end_minute=24 * 60, market_order_failures=0,
                  max_reversals=5, korder_type=0, average_candle_count=20,
-                 average_stop_multiplier=2.0, average_take_profit_multiplier=2.0):
+                 average_stop_multiplier=2.0, average_take_profit_multiplier=2.0,
+                 first_order_lot_type=2, first_order_mult=2.0):
         self.initial_direction = initial_direction
         self.cycle_mode = cycle_mode
         self.initial_lots = initial_lots
@@ -280,6 +281,8 @@ class StrategyModel:
         self.average_candle_count = average_candle_count
         self.average_stop_multiplier = average_stop_multiplier
         self.average_take_profit_multiplier = average_take_profit_multiplier
+        self.first_order_lot_type = first_order_lot_type
+        self.first_order_mult = first_order_mult
         self.last_entry_candle_id = None
         self.position = None
         self.pending = None
@@ -289,6 +292,7 @@ class StrategyModel:
         self.reversal_count = 0
         self.sequence = cycle_directions(initial_direction, cycle_mode)
         self.cumulative_loss_lots = 0.0
+        self.group_first_lots = 0.0
         self.previous_grid_lots = None
         self.grid_lots = 0.0
         self.group_total_lots = 0.0
@@ -360,6 +364,7 @@ class StrategyModel:
         self.grid_filled_mask = 0
         self.grid_pendings.clear()
         self.group_total_lots = lots
+        self.group_first_lots = lots
         if grid_lots is not None:
             self.grid_lots = grid_lots
         elif self.previous_grid_lots is None:
@@ -389,6 +394,7 @@ class StrategyModel:
         self.previous_grid_lots = None
         self.grid_lots = 0.0
         self.group_total_lots = 0.0
+        self.group_first_lots = 0.0
         self.grid_filled_levels = 0
         self.grid_filled_mask = 0
         self.group_anchor_entry = None
@@ -429,11 +435,16 @@ class StrategyModel:
             order_type = "BUY_STOP" if price >= ask else "BUY_LIMIT"
         else:
             order_type = "SELL_STOP" if price <= bid else "SELL_LIMIT"
-        next_group_lots = (self.cumulative_loss_lots + self.group_total_lots) * self.initial_lot_multiplier
+        next_group_lots = self._next_first_order_lots()
         self.pending = Pending(
             direction, next_group_lots, price, order_type, distance_points,
             take_profit_distance_points=take_profit_distance_points,
         )
+
+    def _next_first_order_lots(self):
+        if self.first_order_lot_type == 2:
+            return self.group_first_lots * self.first_order_mult
+        return (self.cumulative_loss_lots + self.group_total_lots) * self.initial_lot_multiplier
 
     def _grid_pending_action(self, pending=None):
         if pending is None:
@@ -545,7 +556,11 @@ class StrategyModel:
         self.previous_grid_lots = self.grid_lots
         self.current_index = (self.current_index + 1) % len(self.sequence)
         self.reversal_count += 1
-        next_lots = self.cumulative_loss_lots * self.initial_lot_multiplier
+        next_lots = (
+            self.group_first_lots * self.first_order_mult
+            if self.first_order_lot_type == 2
+            else self.cumulative_loss_lots * self.initial_lot_multiplier
+        )
         if not self._try_open(direction, entry, next_lots, distance_points,
                               take_profit_distance_points):
             self._reset_after_no_money()

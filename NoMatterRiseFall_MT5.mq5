@@ -75,6 +75,10 @@ input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID;
 input double         首单手数 = 0.01;
 // 首单手数倍数；订单组止损后下一组首单手数乘此倍数
 input double         首单手数倍数 = 1.0;
+// 止损后首单手数计算类型：1=累计订单组总手数，2=上一组首单手数
+input int            FirstOrderLotType = 2;
+// 首单手数类型2的倍数
+input double         FirstOrderMult = 2.0;
 // 止损后最多切换到下一订单组的次数；达到后清理并重新开始
 input int            最大反手次数 = 5;
 // 止损区间分成的格数；内部格数为总格数减一
@@ -181,6 +185,8 @@ struct GuiConfig
    TakeProfitMode take_profit_mode;
    double initial_lots;
    double initial_lots_multiplier;
+   int    first_order_lot_type;
+   double first_order_mult;
    int max_reversals;
    int grid_count;
    double grid_lot_multiplier;
@@ -247,6 +253,7 @@ int    g_active_cycle_mode = CYCLE_MODE_1;
 int    g_group_stop_points = 0;
 int    g_group_take_profit_points = 0;
 double g_cumulative_loss_lots = 0.0;
+double g_group_first_lots = 0.0;
 double g_previous_grid_lots = 0.0;
 double g_grid_lots = 0.0;
 double g_group_total_lots = 0.0;
@@ -425,8 +432,10 @@ string GuiConfigFingerprintText(const GuiConfig &config)
           + IntegerToString((int)config.candle_order_mode) + "|"
           + IntegerToString(config.candle_enable_multiple) + "|"
           + IntegerToString((int)config.take_profit_mode) + "|"
-          + DoubleToString(config.initial_lots, 16) + "|"
-          + DoubleToString(config.initial_lots_multiplier, 16) + "|"
+           + DoubleToString(config.initial_lots, 16) + "|"
+           + DoubleToString(config.initial_lots_multiplier, 16) + "|"
+           + IntegerToString(config.first_order_lot_type) + "|"
+           + DoubleToString(config.first_order_mult, 16) + "|"
           + IntegerToString(config.max_reversals) + "|"
           + IntegerToString(config.grid_count) + "|"
           + DoubleToString(config.grid_lot_multiplier, 16) + "|"
@@ -559,7 +568,8 @@ void SaveState()
    GlobalVariableSet(prefix + ".meta", (double)(g_active_first_direction + g_active_cycle_mode * 2));
    GlobalVariableSet(prefix + ".slpoints", (double)g_group_stop_points);
    GlobalVariableSet(prefix + ".tppoints", (double)g_group_take_profit_points);
-   GlobalVariableSet(prefix + ".cumlots", g_cumulative_loss_lots);
+    GlobalVariableSet(prefix + ".cumlots", g_cumulative_loss_lots);
+    GlobalVariableSet(prefix + ".groupfirstlots", g_group_first_lots);
    GlobalVariableSet(prefix + ".prevgridlots", g_previous_grid_lots);
    GlobalVariableSet(prefix + ".gridlots", g_grid_lots);
    GlobalVariableSet(prefix + ".grouptotal", g_group_total_lots);
@@ -596,7 +606,8 @@ void ClearState()
    GlobalVariableDel(prefix + ".meta");
    GlobalVariableDel(prefix + ".slpoints");
    GlobalVariableDel(prefix + ".tppoints");
-   GlobalVariableDel(prefix + ".cumlots");
+    GlobalVariableDel(prefix + ".cumlots");
+    GlobalVariableDel(prefix + ".groupfirstlots");
    GlobalVariableDel(prefix + ".prevgridlots");
    GlobalVariableDel(prefix + ".gridlots");
    GlobalVariableDel(prefix + ".grouptotal");
@@ -630,7 +641,8 @@ void ClearState()
    g_reset_pending = false;
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
-   g_cumulative_loss_lots = 0.0;
+    g_cumulative_loss_lots = 0.0;
+    g_group_first_lots = 0.0;
    g_previous_grid_lots = 0.0;
    g_grid_lots = 0.0;
    g_group_total_lots = 0.0;
@@ -702,14 +714,18 @@ bool LoadStateFromPrefix(const string prefix)
       g_initial_high_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_high_direction"));
    if(GlobalVariableCheck(prefix + ".initial_low_direction"))
       g_initial_low_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_low_direction"));
-   if(GlobalVariableCheck(prefix + ".cumlots"))
-      g_cumulative_loss_lots = GlobalVariableGet(prefix + ".cumlots");
+    if(GlobalVariableCheck(prefix + ".cumlots"))
+       g_cumulative_loss_lots = GlobalVariableGet(prefix + ".cumlots");
+    if(GlobalVariableCheck(prefix + ".groupfirstlots"))
+       g_group_first_lots = GlobalVariableGet(prefix + ".groupfirstlots");
    if(GlobalVariableCheck(prefix + ".prevgridlots"))
       g_previous_grid_lots = GlobalVariableGet(prefix + ".prevgridlots");
    if(GlobalVariableCheck(prefix + ".gridlots"))
       g_grid_lots = GlobalVariableGet(prefix + ".gridlots");
-   if(GlobalVariableCheck(prefix + ".grouptotal"))
-      g_group_total_lots = GlobalVariableGet(prefix + ".grouptotal");
+    if(GlobalVariableCheck(prefix + ".grouptotal"))
+       g_group_total_lots = GlobalVariableGet(prefix + ".grouptotal");
+    if(g_group_first_lots <= 0.0 && g_group_total_lots > 0.0)
+       g_group_first_lots = g_group_total_lots;
    if(GlobalVariableCheck(prefix + ".anchor"))
       g_group_anchor_price = GlobalVariableGet(prefix + ".anchor");
    if(GlobalVariableCheck(prefix + ".lastentry"))
@@ -1091,15 +1107,21 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       error = "Candle multiple-group setting must be 0 or 1.";
       return false;
      }
-   if(config.take_profit_mode != TAKE_PROFIT_GRID
-      && config.take_profit_mode != TAKE_PROFIT_LINEAR)
+    if(config.take_profit_mode != TAKE_PROFIT_GRID
+       && config.take_profit_mode != TAKE_PROFIT_LINEAR)
      {
       error = "Invalid take-profit mode.";
-      return false;
-     }
-   if(!IsFinitePositive(config.initial_lots)
-      || !IsFinitePositive(config.initial_lots_multiplier)
-      || !IsFinitePositive(config.grid_lot_multiplier))
+       return false;
+      }
+    if(config.first_order_lot_type != 1 && config.first_order_lot_type != 2)
+      {
+       error = "FirstOrderLotType must be 1 or 2.";
+       return false;
+      }
+    if(!IsFinitePositive(config.initial_lots)
+       || !IsFinitePositive(config.initial_lots_multiplier)
+       || !IsFinitePositive(config.first_order_mult)
+       || !IsFinitePositive(config.grid_lot_multiplier))
      {
       error = "Lot values and multipliers must be finite and positive.";
       return false;
@@ -1115,10 +1137,12 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
    const double volume_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    const double volume_max = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    const double volume_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   if(!IsVolumeAligned(config.initial_lots, volume_min, volume_max, volume_step)
-      || !IsVolumeAligned(config.initial_lots * config.initial_lots_multiplier,
-                          volume_min, volume_max, volume_step)
-      || !IsVolumeAligned(config.initial_lots * config.grid_lot_multiplier,
+    if(!IsVolumeAligned(config.initial_lots, volume_min, volume_max, volume_step)
+       || !IsVolumeAligned(config.initial_lots * config.initial_lots_multiplier,
+                           volume_min, volume_max, volume_step)
+       || !IsVolumeAligned(config.initial_lots * config.first_order_mult,
+                           volume_min, volume_max, volume_step)
+       || !IsVolumeAligned(config.initial_lots * config.grid_lot_multiplier,
                           volume_min, volume_max, volume_step))
      {
       error = "Lot values and multipliers must produce symbol-compatible volumes.";
@@ -1331,8 +1355,10 @@ GuiConfig LoadConfigFromInputs()
    config.candle_order_mode = K线开单模式;
    config.candle_enable_multiple = kline_enable_multiple;
    config.take_profit_mode = 止盈移动模式;
-   config.initial_lots = 首单手数;
-   config.initial_lots_multiplier = 首单手数倍数;
+    config.initial_lots = 首单手数;
+    config.initial_lots_multiplier = 首单手数倍数;
+    config.first_order_lot_type = FirstOrderLotType;
+    config.first_order_mult = FirstOrderMult;
    config.max_reversals = 最大反手次数;
    config.grid_count = 网格数量;
    config.grid_lot_multiplier = 网格手数倍数;
@@ -1964,6 +1990,7 @@ void BeginFullReset(const string reason)
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
    g_cumulative_loss_lots = 0.0;
+   g_group_first_lots = 0.0;
    g_previous_grid_lots = 0.0;
    g_grid_lots = 0.0;
    g_group_total_lots = 0.0;
@@ -2145,14 +2172,33 @@ bool OpenMarket(const long order_type, const double requested_volume)
   }
 
 double NextGroupLots(const double fallback_volume)
-  {
-   double requested = g_cumulative_loss_lots + g_group_total_lots;
+   {
+    if(g_gui_applied_config.first_order_lot_type == 2)
+      {
+       const double base = g_group_first_lots > 0.0
+                           ? g_group_first_lots : fallback_volume;
+       return VolumeNormalize(base * g_gui_applied_config.first_order_mult);
+      }
+    double requested = g_cumulative_loss_lots + g_group_total_lots;
    if(requested <= 0.0)
       requested = fallback_volume;
    else
       requested *= g_gui_applied_config.initial_lots_multiplier;
-   return VolumeNormalize(requested);
-  }
+    return VolumeNormalize(requested);
+   }
+
+double NextGroupLotsAfterStop(const double fallback_volume)
+   {
+    if(g_gui_applied_config.first_order_lot_type == 2)
+      {
+       const double base = g_group_first_lots > 0.0
+                           ? g_group_first_lots : fallback_volume;
+       return VolumeNormalize(base * g_gui_applied_config.first_order_mult);
+      }
+    const double requested = g_cumulative_loss_lots > 0.0
+                             ? g_cumulative_loss_lots : fallback_volume;
+    return VolumeNormalize(requested * g_gui_applied_config.initial_lots_multiplier);
+   }
 
 bool PlaceInitialPendingOrder(const long direction, const double entry,
                               const int distance_points, const double volume,
@@ -2291,10 +2337,11 @@ bool HandleInitialPendingFill()
       g_cycle_index = 0;
       g_pending_index = -1;
       g_pending_ticket = 0;
-      g_group_anchor_price = entry;
-      g_group_last_entry = entry;
-      g_group_linear_extreme = entry;
-      g_group_total_lots = TotalPositionVolume(position_type);
+       g_group_anchor_price = entry;
+       g_group_last_entry = entry;
+       g_group_linear_extreme = entry;
+       g_group_first_lots = volume;
+       g_group_total_lots = TotalPositionVolume(position_type);
       g_grid_filled_levels = 0;
       g_grid_filled_mask = 0;
       g_grid_pending_level = 0;
@@ -2749,8 +2796,7 @@ bool Transition(const long position_type, const double volume,
    g_transition_phase = TRANSITION_PREPARED;
    g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
    SaveState();
-   const double next_group_lots = VolumeNormalize(
-      g_cumulative_loss_lots * g_gui_applied_config.initial_lots_multiplier);
+    const double next_group_lots = NextGroupLotsAfterStop(volume);
    if(!OpenMarket(next_type, next_group_lots))
       return false;
    ulong next_ticket = 0;
@@ -2765,7 +2811,8 @@ bool Transition(const long position_type, const double volume,
     g_group_anchor_price = next_entry;
     g_group_last_entry = next_entry;
     g_group_linear_extreme = next_entry;
-   g_group_total_lots = TotalPositionVolume(next_position_type);
+    g_group_first_lots = next_volume;
+    g_group_total_lots = TotalPositionVolume(next_position_type);
    g_grid_filled_levels = 0;
    g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
@@ -2785,8 +2832,7 @@ bool ResumePreparedTransition()
       return true;
 
    const long expected_direction = SequenceDirection(g_cycle_index);
-   const double expected_volume = VolumeNormalize(
-      g_cumulative_loss_lots * g_gui_applied_config.initial_lots_multiplier);
+    const double expected_volume = NextGroupLotsAfterStop(g_group_first_lots);
    ulong ticket = 0;
    long position_type = POSITION_TYPE_BUY;
    double volume = 0.0;
@@ -2814,10 +2860,11 @@ bool ResumePreparedTransition()
          return false;
      }
 
-   g_group_anchor_price = entry;
-   g_group_last_entry = entry;
-   g_group_linear_extreme = entry;
-   g_group_total_lots = TotalPositionVolume(position_type);
+    g_group_anchor_price = entry;
+    g_group_last_entry = entry;
+    g_group_linear_extreme = entry;
+    g_group_first_lots = volume;
+    g_group_total_lots = TotalPositionVolume(position_type);
    g_grid_filled_levels = 0;
    g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
@@ -2942,7 +2989,8 @@ void Manage()
           g_group_anchor_price = entry;
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
-         g_grid_filled_levels = 0;
+          g_group_first_lots = volume;
+          g_grid_filled_levels = 0;
          g_grid_filled_mask = 0;
          g_grid_pending_level = 0;
          g_grid_pending_price = 0.0;
@@ -2951,8 +2999,10 @@ void Manage()
          g_transition_phase = TRANSITION_COMPLETE;
          g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
         }
-      volume = TotalPositionVolume(position_type);
-      if(g_group_anchor_price <= 0.0)
+       volume = TotalPositionVolume(position_type);
+       if(g_group_first_lots <= 0.0)
+          g_group_first_lots = volume;
+       if(g_group_anchor_price <= 0.0)
          g_group_anchor_price = entry;
        if(g_group_last_entry <= 0.0)
           g_group_last_entry = entry;
@@ -3081,9 +3131,11 @@ void Manage()
             MarkCandleEntryBarProcessed(current_bar_time);
          return;
         }
-      const double initial_lots = g_cumulative_loss_lots > 0.0
-                                  ? VolumeNormalize(g_cumulative_loss_lots)
-                                  : VolumeNormalize(g_gui_applied_config.initial_lots);
+       const double initial_lots = g_cumulative_loss_lots > 0.0
+                                   ? (g_gui_applied_config.first_order_lot_type == 2
+                                      ? NextGroupLotsAfterStop(g_group_first_lots)
+                                      : VolumeNormalize(g_cumulative_loss_lots))
+                                   : VolumeNormalize(g_gui_applied_config.initial_lots);
       if(PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots))
          MarkCandleEntryBarProcessed(current_bar_time);
       return;
@@ -3119,9 +3171,11 @@ void Manage()
    g_pending_index = -1;
    g_group_stop_points = initial_stop_points;
    g_group_take_profit_points = initial_take_profit_points;
-   const double initial_lots = g_cumulative_loss_lots > 0.0
-                               ? VolumeNormalize(g_cumulative_loss_lots)
-                               : VolumeNormalize(g_gui_applied_config.initial_lots);
+    const double initial_lots = g_cumulative_loss_lots > 0.0
+                                ? (g_gui_applied_config.first_order_lot_type == 2
+                                   ? NextGroupLotsAfterStop(g_group_first_lots)
+                                   : VolumeNormalize(g_cumulative_loss_lots))
+                                : VolumeNormalize(g_gui_applied_config.initial_lots);
    if(OpenMarket(first_direction, initial_lots))
      {
       if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
@@ -3131,12 +3185,13 @@ void Manage()
          if(market_entry_bar_time > 0)
             g_last_candle_entry_bar_time = market_entry_bar_time;
         }
-      if(FindPosition(position_ticket, position_type, volume, entry,
-                      stop_loss, take_profit))
-        {
+       if(FindPosition(position_ticket, position_type, volume, entry,
+                       stop_loss, take_profit))
+         {
           g_group_anchor_price = entry;
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
+          g_group_first_lots = volume;
           g_group_total_lots = TotalPositionVolume(position_type);
          g_grid_filled_levels = 0;
          g_grid_filled_mask = 0;
@@ -3172,6 +3227,7 @@ struct MultiGroupState
    int      stop_points;
    int      take_profit_points;
    double   cumulative_loss_lots;
+   double   first_lots;
    double   previous_grid_lots;
    double   grid_lots;
    double   total_lots;
@@ -3216,6 +3272,7 @@ bool ResetInMemoryStrategyState()
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
    g_cumulative_loss_lots = 0.0;
+   g_group_first_lots = 0.0;
    g_previous_grid_lots = 0.0;
    g_grid_lots = 0.0;
    g_group_total_lots = 0.0;
@@ -3271,6 +3328,7 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".slpoints");
    GlobalVariableDel(prefix + ".tppoints");
    GlobalVariableDel(prefix + ".cumlots");
+   GlobalVariableDel(prefix + ".firstlots");
    GlobalVariableDel(prefix + ".prevgridlots");
    GlobalVariableDel(prefix + ".gridlots");
    GlobalVariableDel(prefix + ".totallots");
@@ -3322,6 +3380,7 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.stop_points = 0;
    group.take_profit_points = 0;
    group.cumulative_loss_lots = 0.0;
+   group.first_lots = 0.0;
    group.previous_grid_lots = 0.0;
    group.grid_lots = 0.0;
    group.total_lots = 0.0;
@@ -3536,7 +3595,8 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".gridticket", (double)group.grid_pending_ticket);
    GlobalVariableSet(prefix + ".slpoints", (double)group.stop_points);
    GlobalVariableSet(prefix + ".tppoints", (double)group.take_profit_points);
-   GlobalVariableSet(prefix + ".cumlots", group.cumulative_loss_lots);
+    GlobalVariableSet(prefix + ".cumlots", group.cumulative_loss_lots);
+    GlobalVariableSet(prefix + ".firstlots", group.first_lots);
    GlobalVariableSet(prefix + ".prevgridlots", group.previous_grid_lots);
    GlobalVariableSet(prefix + ".gridlots", group.grid_lots);
    GlobalVariableSet(prefix + ".totallots", group.total_lots);
@@ -3599,9 +3659,13 @@ void MultiLoadGroups()
       state.stop_points = (int)MathRound(GlobalVariableGet(prefix + ".slpoints"));
       state.take_profit_points = (int)MathRound(GlobalVariableGet(prefix + ".tppoints"));
       state.cumulative_loss_lots = GlobalVariableGet(prefix + ".cumlots");
+      if(GlobalVariableCheck(prefix + ".firstlots"))
+         state.first_lots = GlobalVariableGet(prefix + ".firstlots");
       state.previous_grid_lots = GlobalVariableGet(prefix + ".prevgridlots");
       state.grid_lots = GlobalVariableGet(prefix + ".gridlots");
       state.total_lots = GlobalVariableGet(prefix + ".totallots");
+      if(state.first_lots <= 0.0 && state.total_lots > 0.0)
+         state.first_lots = state.total_lots;
       state.anchor_price = GlobalVariableGet(prefix + ".anchor");
       state.last_entry = GlobalVariableGet(prefix + ".lastentry");
       state.linear_extreme = GlobalVariableGet(prefix + ".linearextreme");
@@ -3781,14 +3845,31 @@ bool MultiOpenMarket(MultiGroupState &group, const long type, const double volum
   }
 
 double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
-  {
-   double requested = group.cumulative_loss_lots + group.total_lots;
+   {
+    if(g_gui_applied_config.first_order_lot_type == 2)
+      {
+       const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
+       return VolumeNormalize(base * g_gui_applied_config.first_order_mult);
+      }
+    double requested = group.cumulative_loss_lots + group.total_lots;
    if(requested <= 0.0)
       requested = fallback;
    else
       requested *= g_gui_applied_config.initial_lots_multiplier;
-   return VolumeNormalize(requested);
-  }
+    return VolumeNormalize(requested);
+   }
+
+double MultiNextGroupLotsAfterStop(const MultiGroupState &group, const double fallback)
+   {
+    if(g_gui_applied_config.first_order_lot_type == 2)
+      {
+       const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
+       return VolumeNormalize(base * g_gui_applied_config.first_order_mult);
+      }
+    const double requested = group.cumulative_loss_lots > 0.0
+                             ? group.cumulative_loss_lots : fallback;
+    return VolumeNormalize(requested * g_gui_applied_config.initial_lots_multiplier);
+   }
 
 int MultiInitialPendingStatus(const ulong ticket, const int group_id)
   {
@@ -3882,10 +3963,11 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       group.cycle_index = 0;
       group.pending_index = -1;
       group.pending_ticket = 0;
-      group.anchor_price = entry;
-      group.last_entry = entry;
-      group.linear_extreme = entry;
-      group.total_lots = volume;
+       group.anchor_price = entry;
+       group.last_entry = entry;
+       group.linear_extreme = entry;
+       group.first_lots = volume;
+       group.total_lots = volume;
       group.grid_filled_levels = 0;
       group.grid_filled_mask = 0;
       group.grid_pending_level = 0;
@@ -4109,10 +4191,11 @@ bool MultiHandleReverseFill(MultiGroupState &group, const long type, const doubl
    group.cycle_index = group.pending_index;
    group.pending_index = -1;
    group.pending_ticket = 0;
-   group.anchor_price = entry;
-   group.last_entry = entry;
-   group.linear_extreme = entry;
-   group.total_lots = current_total;
+    group.anchor_price = entry;
+    group.last_entry = entry;
+    group.linear_extreme = entry;
+    group.first_lots = current_total;
+    group.total_lots = current_total;
    group.grid_filled_levels = 0;
    group.grid_filled_mask = 0;
    group.grid_pending_level = 0;
@@ -4176,9 +4259,11 @@ bool MultiManageGroup(MultiGroupState &group)
       group.anchor_price = entry;
    if(group.last_entry <= 0.0)
       group.last_entry = entry;
-   if(group.linear_extreme <= 0.0)
-      group.linear_extreme = entry;
-   group.total_lots = total;
+    if(group.linear_extreme <= 0.0)
+       group.linear_extreme = entry;
+    if(group.first_lots <= 0.0)
+       group.first_lots = total;
+    group.total_lots = total;
    if(group.grid_lots <= 0.0)
       group.grid_lots = total;
 
@@ -4245,16 +4330,16 @@ bool MultiManageGroup(MultiGroupState &group)
       group.cycle_index = next_index;
       group.pending_index = -1;
       group.pending_ticket = 0;
-      const double next_lots = VolumeNormalize(
-         group.cumulative_loss_lots * g_gui_applied_config.initial_lots_multiplier);
+       const double next_lots = MultiNextGroupLotsAfterStop(group, group.total_lots);
       if(!MultiOpenMarket(group, next_type, next_lots))
          return false;
       if(!MultiFindPosition(group.id, ticket, type, total, entry, stop_loss, take_profit))
          return false;
-      group.anchor_price = entry;
-      group.last_entry = entry;
-      group.linear_extreme = entry;
-      group.total_lots = total;
+       group.anchor_price = entry;
+       group.last_entry = entry;
+       group.linear_extreme = entry;
+       group.first_lots = total;
+       group.total_lots = total;
       group.grid_filled_levels = 0;
       group.grid_filled_mask = 0;
       group.grid_pending_level = 0;
@@ -4359,10 +4444,11 @@ bool MultiTryOpenCandleGroup()
       MultiRemoveGroup(new_index);
       return false;
      }
-   state.anchor_price = entry;
-   state.last_entry = entry;
-   state.linear_extreme = entry;
-   state.total_lots = total;
+    state.anchor_price = entry;
+    state.last_entry = entry;
+    state.linear_extreme = entry;
+    state.first_lots = total;
+    state.total_lots = total;
    state.grid_lots = total;
    MultiSetStops(state, type);
    MultiPlaceReversePending(state, type);
@@ -4629,8 +4715,9 @@ string GuiTakeProfitModeText(const TakeProfitMode value)
   }
 
 bool GuiIsEditableDropdownKey(const string key)
-  {
+   {
    return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "first_order_mult"
           || key == "stop_loss_distance_points"
           || key == "take_profit_distance_points"
           || key == "candle_min_range_points"
@@ -4648,6 +4735,8 @@ int GuiEditableDropdownOptionCount(const string key)
    if(key == "initial_lots")
       return 10;
    if(key == "initial_lots_multiplier")
+      return 5;
+   if(key == "first_order_mult")
       return 5;
    if(key == "stop_loss_distance_points"
       || key == "take_profit_distance_points"
@@ -4691,7 +4780,15 @@ string GuiEditableDropdownOptionText(const string key, const int index)
       if(index == 2) return "1.3";
       if(index == 3) return "1.5";
       if(index == 4) return "2.0";
-     }
+      }
+   if(key == "first_order_mult")
+      {
+       if(index == 0) return "1.0";
+       if(index == 1) return "1.5";
+       if(index == 2) return "2.0";
+       if(index == 3) return "3.0";
+       if(index == 4) return "4.0";
+      }
    if(key == "average_candle_count")
      {
       if(index == 0) return "5";
@@ -4744,8 +4841,8 @@ string GuiEditableDropdownOptionText(const string key, const int index)
 int GuiDropdownOptionCount(const string key)
   {
    if(key == "first_direction" || key == "distance_mode" || key == "order_type"
-      || key == "candle_order_mode" || key == "candle_enable_multiple"
-      || key == "take_profit_mode")
+       || key == "candle_order_mode" || key == "candle_enable_multiple"
+       || key == "take_profit_mode" || key == "first_order_lot_type")
       return key == "distance_mode" ? 3 : 2;
    if(key == "cycle_mode")
       return 3;
@@ -4777,7 +4874,9 @@ string GuiDropdownOptionText(const string key, const int index)
    if(key == "candle_enable_multiple")
       return index == 1 ? "多组" : "单组";
    if(key == "take_profit_mode")
-      return index == 1 ? "线性移动" : "网格移动";
+       return index == 1 ? "线性移动" : "网格移动";
+   if(key == "first_order_lot_type")
+       return index == 1 ? "上一组首单" : "累计组总手数";
    return "";
   }
 
@@ -4796,7 +4895,9 @@ int GuiDropdownValueIndex(const string key)
    if(key == "candle_enable_multiple")
       return g_gui_draft_config.candle_enable_multiple == 1 ? 1 : 0;
    if(key == "take_profit_mode")
-      return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
+       return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
+   if(key == "first_order_lot_type")
+       return g_gui_draft_config.first_order_lot_type == 2 ? 1 : 0;
    return -1;
   }
 
@@ -4817,7 +4918,9 @@ bool GuiSetDropdownValue(const string key, const int index)
    else if(key == "candle_enable_multiple")
       g_gui_draft_config.candle_enable_multiple = index == 1 ? 1 : 0;
    else if(key == "take_profit_mode")
-      g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
+       g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
+   else if(key == "first_order_lot_type")
+       g_gui_draft_config.first_order_lot_type = index == 1 ? 2 : 1;
    else
       return false;
    return true;
@@ -4848,7 +4951,9 @@ int GuiAnyDropdownValueIndex(const string key)
    if(key == "initial_lots")
       current = DoubleToString(g_gui_draft_config.initial_lots, 8);
    else if(key == "initial_lots_multiplier")
-      current = DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8);
+       current = DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8);
+   else if(key == "first_order_mult")
+       current = DoubleToString(g_gui_draft_config.first_order_mult, 8);
    else if(key == "grid_count")
       current = IntegerToString(g_gui_draft_config.grid_count);
    else if(key == "grid_lot_multiplier")
@@ -4894,7 +4999,9 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
    if(key == "initial_lots")
       g_gui_draft_config.initial_lots = StringToDouble(value);
    else if(key == "initial_lots_multiplier")
-      g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+       g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+   else if(key == "first_order_mult")
+       g_gui_draft_config.first_order_mult = StringToDouble(value);
    else if(key == "stop_loss_distance_points")
       g_gui_draft_config.stop_loss_distance_points = (int)StringToInteger(value);
    else if(key == "take_profit_distance_points")
@@ -5010,7 +5117,7 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
    const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
    const int first_y = 60 + 94 + 18;
    const int row_gap = 64;
-   string keys[7];
+   string keys[9];
    int field_count = 0;
    if(g_gui_page == GUI_PAGE_OPENING)
      {
@@ -5019,9 +5126,11 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
       keys[2] = "order_type";
       keys[3] = "candle_order_mode";
       keys[4] = "candle_enable_multiple";
-      keys[5] = "initial_lots";
-      keys[6] = "initial_lots_multiplier";
-      field_count = 7;
+       keys[5] = "initial_lots";
+       keys[6] = "initial_lots_multiplier";
+       keys[7] = "first_order_lot_type";
+       keys[8] = "first_order_mult";
+       field_count = 9;
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
@@ -5615,30 +5724,37 @@ bool GuiRenderContent()
       if(!GuiRenderReadOnlyField("overview.initial_lots", "首单手数",
                                  DoubleToString(g_gui_applied_config.initial_lots, 8),
                                  right_x, summary_y + row_gap * 5, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.initial_lots_multiplier", "首单手数倍数",
-                                 DoubleToString(g_gui_applied_config.initial_lots_multiplier, 8),
-                                 left_x, summary_y + row_gap * 6, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.grid_count", "网格数量",
-                                 IntegerToString(g_gui_applied_config.grid_count),
-                                 right_x, summary_y + row_gap * 6, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.grid_lot_multiplier", "网格手数倍数",
-                                 DoubleToString(g_gui_applied_config.grid_lot_multiplier, 8),
-                                 left_x, summary_y + row_gap * 7, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.stops", "止损 / 止盈(点)",
-                                 GuiDistanceSummaryText(g_gui_applied_config),
-                                 right_x, summary_y + row_gap * 7, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.take_profit_mode", "止盈移动模式",
-                                 GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode),
-                                 left_x, summary_y + row_gap * 8, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.schedule", "运行时间",
-                                 g_gui_applied_config.start_time + " - " + g_gui_applied_config.end_time,
-                                 right_x, summary_y + row_gap * 8, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.magic_number", "订单识别编号",
-                                 IntegerToString((long)g_gui_applied_config.magic_number),
-                                 left_x, summary_y + row_gap * 9, ok)) ok = false;
-      if(!GuiRenderReadOnlyField("overview.order_comment", "订单注释",
-                                 g_gui_applied_config.order_comment,
-                                 right_x, summary_y + row_gap * 9, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.initial_lots_multiplier", "首单手数倍数",
+                                  DoubleToString(g_gui_applied_config.initial_lots_multiplier, 8),
+                                  left_x, summary_y + row_gap * 6, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.grid_count", "网格数量",
+                                  IntegerToString(g_gui_applied_config.grid_count),
+                                  right_x, summary_y + row_gap * 6, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.first_order_lot_type", "止损首单类型",
+                                  g_gui_applied_config.first_order_lot_type == 2
+                                  ? "上一组首单" : "累计组总手数",
+                                  left_x, summary_y + row_gap * 7, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.first_order_mult", "FirstOrderMult",
+                                  DoubleToString(g_gui_applied_config.first_order_mult, 8),
+                                  right_x, summary_y + row_gap * 7, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.grid_lot_multiplier", "网格手数倍数",
+                                  DoubleToString(g_gui_applied_config.grid_lot_multiplier, 8),
+                                  left_x, summary_y + row_gap * 8, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.stops", "止损 / 止盈(点)",
+                                  GuiDistanceSummaryText(g_gui_applied_config),
+                                  right_x, summary_y + row_gap * 8, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.take_profit_mode", "止盈移动模式",
+                                  GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode),
+                                  left_x, summary_y + row_gap * 9, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.schedule", "运行时间",
+                                  g_gui_applied_config.start_time + " - " + g_gui_applied_config.end_time,
+                                  right_x, summary_y + row_gap * 9, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.magic_number", "订单识别编号",
+                                  IntegerToString((long)g_gui_applied_config.magic_number),
+                                  left_x, summary_y + row_gap * 10, ok)) ok = false;
+       if(!GuiRenderReadOnlyField("overview.order_comment", "订单注释",
+                                  g_gui_applied_config.order_comment,
+                                  right_x, summary_y + row_gap * 10, ok)) ok = false;
       GuiRenderNotice(left_x, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_OPENING)
@@ -5669,9 +5785,18 @@ bool GuiRenderContent()
                                          row + row_gap * 2, ok))
          ok = false;
       if(!GuiRenderEditableDropdownField("initial_lots_multiplier", "首单手数倍数",
-                                         DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
-                                         left_x, row + row_gap * 3, ok))
-         ok = false;
+                                          DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
+                                          left_x, row + row_gap * 3, ok))
+          ok = false;
+       if(!GuiRenderEnumField("first_order_lot_type", "止损首单类型",
+                              g_gui_draft_config.first_order_lot_type == 2
+                              ? "上一组首单" : "累计组总手数",
+                              right_x, row + row_gap * 3, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("first_order_mult", "FirstOrderMult",
+                                          DoubleToString(g_gui_draft_config.first_order_mult, 8),
+                                          left_x, row + row_gap * 4, ok))
+          ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
@@ -5895,6 +6020,7 @@ void GuiMarkDraftChanged()
 bool GuiIsEditableFieldKey(const string key)
   {
    return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "first_order_mult"
           || key == "grid_count" || key == "grid_lot_multiplier"
           || key == "stop_loss_distance_points"
           || key == "take_profit_distance_points"
@@ -5969,8 +6095,9 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
    string trimmed = value;
    StringTrimLeft(trimmed);
    StringTrimRight(trimmed);
-   if(key == "initial_lots" || key == "initial_lots_multiplier"
-      || key == "grid_lot_multiplier")
+    if(key == "initial_lots" || key == "initial_lots_multiplier"
+       || key == "first_order_mult"
+       || key == "grid_lot_multiplier")
      {
       double parsed = 0.0;
       if(!GuiTryParseDouble(trimmed, parsed))
@@ -6096,16 +6223,26 @@ bool GuiSyncEditValue(const string key)
         }
       g_gui_draft_config.initial_lots = parsed_double;
      }
-   else if(key == "initial_lots_multiplier")
-     {
+    else if(key == "initial_lots_multiplier")
+      {
       if(!GuiTryParseDouble(value, parsed_double))
         {
          g_gui_notice = "首单手数倍数格式无效";
          GuiRefreshNoticeObject();
          return false;
         }
-      g_gui_draft_config.initial_lots_multiplier = parsed_double;
-     }
+       g_gui_draft_config.initial_lots_multiplier = parsed_double;
+      }
+    else if(key == "first_order_mult")
+      {
+       if(!GuiTryParseDouble(value, parsed_double))
+         {
+          g_gui_notice = "FirstOrderMult格式无效";
+          GuiRefreshNoticeObject();
+          return false;
+         }
+       g_gui_draft_config.first_order_mult = parsed_double;
+      }
    else if(key == "grid_count")
      {
       if(!GuiTryParseInteger(value, parsed_integer))

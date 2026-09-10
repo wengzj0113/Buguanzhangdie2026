@@ -761,7 +761,10 @@ def test_cycle_templates_cover_both_modes_and_first_directions():
 
 
 def test_mode_one_buy_uses_sell_stop_then_sell_limit_for_the_two_sell_steps():
-    model = StrategyModel(Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001)
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        first_order_lot_type=1,
+    )
 
     first_actions = model.on_tick(bid=1.1000, ask=1.1002)
     second_actions = model.on_tick(bid=1.0502, ask=1.0504)
@@ -826,7 +829,7 @@ def test_mode_two_buy_reaches_buy_buy_and_wraps_after_six_orders():
 
 def test_grid_multiplier_is_applied_to_the_next_group_grid_lot():
     model = StrategyModel(Direction.SELL, CycleMode.MODE_1, 0.03, 3.0, 500, 0.0001,
-                          grid_count=2)
+                          grid_count=2, first_order_lot_type=1)
 
     first_actions = model.on_tick(bid=1.1000, ask=1.1002)
     model.on_tick(bid=1.1250, ask=1.1252)
@@ -841,7 +844,7 @@ def test_grid_multiplier_is_applied_to_the_next_group_grid_lot():
 def test_only_a_post_stop_group_uses_the_initial_lot_multiplier():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
-        grid_count=2, initial_lot_multiplier=1.5,
+        grid_count=2, initial_lot_multiplier=1.5, first_order_lot_type=1,
     )
 
     first_actions = model.on_tick(bid=1.1000, ask=1.1002)
@@ -857,6 +860,86 @@ def test_only_a_post_stop_group_uses_the_initial_lot_multiplier():
     assert next_actions[2] == {
         "kind": "market", "direction": Direction.SELL, "lots": pytest.approx(0.015),
     }
+
+
+def test_type_two_uses_previous_group_first_lot_after_grid_loss():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2, first_order_lot_type=2, first_order_mult=2.0,
+    )
+
+    initial_actions = model.on_tick(bid=1.1000, ask=1.1002)
+    assert initial_actions[1]["lots"] == pytest.approx(0.02)
+    model.fill_grid_pending()
+    stop_actions = model.on_tick(
+        bid=model.position.stop_loss,
+        ask=model.position.stop_loss + 0.0002,
+    )
+
+    assert stop_actions[2] == {
+        "kind": "market", "direction": Direction.SELL, "lots": pytest.approx(0.02),
+    }
+
+
+def test_default_first_order_lot_type_uses_previous_group_first_lot():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.fill_grid_pending()
+    stop_actions = model.on_tick(
+        bid=model.position.stop_loss,
+        ask=model.position.stop_loss + 0.0002,
+    )
+
+    assert stop_actions[2]["lots"] == pytest.approx(0.02)
+
+
+def test_type_two_uses_immediately_previous_group_first_lot_on_consecutive_stops():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2, first_order_lot_type=2, first_order_mult=2.0,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    first_stop = model.position.stop_loss
+    second_group = model.on_tick(bid=first_stop, ask=first_stop + 0.0002)
+    assert second_group[2]["lots"] == pytest.approx(0.02)
+
+    second_stop = model.position.stop_loss
+    third_group = model.on_tick(bid=second_stop - 0.0002, ask=second_stop)
+    assert third_group[2]["lots"] == pytest.approx(0.04)
+
+
+def test_type_one_preserves_accumulated_group_total_formula():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=2, initial_lot_multiplier=1.0,
+        first_order_lot_type=1, first_order_mult=2.0,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.fill_grid_pending()
+    stop_actions = model.on_tick(
+        bid=model.position.stop_loss,
+        ask=model.position.stop_loss + 0.0002,
+    )
+
+    assert stop_actions[2]["lots"] == pytest.approx(0.02)
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_first_order_lot_type_is_present_in_both_expert_sources(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "FirstOrderLotType" in source
+    assert "FirstOrderMult" in source
+    assert "first_order_lots" in source or "group_first_lots" in source
+    assert "FirstOrderLotType = 2" in source
+    assert "FirstOrderMult = 2.0" in source
+    assert "== 2" in source
 
 
 def test_initial_entry_is_allowed_only_inside_the_configured_time_window():
@@ -892,7 +975,7 @@ def test_existing_position_can_switch_groups_outside_the_initial_entry_window():
 def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
-        grid_count=5,
+        grid_count=5, first_order_lot_type=1,
     )
 
     first_actions = model.on_tick(bid=1.1000, ask=1.1002)
@@ -922,7 +1005,7 @@ def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot()
 def test_grid_count_five_places_all_internal_levels_at_once():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
-        grid_count=5,
+        grid_count=5, first_order_lot_type=1,
     )
 
     actions = model.on_tick(bid=1.1000, ask=1.1002)
@@ -1008,7 +1091,7 @@ def test_grid_take_profit_stays_fixed_until_grid_fill():
 def test_losing_group_initial_lots_accumulate_and_grid_lots_double():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
-        grid_count=5,
+        grid_count=5, first_order_lot_type=1,
     )
 
     model.on_tick(bid=1.1000, ask=1.1002)
@@ -1117,6 +1200,7 @@ def test_candle_range_mode_skips_a_new_order_outside_inclusive_bounds(range_poin
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
         distance_mode=DistanceMode.CANDLE_RANGE,
         min_range_points=500,
+        first_order_lot_type=1,
         max_range_points=1000,
     )
 
@@ -1421,6 +1505,7 @@ def test_candle_range_mode_keeps_running_cycle_when_later_range_is_invalid():
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
         distance_mode=DistanceMode.CANDLE_RANGE,
         min_range_points=500,
+        first_order_lot_type=1,
         max_range_points=1000,
         korder_type=1,
     )
@@ -1570,7 +1655,7 @@ def test_candle_distance_is_locked_until_take_profit_starts_a_new_group():
 def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cycle_mode):
     model = StrategyModel(
         initial_direction, cycle_mode, 0.01, 2.0, 500, 0.0001,
-        max_reversals=6,
+        max_reversals=6, first_order_lot_type=1,
     )
     opened = []
     pending_types = []
@@ -1776,7 +1861,10 @@ def test_max_reversals_counts_reverse_pending_fills_before_reset():
 
 
 def test_filled_reverse_pending_is_the_only_stop_transition_action():
-    model = StrategyModel(Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001)
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        first_order_lot_type=1,
+    )
     model.on_tick(bid=1.1000, ask=1.1002)
     pending_price = model.pending.price
 
