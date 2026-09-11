@@ -40,7 +40,7 @@ Run `python -m pytest tests/test_strategy_logic.py -q -k favorable_grid` and the
 
 - [ ] **Step 1: Add the input and validation**
 
-Add `input int FavorableGridEnable = 0;` next to the existing grid inputs. Reject values other than `0` and `1` in `OnInit`.
+Add the visible input `input int 有利方向加单 = 0;` next to the existing grid inputs and define the internal alias `#define FavorableGridEnable 有利方向加单`. Reject values other than `0` and `1` in `OnInit`.
 
 - [ ] **Step 2: Extend single-group and multi-group grid state**
 
@@ -48,7 +48,7 @@ Add favorable-side filled-mask, filled-count, pending-level, and pending-price f
 
 - [ ] **Step 3: Implement favorable-side price and order handling**
 
-For a buy position, create favorable grid levels above the anchor with same-direction `OP_BUY_LIMIT` orders; for a sell position, create levels below the anchor with same-direction `OP_SELL_LIMIT` orders. Reuse the configured grid count and grid lot size, and add the favorable side to reconciliation and fill detection only when `FavorableGridEnable == 1`.
+For a buy position, create favorable grid levels above the anchor with same-direction pending orders (normally `OP_BUYSTOP`); for a sell position, create levels below the anchor with same-direction pending orders (normally `OP_SELLSTOP`). Reuse the configured grid count and grid lot size, and add the favorable side to reconciliation and fill detection only when `FavorableGridEnable == 1`.
 
 - [ ] **Step 4: Update MT4 documentation and source contract tests**
 
@@ -62,7 +62,7 @@ Document the switch as “有利方向加单” with values `0/1`, and assert th
 
 - [ ] **Step 1: Add input, GUI config, validation, and fingerprint**
 
-Load `FavorableGridEnable` into `GuiConfig`, include it in configuration identity and validation, and keep the default at zero.
+Load the Chinese visible input through the `FavorableGridEnable` alias into `GuiConfig`, include it in configuration identity and validation, and keep the default at zero.
 
 - [ ] **Step 2: Expose the setting entirely in Chinese**
 

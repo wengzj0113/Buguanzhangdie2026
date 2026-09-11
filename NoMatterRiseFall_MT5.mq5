@@ -68,7 +68,7 @@ input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
 // K线高度模式下同一根当前K线的首单触发次数
 input CandleOrderMode K线开单模式 = KORDER_ONCE_PER_BAR;
 // K线高度模式是否允许多个订单组并行：0=单组，1=多组
-input int            kline_enable_multiple = 0;
+input int            K线多组 = 0;
 // 止盈移动方式：网格成交后移动或按价格线性移动
 input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID;
 // 首单手数
@@ -76,13 +76,15 @@ input double         首单手数 = 0.01;
 // 首单手数倍数；订单组止损后下一组首单手数乘此倍数
 input double         首单手数倍数 = 1.0;
 // 止损后首单手数计算类型：1=累计订单组总手数，2=上一组首单手数
-input int            FirstOrderLotType = 2;
+input int            止损首单类型 = 2;
 // 首单手数类型2的倍数
-input double         FirstOrderMult = 2.0;
+input double         首单类型2倍数 = 2.0;
 // 止损后最多切换到下一订单组的次数；达到后清理并重新开始
 input int            最大反手次数 = 5;
 // 止损区间分成的格数；内部格数为总格数减一
 input int            网格数量 = 2;
+// 价格向有利方向移动时是否网格加单：0=关闭，1=开启
+input int            有利方向加单 = 0;
 // 下一订单组网格手数相对上一组的倍数
 input double         网格手数倍数 = 2.0;
 // 固定距离模式下的止损点数
@@ -116,7 +118,11 @@ input string         结束时间 = "23:00";
 #define Korder_type K线开单模式
 #define InpTakeProfitMode 止盈移动模式
 #define InpInitialLots 首单手数
+#define kline_enable_multiple K线多组
+#define FirstOrderLotType 止损首单类型
+#define FirstOrderMult 首单类型2倍数
 #define InpGridCount 网格数量
+#define FavorableGridEnable 有利方向加单
 #define MAX_GRID_COUNT 63
 #define InpGridLotMultiplier 网格手数倍数
 #define InpStopLossDistancePoints 固定止损距离
@@ -187,6 +193,7 @@ struct GuiConfig
    double initial_lots_multiplier;
    int    first_order_lot_type;
    double first_order_mult;
+   int    favorable_grid_enable;
    int max_reversals;
    int grid_count;
    double grid_lot_multiplier;
@@ -264,6 +271,10 @@ int    g_grid_filled_levels = 0;
 long   g_grid_filled_mask = 0;
 int    g_grid_pending_level = 0;
 double g_grid_pending_price = 0.0;
+int    g_favorable_grid_filled_levels = 0;
+long   g_favorable_grid_filled_mask = 0;
+int    g_favorable_grid_pending_level = 0;
+double g_favorable_grid_pending_price = 0.0;
 bool   g_reset_pending = false;
 int    g_start_operation_minutes = 0;
 int    g_end_operation_minutes = 24 * 60;
@@ -436,6 +447,7 @@ string GuiConfigFingerprintText(const GuiConfig &config)
            + DoubleToString(config.initial_lots_multiplier, 16) + "|"
            + IntegerToString(config.first_order_lot_type) + "|"
            + DoubleToString(config.first_order_mult, 16) + "|"
+           + IntegerToString(config.favorable_grid_enable) + "|"
           + IntegerToString(config.max_reversals) + "|"
           + IntegerToString(config.grid_count) + "|"
           + DoubleToString(config.grid_lot_multiplier, 16) + "|"
@@ -578,8 +590,12 @@ void SaveState()
    GlobalVariableSet(prefix + ".linearextreme", g_group_linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", (double)g_grid_filled_levels);
    SaveGridMask(prefix, g_grid_filled_mask);
-   GlobalVariableSet(prefix + ".gridpendinglevel", (double)g_grid_pending_level);
-   GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
+    GlobalVariableSet(prefix + ".gridpendinglevel", (double)g_grid_pending_level);
+    GlobalVariableSet(prefix + ".gridpendingprice", g_grid_pending_price);
+    GlobalVariableSet(prefix + ".favorablegridlevel", (double)g_favorable_grid_filled_levels);
+    SaveGridMask(prefix + ".favorable", g_favorable_grid_filled_mask);
+    GlobalVariableSet(prefix + ".favorablegridpendinglevel", (double)g_favorable_grid_pending_level);
+    GlobalVariableSet(prefix + ".favorablegridpendingprice", g_favorable_grid_pending_price);
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".transitionphase", (double)g_transition_phase);
    GlobalVariableSet(prefix + ".transitionid", (double)g_transition_id);
@@ -615,9 +631,13 @@ void ClearState()
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
    GlobalVariableDel(prefix + ".gridlevel");
-   DeleteGridMask(prefix);
-   GlobalVariableDel(prefix + ".gridpendinglevel");
-   GlobalVariableDel(prefix + ".gridpendingprice");
+    DeleteGridMask(prefix);
+    GlobalVariableDel(prefix + ".gridpendinglevel");
+    GlobalVariableDel(prefix + ".gridpendingprice");
+    GlobalVariableDel(prefix + ".favorablegridlevel");
+    DeleteGridMask(prefix + ".favorable");
+    GlobalVariableDel(prefix + ".favorablegridpendinglevel");
+    GlobalVariableDel(prefix + ".favorablegridpendingprice");
    GlobalVariableDel(prefix + ".reset");
    GlobalVariableDel(prefix + ".transitionphase");
    GlobalVariableDel(prefix + ".transitionid");
@@ -650,9 +670,13 @@ void ClearState()
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
    g_grid_filled_levels = 0;
-   g_grid_filled_mask = 0;
-   g_grid_pending_level = 0;
-   g_grid_pending_price = 0.0;
+    g_grid_filled_mask = 0;
+    g_grid_pending_level = 0;
+    g_grid_pending_price = 0.0;
+    g_favorable_grid_filled_levels = 0;
+    g_favorable_grid_filled_mask = 0;
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
    string migration_error = "";
    if(!DisableLegacyStateFallback(migration_error))
       PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
@@ -741,8 +765,19 @@ bool LoadStateFromPrefix(const string prefix)
       g_grid_filled_mask = ((long)1 << g_grid_filled_levels) - 1;
    if(GlobalVariableCheck(prefix + ".gridpendinglevel"))
       g_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
-   if(GlobalVariableCheck(prefix + ".gridpendingprice"))
-      g_grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
+    if(GlobalVariableCheck(prefix + ".gridpendingprice"))
+       g_grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
+    if(GlobalVariableCheck(prefix + ".favorablegridlevel"))
+       g_favorable_grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridlevel"));
+    if(!LoadGridMask(prefix + ".favorable", g_favorable_grid_filled_mask)
+       && GlobalVariableCheck(prefix + ".favorable.gridmask"))
+       g_favorable_grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".favorable.gridmask"));
+    else if(g_favorable_grid_filled_levels > 0)
+       g_favorable_grid_filled_mask = ((long)1 << g_favorable_grid_filled_levels) - 1;
+    if(GlobalVariableCheck(prefix + ".favorablegridpendinglevel"))
+       g_favorable_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridpendinglevel"));
+    if(GlobalVariableCheck(prefix + ".favorablegridpendingprice"))
+       g_favorable_grid_pending_price = GlobalVariableGet(prefix + ".favorablegridpendingprice");
    return true;
   }
 
@@ -1075,47 +1110,52 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
    error = "";
    if(config.first_direction != FIRST_BUY && config.first_direction != FIRST_SELL)
      {
-      error = "Invalid first direction.";
+       error = "首单方向设置无效。";
       return false;
      }
    if(config.cycle_mode != CYCLE_MODE_1 && config.cycle_mode != CYCLE_MODE_2
       && config.cycle_mode != CYCLE_MODE_3)
      {
-      error = "Invalid cycle mode.";
+       error = "循环模式设置无效。";
       return false;
      }
    if(config.distance_mode != DISTANCE_FIXED
       && config.distance_mode != DISTANCE_CANDLE_RANGE
       && config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE)
      {
-      error = "Invalid distance mode.";
+       error = "距离模式设置无效。";
       return false;
      }
    if(config.order_type != ORDERTYPE_FORWARD && config.order_type != ORDERTYPE_REVERSE)
      {
-      error = "Invalid order type mode.";
+       error = "开单方式设置无效。";
       return false;
      }
    if(config.candle_order_mode != KORDER_ONCE_PER_BAR
       && config.candle_order_mode != KORDER_REPEAT_PER_BAR)
      {
-      error = "Invalid candle order mode.";
+       error = "K线开单模式设置无效。";
       return false;
      }
    if(config.candle_enable_multiple != 0 && config.candle_enable_multiple != 1)
      {
-      error = "Candle multiple-group setting must be 0 or 1.";
+       error = "K线多组必须为0或1。";
       return false;
      }
     if(config.take_profit_mode != TAKE_PROFIT_GRID
        && config.take_profit_mode != TAKE_PROFIT_LINEAR)
      {
-      error = "Invalid take-profit mode.";
+       error = "止盈移动模式设置无效。";
        return false;
       }
     if(config.first_order_lot_type != 1 && config.first_order_lot_type != 2)
       {
-       error = "FirstOrderLotType must be 1 or 2.";
+       error = "止损首单类型必须为1或2。";
+       return false;
+      }
+    if(config.favorable_grid_enable != 0 && config.favorable_grid_enable != 1)
+      {
+       error = "有利方向加单必须为0或1。";
        return false;
       }
     if(!IsFinitePositive(config.initial_lots)
@@ -1123,7 +1163,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        || !IsFinitePositive(config.first_order_mult)
        || !IsFinitePositive(config.grid_lot_multiplier))
      {
-      error = "Lot values and multipliers must be finite and positive.";
+       error = "手数和倍数必须为有限正数。";
       return false;
      }
    if(config.max_reversals < 0 || config.grid_count < 0
@@ -1131,7 +1171,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       || config.magic_number == 0
       || config.magic_number > (ulong)0x7FFFFFFFFFFFFFFF)
      {
-      error = "Risk, grid, and magic/order-id settings are invalid.";
+       error = "风控、网格或订单编号设置无效。";
       return false;
      }
    const double volume_min = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -1145,7 +1185,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        || !IsVolumeAligned(config.initial_lots * config.grid_lot_multiplier,
                           volume_min, volume_max, volume_step))
      {
-      error = "Lot values and multipliers must produce symbol-compatible volumes.";
+       error = "手数和倍数不符合当前品种要求。";
       return false;
      }
    if(config.stop_loss_distance_points <= 0 || config.take_profit_distance_points <= 0
@@ -1155,7 +1195,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       || !IsFinitePositive(config.average_stop_multiplier)
       || !IsFinitePositive(config.average_take_profit_multiplier))
      {
-      error = "Distance and candle range values are invalid.";
+       error = "距离和K线范围设置无效。";
       return false;
      }
    string comment = config.order_comment;
@@ -1163,12 +1203,12 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
    StringTrimRight(comment);
    if(StringLen(comment) == 0)
      {
-      error = "Order comment must not be empty.";
+       error = "订单注释不能为空。";
       return false;
      }
    if(StringFind(comment, ".Grid") >= 0 || StringFind(comment, ".G") >= 0)
      {
-      error = "Order comment must not contain reserved .Grid or .G markers.";
+       error = "订单注释不能包含保留标记 .Grid 或 .G。";
       return false;
      }
    if(ParseTimeMinutes(config.start_time) < 0 || ParseTimeMinutes(config.end_time) < 0)
@@ -1359,6 +1399,7 @@ GuiConfig LoadConfigFromInputs()
     config.initial_lots_multiplier = 首单手数倍数;
     config.first_order_lot_type = FirstOrderLotType;
     config.first_order_mult = FirstOrderMult;
+    config.favorable_grid_enable = FavorableGridEnable;
    config.max_reversals = 最大反手次数;
    config.grid_count = 网格数量;
    config.grid_lot_multiplier = 网格手数倍数;
@@ -2000,8 +2041,12 @@ void BeginFullReset(const string reason)
    g_grid_filled_levels = 0;
    g_grid_filled_mask = 0;
    g_grid_pending_level = 0;
-   g_grid_pending_price = 0.0;
-   SaveState();
+    g_grid_pending_price = 0.0;
+    g_favorable_grid_filled_levels = 0;
+    g_favorable_grid_filled_mask = 0;
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
+    SaveState();
    DeleteAllPending();
    if(CloseAllOurPositions() && !HasOurPending())
       ClearState();
@@ -2345,8 +2390,12 @@ bool HandleInitialPendingFill()
       g_grid_filled_levels = 0;
       g_grid_filled_mask = 0;
       g_grid_pending_level = 0;
-      g_grid_pending_price = 0.0;
-      g_grid_lots = g_previous_grid_lots > 0.0
+       g_grid_pending_price = 0.0;
+       g_favorable_grid_filled_levels = 0;
+       g_favorable_grid_filled_mask = 0;
+       g_favorable_grid_pending_level = 0;
+       g_favorable_grid_pending_price = 0.0;
+       g_grid_lots = g_previous_grid_lots > 0.0
                     ? VolumeNormalize(g_previous_grid_lots
                                       * g_gui_applied_config.grid_lot_multiplier)
                     : g_group_total_lots;
@@ -2479,6 +2528,18 @@ double GridLevelPrice(const long position_type, const int level)
    return PriceNormalize(g_group_anchor_price + distance);
   }
 
+double FavorableGridLevelPrice(const long position_type, const int level)
+  {
+   if(g_gui_applied_config.grid_count <= 0 || g_group_stop_points <= 0
+      || g_group_anchor_price <= 0.0)
+      return 0.0;
+   const double distance = g_group_stop_points * _Point * level
+                           / g_gui_applied_config.grid_count;
+   if(position_type == POSITION_TYPE_BUY)
+      return PriceNormalize(g_group_anchor_price + distance);
+   return PriceNormalize(g_group_anchor_price - distance);
+  }
+
 long GridLevelBit(const int level)
   {
    if(level <= 0 || level > 62)
@@ -2486,17 +2547,25 @@ long GridLevelBit(const int level)
    return ((long)1 << (level - 1));
   }
 
-int GridFilledLevelCount()
+int GridFilledLevelCountForMask(const long mask)
   {
    int count = 0;
    for(int level = 1; level < g_gui_applied_config.grid_count; level++)
-      if((g_grid_filled_mask & GridLevelBit(level)) != 0)
+      if((mask & GridLevelBit(level)) != 0)
          count++;
    return count;
   }
 
+int GridFilledLevelCount()
+  {
+   return GridFilledLevelCountForMask(g_grid_filled_mask);
+  }
+
 int GridPendingLevelFromComment(const string comment)
   {
+   const int favorable_marker = StringFind(comment, ".Grid.F.");
+   if(favorable_marker >= 0)
+      return (int)StringToInteger(StringSubstr(comment, favorable_marker + 8));
    const int marker = StringFind(comment, ".Grid.");
    if(marker < 0)
       return 0;
@@ -2587,14 +2656,15 @@ bool FindFilledGridOrder(const long position_type, const int level,
    return false;
   }
 
-bool PlaceGridPending(const long position_type, const int level)
+bool PlaceGridPending(const long position_type, const int level, const bool favorable)
   {
    if(g_gui_applied_config.grid_count < 2 || level <= 0
       || level >= g_gui_applied_config.grid_count
       || g_grid_lots <= 0.0 || g_group_anchor_price <= 0.0)
       return false;
 
-   const double entry = GridLevelPrice(position_type, level);
+   const double entry = favorable ? FavorableGridLevelPrice(position_type, level)
+                                  : GridLevelPrice(position_type, level);
    const double stop_loss = GroupStopPrice(position_type);
    const double take_profit = position_type == POSITION_TYPE_BUY
                               ? PriceNormalize(entry + g_group_take_profit_points * _Point)
@@ -2603,8 +2673,9 @@ bool PlaceGridPending(const long position_type, const int level)
    const long pending_type = PendingTypeForDirection(position_type == POSITION_TYPE_BUY
                                                      ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
                                                      entry);
-   const string grid_comment = g_gui_applied_config.order_comment + ".Grid."
-                               + IntegerToString(level);
+    const string grid_comment = g_gui_applied_config.order_comment
+                                + (favorable ? ".Grid.F." : ".Grid.")
+                                + IntegerToString(level);
    bool sent = false;
    if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
      {
@@ -2632,8 +2703,16 @@ bool PlaceGridPending(const long position_type, const int level)
                   retcode, g_trade.ResultRetcodeDescription());
       return false;
      }
-   g_grid_pending_level = level;
-   g_grid_pending_price = entry;
+    if(favorable)
+      {
+       g_favorable_grid_pending_level = level;
+       g_favorable_grid_pending_price = entry;
+      }
+    else
+      {
+       g_grid_pending_level = level;
+       g_grid_pending_price = entry;
+      }
    SaveState();
    return true;
   }
@@ -2661,14 +2740,32 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
          g_grid_filled_mask |= level_bit;
          latest_entry = fill_price;
          changed = true;
+         }
+      }
+    if(g_gui_applied_config.favorable_grid_enable == 1)
+      for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+        {
+         const long level_bit = GridLevelBit(level);
+         if(level_bit == 0 || (g_favorable_grid_filled_mask & level_bit) != 0)
+            continue;
+         double fill_price = 0.0;
+         if(FindFilledGridOrder(position_type, level,
+                                FavorableGridLevelPrice(position_type, level), fill_price))
+           {
+            g_favorable_grid_filled_mask |= level_bit;
+            latest_entry = fill_price;
+            changed = true;
+           }
         }
-     }
    if(!changed)
       return false;
 
    g_grid_filled_levels = GridFilledLevelCount();
    g_grid_pending_level = 0;
    g_grid_pending_price = 0.0;
+   g_favorable_grid_filled_levels = GridFilledLevelCountForMask(g_favorable_grid_filled_mask);
+   g_favorable_grid_pending_level = 0;
+   g_favorable_grid_pending_price = 0.0;
    g_group_total_lots = current_total_lots;
    if(latest_entry > 0.0)
       g_group_last_entry = latest_entry;
@@ -2683,6 +2780,8 @@ void EnsureGridPending(const long position_type)
      {
       g_grid_pending_level = 0;
       g_grid_pending_price = 0.0;
+      g_favorable_grid_pending_level = 0;
+      g_favorable_grid_pending_price = 0.0;
       return;
      }
    const long expected_direction = position_type == POSITION_TYPE_BUY
@@ -2700,14 +2799,35 @@ void EnsureGridPending(const long position_type)
                                     expected_volume, grid_ticket))
          continue;
       if(grid_ticket == 0)
-         PlaceGridPending(position_type, level);
+         PlaceGridPending(position_type, level, false);
       if(grid_ticket > 0 || g_grid_pending_level == level)
         {
          g_grid_pending_level = level;
          g_grid_pending_price = expected_price;
         }
-     }
-   g_grid_filled_levels = GridFilledLevelCount();
+      }
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
+    if(g_gui_applied_config.favorable_grid_enable == 1)
+      for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+        {
+         if((g_favorable_grid_filled_mask & GridLevelBit(level)) != 0)
+            continue;
+         const double expected_price = FavorableGridLevelPrice(position_type, level);
+         ulong grid_ticket = 0;
+         if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
+                                       expected_volume, grid_ticket))
+            continue;
+         if(grid_ticket == 0)
+            PlaceGridPending(position_type, level, true);
+         if(grid_ticket > 0 || g_favorable_grid_pending_level == level)
+           {
+            g_favorable_grid_pending_level = level;
+            g_favorable_grid_pending_price = expected_price;
+           }
+        }
+    g_grid_filled_levels = GridFilledLevelCount();
+    g_favorable_grid_filled_levels = GridFilledLevelCountForMask(g_favorable_grid_filled_mask);
    SaveState();
   }
 
@@ -2813,11 +2933,15 @@ bool Transition(const long position_type, const double volume,
     g_group_linear_extreme = next_entry;
     g_group_first_lots = next_volume;
     g_group_total_lots = TotalPositionVolume(next_position_type);
-   g_grid_filled_levels = 0;
-   g_grid_filled_mask = 0;
-   g_grid_pending_level = 0;
-   g_grid_pending_price = 0.0;
-   g_grid_lots = VolumeNormalize(
+    g_grid_filled_levels = 0;
+    g_grid_filled_mask = 0;
+    g_grid_pending_level = 0;
+    g_grid_pending_price = 0.0;
+    g_favorable_grid_filled_levels = 0;
+    g_favorable_grid_filled_mask = 0;
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
+    g_grid_lots = VolumeNormalize(
       g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
    SetGroupStops(next_position_type);
    g_transition_phase = TRANSITION_COMPLETE;
@@ -2865,11 +2989,15 @@ bool ResumePreparedTransition()
     g_group_linear_extreme = entry;
     g_group_first_lots = volume;
     g_group_total_lots = TotalPositionVolume(position_type);
-   g_grid_filled_levels = 0;
-   g_grid_filled_mask = 0;
-   g_grid_pending_level = 0;
-   g_grid_pending_price = 0.0;
-   g_grid_lots = VolumeNormalize(
+    g_grid_filled_levels = 0;
+    g_grid_filled_mask = 0;
+    g_grid_pending_level = 0;
+    g_grid_pending_price = 0.0;
+    g_favorable_grid_filled_levels = 0;
+    g_favorable_grid_filled_mask = 0;
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
+    g_grid_lots = VolumeNormalize(
       g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
    SetGroupStops(position_type);
    g_transition_phase = TRANSITION_COMPLETE;
@@ -2991,10 +3119,14 @@ void Manage()
           g_group_linear_extreme = entry;
           g_group_first_lots = volume;
           g_grid_filled_levels = 0;
-         g_grid_filled_mask = 0;
-         g_grid_pending_level = 0;
-         g_grid_pending_price = 0.0;
-         g_grid_lots = VolumeNormalize(
+          g_grid_filled_mask = 0;
+          g_grid_pending_level = 0;
+          g_grid_pending_price = 0.0;
+          g_favorable_grid_filled_levels = 0;
+          g_favorable_grid_filled_mask = 0;
+          g_favorable_grid_pending_level = 0;
+          g_favorable_grid_pending_price = 0.0;
+          g_grid_lots = VolumeNormalize(
             g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
          g_transition_phase = TRANSITION_COMPLETE;
          g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
@@ -3238,6 +3370,11 @@ struct MultiGroupState
    long     grid_filled_mask;
    int      grid_pending_level;
    double   grid_pending_price;
+   ulong    favorable_grid_pending_ticket;
+   int      favorable_grid_filled_levels;
+   long     favorable_grid_filled_mask;
+   int      favorable_grid_pending_level;
+   double   favorable_grid_pending_price;
   };
 
 MultiGroupState g_multi_groups[];
@@ -3279,11 +3416,15 @@ bool ResetInMemoryStrategyState()
    g_group_anchor_price = 0.0;
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
-   g_grid_filled_levels = 0;
-   g_grid_filled_mask = 0;
-   g_grid_pending_level = 0;
-   g_grid_pending_price = 0.0;
-   return true;
+    g_grid_filled_levels = 0;
+    g_grid_filled_mask = 0;
+    g_grid_pending_level = 0;
+    g_grid_pending_price = 0.0;
+    g_favorable_grid_filled_levels = 0;
+    g_favorable_grid_filled_mask = 0;
+    g_favorable_grid_pending_level = 0;
+    g_favorable_grid_pending_price = 0.0;
+    return true;
   }
 
 string MultiGroupTag(const int group_id)
@@ -3339,6 +3480,11 @@ void MultiDeleteState(const int group_id)
    DeleteGridMask(prefix);
    GlobalVariableDel(prefix + ".gridpendinglevel");
    GlobalVariableDel(prefix + ".gridpendingprice");
+   GlobalVariableDel(prefix + ".favorablegridticket");
+   GlobalVariableDel(prefix + ".favorablegridlevel");
+   DeleteGridMask(prefix + ".favorable");
+   GlobalVariableDel(prefix + ".favorablegridpendinglevel");
+   GlobalVariableDel(prefix + ".favorablegridpendingprice");
   }
 
 bool MultiCommentMatches(const string comment, const int group_id)
@@ -3391,6 +3537,11 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.grid_filled_mask = 0;
    group.grid_pending_level = 0;
    group.grid_pending_price = 0.0;
+   group.favorable_grid_pending_ticket = 0;
+   group.favorable_grid_filled_levels = 0;
+   group.favorable_grid_filled_mask = 0;
+   group.favorable_grid_pending_level = 0;
+   group.favorable_grid_pending_price = 0.0;
   }
 
 void MultiClearAll()
@@ -3605,8 +3756,13 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".linearextreme", group.linear_extreme);
    GlobalVariableSet(prefix + ".gridlevel", (double)group.grid_filled_levels);
    SaveGridMask(prefix, group.grid_filled_mask);
-   GlobalVariableSet(prefix + ".gridpendinglevel", (double)group.grid_pending_level);
-   GlobalVariableSet(prefix + ".gridpendingprice", group.grid_pending_price);
+    GlobalVariableSet(prefix + ".gridpendinglevel", (double)group.grid_pending_level);
+    GlobalVariableSet(prefix + ".gridpendingprice", group.grid_pending_price);
+    GlobalVariableSet(prefix + ".favorablegridticket", (double)group.favorable_grid_pending_ticket);
+    GlobalVariableSet(prefix + ".favorablegridlevel", (double)group.favorable_grid_filled_levels);
+    SaveGridMask(prefix + ".favorable", group.favorable_grid_filled_mask);
+    GlobalVariableSet(prefix + ".favorablegridpendinglevel", (double)group.favorable_grid_pending_level);
+    GlobalVariableSet(prefix + ".favorablegridpendingprice", group.favorable_grid_pending_price);
    GlobalVariableSet(StatePrefix() + ".multi.nextid", (double)g_multi_next_id);
    if(!GlobalVariableSet(StatePrefix() + ".configfingerprint",
                          GuiConfigFingerprint(g_gui_applied_config))
@@ -3677,6 +3833,19 @@ void MultiLoadGroups()
          state.grid_filled_mask = ((long)1 << state.grid_filled_levels) - 1;
       state.grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".gridpendinglevel"));
       state.grid_pending_price = GlobalVariableGet(prefix + ".gridpendingprice");
+      if(GlobalVariableCheck(prefix + ".favorablegridticket"))
+         state.favorable_grid_pending_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".favorablegridticket"));
+      if(GlobalVariableCheck(prefix + ".favorablegridlevel"))
+         state.favorable_grid_filled_levels = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridlevel"));
+      if(!LoadGridMask(prefix + ".favorable", state.favorable_grid_filled_mask)
+         && GlobalVariableCheck(prefix + ".favorable.gridmask"))
+         state.favorable_grid_filled_mask = (long)MathRound(GlobalVariableGet(prefix + ".favorable.gridmask"));
+      else if(state.favorable_grid_filled_levels > 0)
+         state.favorable_grid_filled_mask = ((long)1 << state.favorable_grid_filled_levels) - 1;
+      if(GlobalVariableCheck(prefix + ".favorablegridpendinglevel"))
+         state.favorable_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridpendinglevel"));
+      if(GlobalVariableCheck(prefix + ".favorablegridpendingprice"))
+         state.favorable_grid_pending_price = GlobalVariableGet(prefix + ".favorablegridpendingprice");
       g_multi_groups[index] = state;
      }
   }
@@ -3972,6 +4141,11 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       group.grid_filled_mask = 0;
       group.grid_pending_level = 0;
       group.grid_pending_price = 0.0;
+      group.favorable_grid_pending_ticket = 0;
+      group.favorable_grid_filled_levels = 0;
+      group.favorable_grid_filled_mask = 0;
+      group.favorable_grid_pending_level = 0;
+      group.favorable_grid_pending_price = 0.0;
       group.grid_lots = group.previous_grid_lots > 0.0
                         ? VolumeNormalize(group.previous_grid_lots
                                           * g_gui_applied_config.grid_lot_multiplier)
@@ -4076,6 +4250,18 @@ double MultiGridLevelPrice(const MultiGroupState &group, const long type, const 
           : PriceNormalize(group.anchor_price + distance);
   }
 
+double MultiFavorableGridLevelPrice(const MultiGroupState &group, const long type, const int level)
+  {
+   if(g_gui_applied_config.grid_count <= 0 || group.stop_points <= 0
+      || group.anchor_price <= 0.0)
+      return 0.0;
+   const double distance = group.stop_points * _Point * level
+                           / g_gui_applied_config.grid_count;
+   return type == POSITION_TYPE_BUY
+          ? PriceNormalize(group.anchor_price + distance)
+          : PriceNormalize(group.anchor_price - distance);
+  }
+
 bool MultiPlaceGridPending(MultiGroupState &group, const long type)
   {
    if(g_gui_applied_config.grid_count < 2
@@ -4130,8 +4316,61 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
       group.grid_pending_level = level;
       group.grid_pending_price = entry;
       placed = true;
-     }
-   group.grid_filled_levels = MultiGridFilledLevelCount(group);
+      }
+    if(g_gui_applied_config.favorable_grid_enable == 1)
+      for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+        {
+         if((group.favorable_grid_filled_mask & GridLevelBit(level)) != 0)
+            continue;
+         const double entry = MultiFavorableGridLevelPrice(group, type, level);
+         ulong existing_ticket = 0;
+         if(!MultiNormalizeGridPendingLevel(group,
+                                            type == POSITION_TYPE_BUY
+                                            ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                                            level, entry, volume, existing_ticket))
+            continue;
+         if(existing_ticket == 0)
+           {
+            const long pending_type = PendingTypeForDirection(type, entry);
+            const double stop_loss = MultiStopPrice(group, type);
+            const double take_profit = type == POSITION_TYPE_BUY
+                                       ? PriceNormalize(entry + group.take_profit_points * _Point)
+                                       : PriceNormalize(entry - group.take_profit_points * _Point);
+            const string comment = g_gui_applied_config.order_comment
+                                   + MultiGroupTag(group.id) + ".Grid.F."
+                                   + IntegerToString(level);
+            bool sent = false;
+            if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
+               sent = pending_type == ORDER_TYPE_BUY_STOP
+                      ? g_trade.BuyStop(volume, entry, _Symbol, stop_loss, take_profit,
+                                        ORDER_TIME_GTC, 0, comment)
+                      : g_trade.BuyLimit(volume, entry, _Symbol, stop_loss, take_profit,
+                                         ORDER_TIME_GTC, 0, comment);
+            else
+               sent = pending_type == ORDER_TYPE_SELL_STOP
+                      ? g_trade.SellStop(volume, entry, _Symbol, stop_loss, take_profit,
+                                         ORDER_TIME_GTC, 0, comment)
+                      : g_trade.SellLimit(volume, entry, _Symbol, stop_loss, take_profit,
+                                          ORDER_TIME_GTC, 0, comment);
+            if(!sent)
+              {
+               PrintFormat("Multi favorable grid pending failed, group=%d, level=%d, retcode=%u, %s",
+                           group.id, level, g_trade.ResultRetcode(),
+                           g_trade.ResultRetcodeDescription());
+               continue;
+              }
+            existing_ticket = g_trade.ResultOrder();
+           }
+         group.favorable_grid_pending_ticket = existing_ticket;
+         group.favorable_grid_pending_level = level;
+         group.favorable_grid_pending_price = entry;
+         placed = true;
+        }
+    group.grid_filled_levels = MultiGridFilledLevelCount(group);
+    group.favorable_grid_filled_levels = 0;
+    for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+       if((group.favorable_grid_filled_mask & GridLevelBit(level)) != 0)
+          group.favorable_grid_filled_levels++;
    return placed;
   }
 
@@ -4156,14 +4395,37 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
          group.grid_filled_mask |= level_bit;
          latest_entry = fill_price;
          changed = true;
+         }
+      }
+    if(g_gui_applied_config.favorable_grid_enable == 1)
+      for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+        {
+         const long level_bit = GridLevelBit(level);
+         if(level_bit == 0 || (group.favorable_grid_filled_mask & level_bit) != 0)
+            continue;
+         double fill_price = 0.0;
+         if(MultiFindFilledGridOrder(group, type, level,
+                                     MultiFavorableGridLevelPrice(group, type, level),
+                                     fill_price))
+           {
+            group.favorable_grid_filled_mask |= level_bit;
+            latest_entry = fill_price;
+            changed = true;
+           }
         }
-     }
    if(!changed)
       return false;
    group.grid_filled_levels = MultiGridFilledLevelCount(group);
    group.grid_pending_level = 0;
    group.grid_pending_ticket = 0;
    group.grid_pending_price = 0.0;
+   group.favorable_grid_filled_levels = 0;
+   for(int level = 1; level < g_gui_applied_config.grid_count; level++)
+      if((group.favorable_grid_filled_mask & GridLevelBit(level)) != 0)
+         group.favorable_grid_filled_levels++;
+   group.favorable_grid_pending_ticket = 0;
+   group.favorable_grid_pending_level = 0;
+   group.favorable_grid_pending_price = 0.0;
    group.total_lots = current_total;
    if(latest_entry > 0.0)
       group.last_entry = latest_entry;
@@ -4201,6 +4463,11 @@ bool MultiHandleReverseFill(MultiGroupState &group, const long type, const doubl
    group.grid_pending_level = 0;
    group.grid_pending_ticket = 0;
    group.grid_pending_price = 0.0;
+   group.favorable_grid_pending_ticket = 0;
+   group.favorable_grid_filled_levels = 0;
+   group.favorable_grid_filled_mask = 0;
+   group.favorable_grid_pending_level = 0;
+   group.favorable_grid_pending_price = 0.0;
    group.grid_lots = group.previous_grid_lots > 0.0
                      ? VolumeNormalize(group.previous_grid_lots
                                        * g_gui_applied_config.grid_lot_multiplier)
@@ -4345,6 +4612,11 @@ bool MultiManageGroup(MultiGroupState &group)
       group.grid_pending_level = 0;
       group.grid_pending_ticket = 0;
       group.grid_pending_price = 0.0;
+      group.favorable_grid_pending_ticket = 0;
+      group.favorable_grid_filled_levels = 0;
+      group.favorable_grid_filled_mask = 0;
+      group.favorable_grid_pending_level = 0;
+      group.favorable_grid_pending_price = 0.0;
       group.grid_lots = group.previous_grid_lots > 0.0
                         ? VolumeNormalize(group.previous_grid_lots
                                           * g_gui_applied_config.grid_lot_multiplier)
@@ -4663,7 +4935,7 @@ string GuiRunStateText()
 
 string GuiFirstDirectionText(const FirstDirection value)
   {
-   return value == FIRST_SELL ? "SELL" : "BUY";
+   return value == FIRST_SELL ? "做空" : "做多";
   }
 
 string GuiCycleModeText(const CycleMode value)
@@ -4842,7 +5114,8 @@ int GuiDropdownOptionCount(const string key)
   {
    if(key == "first_direction" || key == "distance_mode" || key == "order_type"
        || key == "candle_order_mode" || key == "candle_enable_multiple"
-       || key == "take_profit_mode" || key == "first_order_lot_type")
+       || key == "take_profit_mode" || key == "first_order_lot_type"
+       || key == "favorable_grid_enable")
       return key == "distance_mode" ? 3 : 2;
    if(key == "cycle_mode")
       return 3;
@@ -4852,7 +5125,7 @@ int GuiDropdownOptionCount(const string key)
 string GuiDropdownOptionText(const string key, const int index)
   {
    if(key == "first_direction")
-      return index == 1 ? "SELL" : "BUY";
+      return index == 1 ? "做空" : "做多";
    if(key == "cycle_mode")
      {
       if(index == 1)
@@ -4877,6 +5150,8 @@ string GuiDropdownOptionText(const string key, const int index)
        return index == 1 ? "线性移动" : "网格移动";
    if(key == "first_order_lot_type")
        return index == 1 ? "上一组首单" : "累计组总手数";
+   if(key == "favorable_grid_enable")
+       return index == 1 ? "开启" : "关闭";
    return "";
   }
 
@@ -4898,6 +5173,8 @@ int GuiDropdownValueIndex(const string key)
        return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
    if(key == "first_order_lot_type")
        return g_gui_draft_config.first_order_lot_type == 2 ? 1 : 0;
+   if(key == "favorable_grid_enable")
+       return g_gui_draft_config.favorable_grid_enable == 1 ? 1 : 0;
    return -1;
   }
 
@@ -4921,6 +5198,8 @@ bool GuiSetDropdownValue(const string key, const int index)
        g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
    else if(key == "first_order_lot_type")
        g_gui_draft_config.first_order_lot_type = index == 1 ? 2 : 1;
+   else if(key == "favorable_grid_enable")
+       g_gui_draft_config.favorable_grid_enable = index == 1 ? 1 : 0;
    else
       return false;
    return true;
@@ -5117,7 +5396,7 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
    const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
    const int first_y = 60 + 94 + 18;
    const int row_gap = 64;
-   string keys[9];
+   string keys[10];
    int field_count = 0;
    if(g_gui_page == GUI_PAGE_OPENING)
      {
@@ -5129,7 +5408,7 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
        keys[5] = "initial_lots";
        keys[6] = "initial_lots_multiplier";
        keys[7] = "first_order_lot_type";
-       keys[8] = "first_order_mult";
+      keys[8] = "first_order_mult";
        field_count = 9;
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
@@ -5146,7 +5425,8 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
      {
       keys[0] = "grid_count";
       keys[1] = "grid_lot_multiplier";
-      field_count = 2;
+      keys[2] = "favorable_grid_enable";
+      field_count = 3;
      }
    else if(g_gui_page == GUI_PAGE_RISK)
      {
@@ -5385,7 +5665,7 @@ bool GuiRefreshOverviewData()
    GuiSnapshot snapshot;
    GuiCollectSnapshot(snapshot);
    const string direction = g_had_position
-                            ? (g_last_position_type == POSITION_TYPE_BUY ? "BUY" : "SELL")
+                            ? (g_last_position_type == POSITION_TYPE_BUY ? "做多" : "做空")
                             : "无持仓";
    const string reversal = IntegerToString(g_reversal_count) + "/"
                            + IntegerToString(g_gui_applied_config.max_reversals);
@@ -5542,7 +5822,7 @@ bool GuiRenderNavigation()
                                             GUI_NAV_WIDTH, GUI_WINDOW_HEIGHT - GUI_TITLE_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()), "navigation"))
       ok = false;
-   const string pages[5] = {"总览  01", "开仓  07", "距离与止盈  06", "网格  03", "风控与时段  05"};
+    const string pages[5] = {"总览  01", "开仓  09", "距离与止盈  06", "网格  03", "风控与时段  05"};
    for(int index = 0; index < 5; index++)
      {
       const GuiPage page = (GuiPage)index;
@@ -5632,7 +5912,7 @@ bool GuiRenderContent()
    if(g_gui_page == GUI_PAGE_OPENING)
      {
       section_title = "开仓参数";
-      section_note = "7项";
+       section_note = "9项";
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
@@ -5665,7 +5945,7 @@ bool GuiRenderContent()
       const int metric_width = 166;
       GuiRenderMetricCard("direction", "当前方向",
                           g_had_position ? (g_last_position_type == POSITION_TYPE_BUY
-                                            ? "BUY" : "SELL") : "无持仓",
+                                            ? "做多" : "做空") : "无持仓",
                           x + GUI_CONTENT_PADDING, y + 86, metric_width, ok);
       GuiRenderMetricCard("reversal", "反手次数",
                           IntegerToString(g_reversal_count) + "/"
@@ -5734,7 +6014,7 @@ bool GuiRenderContent()
                                   g_gui_applied_config.first_order_lot_type == 2
                                   ? "上一组首单" : "累计组总手数",
                                   left_x, summary_y + row_gap * 7, ok)) ok = false;
-       if(!GuiRenderReadOnlyField("overview.first_order_mult", "FirstOrderMult",
+        if(!GuiRenderReadOnlyField("overview.first_order_mult", "首单类型2倍数",
                                   DoubleToString(g_gui_applied_config.first_order_mult, 8),
                                   right_x, summary_y + row_gap * 7, ok)) ok = false;
        if(!GuiRenderReadOnlyField("overview.grid_lot_multiplier", "网格手数倍数",
@@ -5793,7 +6073,7 @@ bool GuiRenderContent()
                               ? "上一组首单" : "累计组总手数",
                               right_x, row + row_gap * 3, ok))
           ok = false;
-       if(!GuiRenderEditableDropdownField("first_order_mult", "FirstOrderMult",
+       if(!GuiRenderEditableDropdownField("first_order_mult", "首单类型2倍数",
                                           DoubleToString(g_gui_draft_config.first_order_mult, 8),
                                           left_x, row + row_gap * 4, ok))
           ok = false;
@@ -5850,20 +6130,24 @@ bool GuiRenderContent()
       if(!GuiRenderEditableDropdownField("grid_count", "网格数量",
                                          IntegerToString(g_gui_draft_config.grid_count), left_x, row, ok))
          ok = false;
-      if(!GuiRenderEditableDropdownField("grid_lot_multiplier", "网格手数倍数",
-                                         DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
-                                         right_x, row, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
-                                IntegerToString(g_grid_filled_levels), left_x, row + 64, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
-                                g_grid_pending_price > 0.0
-                                ? DoubleToString(g_grid_pending_price, _Digits) : "--", right_x,
-                                row + 64, ok))
-         ok = false;
-      if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
-                                DoubleToString(g_group_total_lots, 2), left_x, row + 128, ok))
+       if(!GuiRenderEditableDropdownField("grid_lot_multiplier", "网格手数倍数",
+                                          DoubleToString(g_gui_draft_config.grid_lot_multiplier, 8),
+                                          right_x, row, ok))
+          ok = false;
+       if(!GuiRenderEnumField("favorable_grid_enable", "有利方向加单",
+                              g_gui_draft_config.favorable_grid_enable == 1 ? "开启" : "关闭",
+                              left_x, row + 64, ok))
+          ok = false;
+       if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
+                                 IntegerToString(g_grid_filled_levels), right_x, row + 64, ok))
+          ok = false;
+       if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
+                                 g_grid_pending_price > 0.0
+                                 ? DoubleToString(g_grid_pending_price, _Digits) : "--", right_x,
+                                 row + 128, ok))
+          ok = false;
+       if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
+                                 DoubleToString(g_group_total_lots, 2), left_x, row + 128, ok))
          ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
@@ -6237,7 +6521,7 @@ bool GuiSyncEditValue(const string key)
       {
        if(!GuiTryParseDouble(value, parsed_double))
          {
-          g_gui_notice = "FirstOrderMult格式无效";
+          g_gui_notice = "首单类型2倍数格式无效";
           GuiRefreshNoticeObject();
           return false;
          }

@@ -85,6 +85,7 @@ def test_mt5_gui_exposes_every_input_parameter_on_an_editable_page():
     for key in (
         "first_direction", "cycle_mode", "distance_mode", "order_type",
         "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
+        "favorable_grid_enable",
         "initial_lots", "initial_lots_multiplier", "max_reversals",
         "grid_count", "grid_lot_multiplier", "stop_loss_distance_points",
         "take_profit_distance_points", "candle_min_range_points",
@@ -104,6 +105,7 @@ def test_mt5_gui_uses_dropdown_option_lists_for_all_selectable_modes():
     for key in (
         "first_direction", "cycle_mode", "distance_mode", "order_type",
         "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
+        "favorable_grid_enable",
     ):
         assert f'"{key}"' in re.search(
             r"int GuiDropdownOptionCount\(.*?\n\s*\}\n\n",
@@ -937,8 +939,8 @@ def test_first_order_lot_type_is_present_in_both_expert_sources(source_name):
     assert "FirstOrderLotType" in source
     assert "FirstOrderMult" in source
     assert "first_order_lots" in source or "group_first_lots" in source
-    assert "FirstOrderLotType = 2" in source
-    assert "FirstOrderMult = 2.0" in source
+    assert "input int            止损首单类型 = 2;" in source
+    assert "input double         首单类型2倍数 = 2.0;" in source
     assert "== 2" in source
 
 
@@ -1140,6 +1142,68 @@ def test_grid_count_is_number_of_intervals_and_outer_boundary_still_stops_group(
     assert stop_actions[1] == {"kind": "close", "direction": Direction.BUY}
     assert stop_actions[2]["kind"] == "market"
     assert stop_actions[2]["direction"] is Direction.SELL
+
+
+def test_favorable_grid_additions_are_disabled_by_default():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+
+    assert [action for action in actions if action["kind"] == "favorable_grid_pending"] == []
+    assert len([action for action in actions if action["kind"] == "grid_pending"]) == 3
+
+
+@pytest.mark.parametrize(
+    ("direction", "expected_order_type"),
+    [(Direction.BUY, "BUY_STOP"), (Direction.SELL, "SELL_STOP")],
+)
+def test_favorable_grid_additions_use_the_same_grid_count_and_lot_size(
+    direction, expected_order_type,
+):
+    model = StrategyModel(
+        direction, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1,
+    )
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+    favorable = [
+        action for action in actions if action["kind"] == "favorable_grid_pending"
+    ]
+
+    assert len(favorable) == 3
+    assert all(action["direction"] is direction for action in favorable)
+    assert all(action["order_type"] == expected_order_type for action in favorable)
+    assert all(action["lots"] == pytest.approx(0.01) for action in favorable)
+
+
+def test_favorable_grid_source_uses_a_chinese_visible_input_label():
+    for source_name in ("NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"):
+        source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+        assert "input int            有利方向加单 = 0;" in source
+        assert "FavorableGridEnable" in source
+    mt5_source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+    assert "有利方向加单" in mt5_source
+    assert "关闭" in mt5_source and "开启" in mt5_source
+
+
+def test_favorable_grid_fill_updates_the_same_group_total_and_tp_flow():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    fill_actions = model.fill_favorable_grid_pending(level=1)
+
+    assert fill_actions[0]["kind"] == "favorable_grid"
+    assert model.group_total_lots == pytest.approx(0.02)
+    assert model.favorable_grid_filled_levels == 1
+    assert model.position.take_profit > model.position.entry
 
 
 def test_grid_count_is_bounded_by_grid_fill_mask_capacity():
