@@ -4961,9 +4961,15 @@ bool MultiManageGroup(MultiGroupState &group)
       && (!MultiSetStops(group, type) || !MultiStopsVerified(group, type)))
      {
       Print("Multi position protection is not verified; follow-up orders are paused.");
-      return true;
+     return true;
      }
    MultiHandleGridFill(group, type, total);
+   if(!MultiStopsVerified(group, type)
+      && (!MultiSetStops(group, type) || !MultiStopsVerified(group, type)))
+     {
+      Print("Multi grid-fill protection is not verified; follow-up orders are paused.");
+      return true;
+     }
    MultiPlaceReversePending(group, type);
    MultiPlaceGridPending(group, type);
    return true;
@@ -5058,7 +5064,13 @@ bool MultiTryOpenCandleGroup()
     state.first_lots = total;
     state.total_lots = total;
    state.grid_lots = total;
-   MultiSetStops(state, type);
+   if(!MultiSetStops(state, type) || !MultiStopsVerified(state, type))
+     {
+      Print("Multi initial market protection is not verified; follow-up orders are paused.");
+      g_multi_groups[new_index] = state;
+      MultiSaveGroup(g_multi_groups[new_index]);
+      return true;
+     }
    MultiPlaceReversePending(state, type);
    MultiPlaceGridPending(state, type);
    g_multi_groups[new_index] = state;
