@@ -12,8 +12,34 @@ from strategy_logic import (
     ExposureSnapshot, GuiStateModel, OrderType, ParallelStrategyModel, PendingRecord,
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
     average_candle_distances, normalize_pending_records, recover_prepared_transition,
-    cycle_directions,
+    cycle_directions, plan_reversal_lots,
 )
+
+
+@pytest.mark.parametrize(
+    ("total_lots", "status", "legs"),
+    [
+        (100.0, "single", (100.0,)),
+        (100.01, "split", (50.005, 50.005)),
+        (120.0, "split", (60.0, 60.0)),
+        (199.99, "split", (99.995, 99.995)),
+        (200.0, "restart_group", ()),
+        (250.0, "restart_group", ()),
+    ],
+)
+def test_reversal_lot_plan_enforces_terminal_broker_limits(total_lots, status, legs):
+    plan = plan_reversal_lots(total_lots)
+
+    assert plan.status == status
+    assert plan.lots == pytest.approx(legs)
+    assert all(lot <= 100.0 for lot in plan.lots)
+    if status != "restart_group":
+        assert sum(plan.lots) == pytest.approx(total_lots)
+
+
+def test_reversal_lot_plan_rejects_non_positive_volume():
+    with pytest.raises(ValueError):
+        plan_reversal_lots(0.0)
 
 
 def test_mt5_gui_migrates_legacy_state_without_fingerprint_once():
@@ -942,6 +968,37 @@ def test_first_order_lot_type_is_present_in_both_expert_sources(source_name):
     assert "input int            止损首单类型 = 2;" in source
     assert "input double         首单类型2倍数 = 2.0;" in source
     assert "== 2" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_reversal_volume_is_classified_before_broker_max_lot_clamping(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "MAX_SINGLE_REVERSAL_LOTS" in source
+    assert "MAX_GROUP_REVERSAL_LOTS" in source
+    assert "ReversalLotPlan" in source
+    assert ">= MAX_GROUP_REVERSAL_LOTS" in source
+    assert "<= MAX_SINGLE_REVERSAL_LOTS" in source
+    assert "requested_volume" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_follow_up_orders_are_blocked_until_position_protection_is_verified(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "bool SetGroupStops" in source
+    assert "StopsVerified" in source
+    assert "if(!SetGroupStops" in source or "if(!MultiSetStops" in source
+    assert "protection is not verified" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_oversized_reversal_resets_only_the_current_order_group(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "ResetOrderGroupAfterOversizedReversal" in source
+    assert "start a fresh base-lot group on the next tick" in source
+    assert "NextGroupLotsRaw" in source
 
 
 def test_initial_entry_is_allowed_only_inside_the_configured_time_window():

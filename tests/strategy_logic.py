@@ -30,6 +30,24 @@ class TakeProfitMode(Enum):
 
 
 @dataclass(frozen=True)
+class ReversalLotPlan:
+    status: str
+    lots: tuple[float, ...]
+
+
+def plan_reversal_lots(total_lots, max_single_lot=100.0, group_restart_lot=200.0):
+    """Return the executable reversal legs before broker step normalization."""
+    if total_lots <= 0:
+        raise ValueError("reversal lots must be positive")
+    if total_lots >= group_restart_lot:
+        return ReversalLotPlan("restart_group", ())
+    if total_lots <= max_single_lot:
+        return ReversalLotPlan("single", (total_lots,))
+    half = total_lots / 2.0
+    return ReversalLotPlan("split", (half, half))
+
+
+@dataclass(frozen=True)
 class GuiApplyResult:
     ok: bool
 
