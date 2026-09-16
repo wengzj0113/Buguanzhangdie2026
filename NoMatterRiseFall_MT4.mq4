@@ -122,6 +122,24 @@ input string         结束时间 = "23:00";
 #define InpGridCount 网格数量
 #define FavorableGridEnable 有利方向加单
 #define MAX_GRID_COUNT 63
+#define MAX_SINGLE_REVERSAL_LOTS 100.0
+#define MAX_GROUP_REVERSAL_LOTS 200.0
+
+enum ReversalLotPlanStatus
+  {
+   REVERSAL_LOT_SINGLE = 0,
+   REVERSAL_LOT_SPLIT = 1,
+   REVERSAL_LOT_RESTART_GROUP = 2
+  };
+
+struct ReversalLotPlan
+  {
+   int    status;
+   int    count;
+   double first_lots;
+   double second_lots;
+  };
+
 #define InpGridLotMultiplier 网格手数倍数
 #define InpStopLossDistancePoints 固定止损距离
 #define InpTakeProfitDistancePoints 固定止盈距离
@@ -686,6 +704,30 @@ double VolumeNormalize(double volume)
    return NormalizeDouble(volume, LotDigits());
   }
 
+bool BuildReversalLotPlan(const double requested_volume, ReversalLotPlan &plan)
+  {
+   plan.status = REVERSAL_LOT_RESTART_GROUP;
+   plan.count = 0;
+   plan.first_lots = 0.0;
+   plan.second_lots = 0.0;
+   if(!MathIsValidNumber(requested_volume) || requested_volume <= 0.0)
+      return false;
+   if(requested_volume >= MAX_GROUP_REVERSAL_LOTS)
+      return true;
+   if(requested_volume <= MAX_SINGLE_REVERSAL_LOTS)
+     {
+      plan.status = REVERSAL_LOT_SINGLE;
+      plan.count = 1;
+      plan.first_lots = requested_volume;
+      return true;
+     }
+   plan.status = REVERSAL_LOT_SPLIT;
+   plan.count = 2;
+   plan.first_lots = requested_volume / 2.0;
+   plan.second_lots = requested_volume - plan.first_lots;
+   return true;
+  }
+
 bool IsOurMarketOrder()
   {
    return OrderSymbol() == Symbol() && OrderMagicNumber() == InpMagicNumber
@@ -988,6 +1030,15 @@ bool DeleteAllPending()
    return deleted && !HasOurPending();
   }
 
+bool ResetOrderGroupAfterOversizedReversal()
+  {
+   Print("Oversized reversal stopped this order group; start a fresh base-lot group on the next tick.");
+   if(!DeleteAllPending() || !CloseAllOurPositions())
+      return false;
+   ClearState();
+   return true;
+  }
+
 int GetReversePendingStatus()
   {
    if(g_pending_ticket <= 0)
@@ -1137,8 +1188,27 @@ bool SetGroupStops(const int type)
         }
      }
    g_last_take_profit = take_profit;
-   return modified;
+   return modified && StopsVerified(type);
    }
+
+bool StopsVerified(const int type)
+  {
+   bool found = false;
+   const double stop_loss = GroupStopPrice(type);
+   const double take_profit = GroupTakeProfitPrice(type);
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurMarketOrder()
+         || OrderType() != type)
+         continue;
+      found = true;
+      if(OrderStopLoss() <= 0.0 || OrderTakeProfit() <= 0.0
+         || MathAbs(OrderStopLoss() - stop_loss) > Point * 0.5
+         || MathAbs(OrderTakeProfit() - take_profit) > Point * 0.5)
+         return false;
+     }
+   return found;
+  }
 
 bool UpdateLinearTakeProfit(const int type)
   {
@@ -1189,7 +1259,7 @@ bool UpdateLinearTakeProfit(const int type)
    return false;
   }
 
-bool OpenMarket(const int type, const double requested_volume)
+bool SendMarketLeg(const int type, const double requested_volume)
   {
    RefreshRates();
    const double volume = VolumeNormalize(requested_volume);
@@ -1211,33 +1281,79 @@ bool OpenMarket(const int type, const double requested_volume)
    return true;
   }
 
-double NextGroupLots(const double fallback_volume)
+bool OpenMarket(const int type, const double requested_volume)
+  {
+   ReversalLotPlan plan;
+   if(!BuildReversalLotPlan(requested_volume, plan))
+      return false;
+   if(plan.status == REVERSAL_LOT_RESTART_GROUP)
+     {
+      PrintFormat("Reversal volume %.2f reaches %.2f lots; stop this group and restart from base lot on the next tick.",
+                  requested_volume, MAX_GROUP_REVERSAL_LOTS);
+      return false;
+     }
+   const double step = MarketInfo(Symbol(), MODE_LOTSTEP);
+   const double tolerance = step > 0.0 ? step * 0.5 : 0.0000001;
+   const double target = plan.first_lots
+                         + (plan.count == 2 ? plan.second_lots : 0.0);
+   double current = TotalPositionLots(type);
+   for(int leg = 0; leg < plan.count && current + tolerance < target; leg++)
+     {
+      const double leg_target = leg == 0 ? plan.first_lots : plan.second_lots;
+      const double remaining = target - current;
+      const double leg_volume = MathMin(leg_target, remaining);
+      if(leg_volume <= tolerance)
+         continue;
+      if(!SendMarketLeg(type, leg_volume))
+         return false;
+      current = TotalPositionLots(type);
+     }
+   if(current + tolerance < target)
+     {
+      PrintFormat("Reversal volume incomplete: target=%.2f, actual=%.2f; retrying missing leg on the next tick.",
+                  target, current);
+      return false;
+     }
+   return true;
+  }
+
+double NextGroupLotsRaw(const double fallback_volume)
    {
     if(FirstOrderLotType == 2)
       {
        const double base = g_group_first_lots > 0.0
                            ? g_group_first_lots : fallback_volume;
-       return VolumeNormalize(base * FirstOrderMult);
+       return base * FirstOrderMult;
       }
     double requested = g_cumulative_loss_lots + g_group_total_lots;
    if(requested <= 0.0)
       requested = fallback_volume;
    else
       requested *= 首单手数倍数;
-    return VolumeNormalize(requested);
+    return requested;
    }
 
-double NextGroupLotsAfterStop(const double fallback_volume)
+double NextGroupLots(const double fallback_volume)
+   {
+    return VolumeNormalize(NextGroupLotsRaw(fallback_volume));
+   }
+
+double NextGroupLotsAfterStopRaw(const double fallback_volume)
    {
     if(FirstOrderLotType == 2)
       {
        const double base = g_group_first_lots > 0.0
                            ? g_group_first_lots : fallback_volume;
-       return VolumeNormalize(base * FirstOrderMult);
+       return base * FirstOrderMult;
       }
     const double requested = g_cumulative_loss_lots > 0.0
                              ? g_cumulative_loss_lots : fallback_volume;
-    return VolumeNormalize(requested * 首单手数倍数);
+    return requested * 首单手数倍数;
+   }
+
+double NextGroupLotsAfterStop(const double fallback_volume)
+   {
+    return VolumeNormalize(NextGroupLotsAfterStopRaw(fallback_volume));
    }
 
 bool PlaceInitialPendingOrder(const int direction, const double entry,
@@ -1288,7 +1404,11 @@ bool PlaceInitialPendingPair(const double previous_high, const double previous_l
                                 InpOrderComment + ".InitialLow", low_ticket))
      {
       if(high_ticket > 0)
-         OrderDelete(high_ticket, clrRed);
+        {
+         if(!OrderDelete(high_ticket, clrRed))
+            Print("Initial pending rollback failed, ticket=", high_ticket,
+                  ", error=", GetLastError());
+        }
       return false;
      }
    g_initial_high_ticket = high_ticket;
@@ -1384,7 +1504,12 @@ bool HandleInitialPendingFill()
       g_initial_low_ticket = -1;
       g_initial_high_price = 0.0;
       g_initial_low_price = 0.0;
-      SetGroupStops(position_type);
+      if(!SetGroupStops(position_type) || !StopsVerified(position_type))
+        {
+         Print("Initial fill protection is not verified; follow-up orders are paused.");
+         SaveState();
+         return true;
+        }
       EnsureNextPending(GroupStopPrice(position_type), GroupTakeProfitPrice(position_type),
                         g_group_total_lots);
       EnsureGridPending(position_type);
@@ -1421,7 +1546,11 @@ bool PlaceNextPending(const int next_direction, const double stop_loss,
       return false;
 
    RefreshRates();
-    const double volume = NextGroupLots(current_volume);
+   ReversalLotPlan plan;
+   if(!BuildReversalLotPlan(NextGroupLotsRaw(current_volume), plan)
+      || plan.status != REVERSAL_LOT_SINGLE)
+      return false;
+   const double volume = VolumeNormalize(plan.first_lots);
    const double entry = PriceNormalize(stop_loss);
    const double distance_sl = stop_loss_points * Point;
    const double distance_tp = take_profit_points * Point;
@@ -1759,7 +1888,11 @@ void EnsureNextPending(const double stop_loss, const double take_profit,
       return;
 
    const int expected_direction = SequenceDirection(NextCycleIndex());
-   const double expected_volume = NextGroupLots(fallback_volume);
+   ReversalLotPlan plan;
+   if(!BuildReversalLotPlan(NextGroupLotsRaw(fallback_volume), plan)
+      || plan.status != REVERSAL_LOT_SINGLE)
+      return;
+   const double expected_volume = VolumeNormalize(plan.first_lots);
    const double expected_price = PriceNormalize(stop_loss);
    int active_pending = -1;
    if(!NormalizeSingleGroupPending(false, expected_direction, expected_price,
@@ -1837,7 +1970,16 @@ bool Transition(const int position_type, const double volume,
    g_transition_phase = TRANSITION_PREPARED;
    g_transition_id = (long)TimeCurrent() * 1000 + g_reversal_count;
    SaveState();
-     if(!OpenMarket(next_type, NextGroupLotsAfterStop(volume)))
+   const double next_group_lots = NextGroupLotsAfterStopRaw(volume);
+   ReversalLotPlan reversal_plan;
+   if(!BuildReversalLotPlan(next_group_lots, reversal_plan))
+      return false;
+   if(reversal_plan.status == REVERSAL_LOT_RESTART_GROUP)
+     {
+      ResetOrderGroupAfterOversizedReversal();
+      return false;
+     }
+   if(!OpenMarket(next_type, next_group_lots))
       return false;
    int next_ticket = -1;
    int next_position_type = OP_BUY;
@@ -1862,7 +2004,12 @@ bool Transition(const int position_type, const double volume,
    g_favorable_grid_pending_level = 0;
    g_favorable_grid_pending_price = 0.0;
    g_grid_lots = VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier);
-   SetGroupStops(next_position_type);
+   if(!SetGroupStops(next_position_type) || !StopsVerified(next_position_type))
+     {
+      Print("Transition protection is not verified; follow-up orders are paused.");
+      SaveState();
+      return false;
+     }
    g_transition_phase = TRANSITION_COMPLETE;
    SaveState();
    Manage();
@@ -1875,7 +2022,15 @@ bool ResumePreparedTransition()
       return true;
 
    const int expected_direction = SequenceDirection(g_cycle_index);
-    const double expected_volume = NextGroupLotsAfterStop(g_group_first_lots);
+   const double expected_volume = NextGroupLotsAfterStopRaw(g_group_first_lots);
+   ReversalLotPlan recovery_plan;
+   if(!BuildReversalLotPlan(expected_volume, recovery_plan))
+      return false;
+   if(recovery_plan.status == REVERSAL_LOT_RESTART_GROUP)
+     {
+      ResetOrderGroupAfterOversizedReversal();
+      return false;
+     }
    int ticket = -1;
    int position_type = OP_BUY;
    double volume = 0.0;
@@ -1887,13 +2042,22 @@ bool ResumePreparedTransition()
      {
       const double total = TotalPositionLots(position_type);
       const double tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
-      if(position_type != expected_direction || MathAbs(total - expected_volume) > tolerance)
+      if(position_type != expected_direction || total > expected_volume + tolerance)
         {
          Print("Transition recovery conflict, id=", g_transition_id,
                ", expected_type=", expected_direction,
                ", expected_volume=", expected_volume,
                ", actual_type=", position_type, ", actual_volume=", total);
          return false;
+        }
+      if(total + tolerance < expected_volume)
+        {
+         if(!OpenMarket(expected_direction, expected_volume))
+            return false;
+         if(!FindPosition(ticket, position_type, volume, entry, stop_loss, take_profit)
+            || position_type != expected_direction
+            || TotalPositionLots(position_type) + tolerance < expected_volume)
+            return false;
         }
      }
    else
@@ -1918,7 +2082,12 @@ bool ResumePreparedTransition()
    g_favorable_grid_pending_level = 0;
    g_favorable_grid_pending_price = 0.0;
    g_grid_lots = VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier);
-   SetGroupStops(position_type);
+   if(!SetGroupStops(position_type) || !StopsVerified(position_type))
+     {
+      Print("Transition recovery protection is not verified; follow-up orders are paused.");
+      SaveState();
+      return false;
+     }
    g_transition_phase = TRANSITION_COMPLETE;
    SaveState();
    return true;
@@ -2073,8 +2242,13 @@ void Manage()
         }
       g_last_take_profit = take_profit;
 
-      if(pending_filled)
-         SetGroupStops(position_type);
+      if(pending_filled && (!SetGroupStops(position_type)
+                            || !StopsVerified(position_type)))
+        {
+         Print("Reverse fill protection is not verified; follow-up orders are paused.");
+         SaveState();
+         return;
+        }
 
       if(pending_filled)
         {
@@ -2097,7 +2271,12 @@ void Manage()
           g_group_anchor_price = entry;
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
-          SetGroupStops(position_type);
+         if(!SetGroupStops(position_type) || !StopsVerified(position_type))
+           {
+            Print("Position protection is not verified; follow-up orders are paused.");
+            SaveState();
+            return;
+           }
          EnsureNextPending(GroupStopPrice(position_type), GroupTakeProfitPrice(position_type),
                            volume);
          EnsureGridPending(position_type);
@@ -2105,6 +2284,15 @@ void Manage()
           return;
          }
 
+      if(!StopsVerified(position_type))
+        {
+         if(!SetGroupStops(position_type) || !StopsVerified(position_type))
+           {
+            Print("Position protection is not verified; follow-up orders are paused.");
+            SaveState();
+            return;
+           }
+        }
        UpdateLinearTakeProfit(position_type);
        if(InpTakeProfitMode == TAKE_PROFIT_LINEAR)
           {
@@ -2279,6 +2467,7 @@ struct MultiGroupState
    double   previous_grid_lots;
    double   grid_lots;
    double   total_lots;
+   double   transition_target_lots;
    double   anchor_price;
    double   last_entry;
    double   linear_extreme;
@@ -2342,6 +2531,7 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".prevgridlots");
    GlobalVariableDel(prefix + ".gridlots");
    GlobalVariableDel(prefix + ".totallots");
+   GlobalVariableDel(prefix + ".transitiontarget");
    GlobalVariableDel(prefix + ".anchor");
    GlobalVariableDel(prefix + ".lastentry");
    GlobalVariableDel(prefix + ".linearextreme");
@@ -2418,6 +2608,7 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.previous_grid_lots = 0.0;
    group.grid_lots = 0.0;
    group.total_lots = 0.0;
+   group.transition_target_lots = 0.0;
    group.anchor_price = 0.0;
    group.last_entry = 0.0;
    group.linear_extreme = 0.0;
@@ -2590,6 +2781,7 @@ void MultiSaveGroup(const MultiGroupState &group)
    GlobalVariableSet(prefix + ".prevgridlots", group.previous_grid_lots);
    GlobalVariableSet(prefix + ".gridlots", group.grid_lots);
    GlobalVariableSet(prefix + ".totallots", group.total_lots);
+   GlobalVariableSet(prefix + ".transitiontarget", group.transition_target_lots);
    GlobalVariableSet(prefix + ".anchor", group.anchor_price);
    GlobalVariableSet(prefix + ".lastentry", group.last_entry);
    GlobalVariableSet(prefix + ".linearextreme", group.linear_extreme);
@@ -2650,6 +2842,8 @@ void MultiLoadGroups()
       state.previous_grid_lots = GlobalVariableGet(prefix + ".prevgridlots");
       state.grid_lots = GlobalVariableGet(prefix + ".gridlots");
       state.total_lots = GlobalVariableGet(prefix + ".totallots");
+      if(GlobalVariableCheck(prefix + ".transitiontarget"))
+         state.transition_target_lots = GlobalVariableGet(prefix + ".transitiontarget");
       if(state.first_lots <= 0.0 && state.total_lots > 0.0)
          state.first_lots = state.total_lots;
       state.anchor_price = GlobalVariableGet(prefix + ".anchor");
@@ -2797,10 +2991,11 @@ double MultiTakeProfitPrice(const MultiGroupState &group, const int type)
           : PriceNormalize(reference - group.take_profit_points * Point);
   }
 
-void MultiSetStops(const MultiGroupState &group, const int type)
+bool MultiSetStops(const MultiGroupState &group, const int type)
   {
    const double stop_loss = MultiStopPrice(group, type);
    const double take_profit = MultiTakeProfitPrice(group, type);
+   bool modified = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
       if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES)
@@ -2811,12 +3006,37 @@ void MultiSetStops(const MultiGroupState &group, const int type)
          && MathAbs(OrderTakeProfit() - take_profit) <= Point * 0.5)
          continue;
       if(!OrderModify(OrderTicket(), OrderOpenPrice(), stop_loss, take_profit, 0, clrNONE))
+        {
          Print("Multi stops modify failed, group=", group.id,
                ", ticket=", OrderTicket(), ", error=", GetLastError());
+         modified = false;
+        }
      }
+   return modified && MultiStopsVerified(group, type);
   }
 
-bool MultiOpenMarket(MultiGroupState &group, const int type, const double requested_volume)
+bool MultiStopsVerified(const MultiGroupState &group, const int type)
+  {
+   bool found = false;
+   const double stop_loss = MultiStopPrice(group, type);
+   const double take_profit = MultiTakeProfitPrice(group, type);
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES)
+         || OrderSymbol() != Symbol() || OrderMagicNumber() != InpMagicNumber
+         || (OrderType() != OP_BUY && OrderType() != OP_SELL)
+         || OrderType() != type || !MultiCommentMatches(OrderComment(), group.id))
+         continue;
+      found = true;
+      if(OrderStopLoss() <= 0.0 || OrderTakeProfit() <= 0.0
+         || MathAbs(OrderStopLoss() - stop_loss) > Point * 0.5
+         || MathAbs(OrderTakeProfit() - take_profit) > Point * 0.5)
+         return false;
+     }
+   return found;
+  }
+
+bool MultiSendMarketLeg(MultiGroupState &group, const int type, const double requested_volume)
   {
    RefreshRates();
    const double volume = VolumeNormalize(requested_volume);
@@ -2837,31 +3057,65 @@ bool MultiOpenMarket(MultiGroupState &group, const int type, const double reques
    return true;
   }
 
-double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
+bool MultiOpenMarket(MultiGroupState &group, const int type, const double requested_volume)
+  {
+   ReversalLotPlan plan;
+   if(!BuildReversalLotPlan(requested_volume, plan)
+      || plan.status == REVERSAL_LOT_RESTART_GROUP)
+      return false;
+   const double step = MarketInfo(Symbol(), MODE_LOTSTEP);
+   const double tolerance = step > 0.0 ? step * 0.5 : 0.0000001;
+   const double target = plan.first_lots
+                         + (plan.count == 2 ? plan.second_lots : 0.0);
+   double current = MultiTotalLots(group.id, type);
+   for(int leg = 0; leg < plan.count && current + tolerance < target; leg++)
+     {
+      const double leg_target = leg == 0 ? plan.first_lots : plan.second_lots;
+      const double leg_volume = MathMin(leg_target, target - current);
+      if(leg_volume <= tolerance)
+         continue;
+      if(!MultiSendMarketLeg(group, type, leg_volume))
+         return false;
+      current = MultiTotalLots(group.id, type);
+     }
+   return current + tolerance >= target;
+  }
+
+double MultiNextGroupLotsRaw(const MultiGroupState &group, const double fallback)
    {
     if(FirstOrderLotType == 2)
       {
        const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
-       return VolumeNormalize(base * FirstOrderMult);
+       return base * FirstOrderMult;
       }
     double requested = group.cumulative_loss_lots + group.total_lots;
    if(requested <= 0.0)
       requested = fallback;
    else
       requested *= 首单手数倍数;
-    return VolumeNormalize(requested);
+    return requested;
    }
 
-double MultiNextGroupLotsAfterStop(const MultiGroupState &group, const double fallback)
+double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
+   {
+    return VolumeNormalize(MultiNextGroupLotsRaw(group, fallback));
+   }
+
+double MultiNextGroupLotsAfterStopRaw(const MultiGroupState &group, const double fallback)
    {
     if(FirstOrderLotType == 2)
       {
        const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
-       return VolumeNormalize(base * FirstOrderMult);
+       return base * FirstOrderMult;
       }
     const double requested = group.cumulative_loss_lots > 0.0
                              ? group.cumulative_loss_lots : fallback;
-    return VolumeNormalize(requested * 首单手数倍数);
+    return requested * 首单手数倍数;
+   }
+
+double MultiNextGroupLotsAfterStop(const MultiGroupState &group, const double fallback)
+   {
+    return VolumeNormalize(MultiNextGroupLotsAfterStopRaw(group, fallback));
    }
 
 int MultiInitialPendingStatus(const int ticket, const int group_id)
@@ -2903,7 +3157,11 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
                                 MultiInitialPendingComment(group.id, false), low_ticket))
      {
       if(high_ticket > 0)
-         OrderDelete(high_ticket, clrRed);
+        {
+         if(!OrderDelete(high_ticket, clrRed))
+            Print("Multi initial pending rollback failed, group=", group.id,
+                  ", ticket=", high_ticket, ", error=", GetLastError());
+        }
       return false;
      }
    group.initial_high_ticket = high_ticket;
@@ -2972,7 +3230,11 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       group.initial_low_ticket = -1;
       group.initial_high_price = 0.0;
       group.initial_low_price = 0.0;
-      MultiSetStops(group, position_type);
+      if(!MultiSetStops(group, position_type) || !MultiStopsVerified(group, position_type))
+        {
+         Print("Multi initial fill protection is not verified; follow-up orders are paused.");
+         return true;
+        }
       MultiPlaceReversePending(group, position_type);
       MultiPlaceGridPending(group, position_type);
       return true;
@@ -3017,7 +3279,11 @@ bool MultiPlaceReversePending(MultiGroupState &group, const int current_type)
    const int next_direction = MultiSequenceDirection(group, next_index);
    const double entry = MultiStopPrice(group, current_type);
    const int pending_type = PendingTypeForDirection(next_direction, entry);
-   const double volume = MultiNextGroupLots(group, group.total_lots);
+   ReversalLotPlan plan;
+   if(!BuildReversalLotPlan(MultiNextGroupLotsRaw(group, group.total_lots), plan)
+      || plan.status != REVERSAL_LOT_SINGLE)
+      return false;
+   const double volume = VolumeNormalize(plan.first_lots);
    const double sl_distance = group.stop_points * Point;
    const double tp_distance = group.take_profit_points * Point;
    double pending_sl = 0.0;
@@ -3249,6 +3515,16 @@ bool MultiHandleReverseFill(MultiGroupState &group, const int type, const double
    return true;
   }
 
+bool ResetOrderGroupAfterOversizedReversal(MultiGroupState &group)
+  {
+   Print("Oversized reversal stopped group ", group.id,
+         "; start a fresh base-lot group on the next tick.");
+   if(!MultiDeletePending(group.id) || !MultiClosePositions(group.id))
+      return false;
+   group.active = false;
+   return true;
+  }
+
 bool MultiManageGroup(MultiGroupState &group)
   {
    if(MultiHandleInitialPendingFill(group))
@@ -3270,10 +3546,51 @@ bool MultiManageGroup(MultiGroupState &group)
       MarkMultiCandleTriggerBar();
       return false;
      }
+   if(group.transition_target_lots > 0.0)
+     {
+      const double tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
+      if(type != MultiSequenceDirection(group, group.cycle_index))
+         return true;
+      if(total + tolerance < group.transition_target_lots)
+        {
+         if(!MultiOpenMarket(group, type, group.transition_target_lots))
+            return true;
+         if(!MultiFindPosition(group.id, ticket, type, total, entry,
+                               stop_loss, take_profit))
+            return true;
+        }
+      if(total > group.transition_target_lots + tolerance)
+         return true;
+      group.transition_target_lots = 0.0;
+      group.anchor_price = entry;
+      group.last_entry = entry;
+      group.linear_extreme = entry;
+      group.first_lots = total;
+      group.total_lots = total;
+      group.grid_filled_levels = 0;
+      group.grid_filled_mask = 0;
+      group.grid_pending_level = 0;
+      group.grid_pending_ticket = -1;
+      group.grid_pending_price = 0.0;
+      group.favorable_grid_pending_ticket = -1;
+      group.favorable_grid_filled_levels = 0;
+      group.favorable_grid_filled_mask = 0;
+      group.favorable_grid_pending_level = 0;
+      group.favorable_grid_pending_price = 0.0;
+      group.grid_lots = group.previous_grid_lots > 0.0
+                        ? VolumeNormalize(group.previous_grid_lots * InpGridLotMultiplier)
+                        : total;
+     }
    if(MultiHandleReverseFill(group, type, entry, total))
      {
       if(g_reset_pending)
          return false;
+      if(!MultiStopsVerified(group, type)
+         && (!MultiSetStops(group, type) || !MultiStopsVerified(group, type)))
+        {
+         Print("Multi reverse fill protection is not verified; follow-up orders are paused.");
+         return true;
+        }
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
       return true;
@@ -3304,7 +3621,8 @@ bool MultiManageGroup(MultiGroupState &group)
          || (type == OP_SELL && reference > group.linear_extreme))
         {
          group.linear_extreme = reference;
-         MultiSetStops(group, type);
+         if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
+            return true;
         }
      }
    const double desired_stop_loss = MultiStopPrice(group, type);
@@ -3344,6 +3662,15 @@ bool MultiManageGroup(MultiGroupState &group)
          BeginResetAfterMaxReversals();
          return false;
         }
+      const double next_group_lots = MultiNextGroupLotsAfterStopRaw(group, group.total_lots);
+      ReversalLotPlan reversal_plan;
+      if(!BuildReversalLotPlan(next_group_lots, reversal_plan))
+         return true;
+      if(reversal_plan.status == REVERSAL_LOT_RESTART_GROUP)
+        {
+         ResetOrderGroupAfterOversizedReversal(group);
+         return false;
+        }
       if(!MultiDeletePending(group.id))
          return true;
       group.cumulative_loss_lots += group.total_lots;
@@ -3355,11 +3682,12 @@ bool MultiManageGroup(MultiGroupState &group)
       group.cycle_index = next_index;
       group.pending_index = -1;
       group.pending_ticket = -1;
-       if(!MultiOpenMarket(group, next_type,
-                           MultiNextGroupLotsAfterStop(group, group.total_lots)))
+      group.transition_target_lots = next_group_lots;
+      if(!MultiOpenMarket(group, next_type, next_group_lots))
          return false;
       if(!MultiFindPosition(group.id, ticket, type, total, entry, stop_loss, take_profit))
          return false;
+       group.transition_target_lots = 0.0;
        group.anchor_price = entry;
        group.last_entry = entry;
        group.linear_extreme = entry;
@@ -3373,9 +3701,19 @@ bool MultiManageGroup(MultiGroupState &group)
       group.grid_lots = group.previous_grid_lots > 0.0
                         ? VolumeNormalize(group.previous_grid_lots * 网格手数倍数)
                         : total;
-      MultiSetStops(group, type);
+      if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
+        {
+         Print("Multi transition protection is not verified; follow-up orders are paused.");
+         return true;
+        }
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
+      return true;
+     }
+   if(!MultiStopsVerified(group, type)
+      && (!MultiSetStops(group, type) || !MultiStopsVerified(group, type)))
+     {
+      Print("Multi position protection is not verified; follow-up orders are paused.");
       return true;
      }
    MultiHandleGridFill(group, type, total);
