@@ -2,18 +2,108 @@ from pathlib import Path
 import re
 
 import pytest
+import strategy_logic
 
 
 MT5_SOURCE = Path(__file__).resolve().parents[1] / "NoMatterRiseFall_MT5.mq5"
 MT4_SOURCE = Path(__file__).resolve().parents[1] / "NoMatterRiseFall_MT4.mq4"
+
+
+def test_v_enable_defaults_to_zero_in_both_eas():
+    for source_path in (MT4_SOURCE, MT5_SOURCE):
+        source = source_path.read_text(encoding="utf-8")
+        assert re.search(r"input\s+int\s+v_enable\s*=\s*0\b", source)
+
+
+def test_mt5_ui_switch_does_not_disable_trade_timer():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    init_body = re.search(
+        r"int OnInit\(\).*?\n\s*\}\n\nvoid OnTradeTransaction",
+        source,
+        flags=re.DOTALL,
+    ).group(0)
+    render_body = re.search(
+        r"void GuiRenderIfNeeded\(\).*?\n\s*\}\n\nvoid GuiMarkDraftChanged",
+        source,
+        flags=re.DOTALL,
+    ).group(0)
+    chart_event_body = re.search(
+        r"void OnChartEvent\(.*?\n\s*\}\n\nint OnInit",
+        source,
+        flags=re.DOTALL,
+    ).group(0)
+
+    assert re.search(r"if\s*\(v_enable\s*==\s*1\)", init_body)
+    assert "EventSetTimer(1)" in init_body
+    assert "if(v_enable != 1)" in render_body
+    assert "if(v_enable != 1)" in chart_event_body
 
 from strategy_logic import (
     CycleMode, Direction, DistanceMode, ExecutionOwnershipRegistry,
     ExposureSnapshot, GuiStateModel, OrderType, ParallelStrategyModel, PendingRecord,
     PreparedTransition, StrategyModel, TakeProfitMode, exposure_guard,
     average_candle_distances, normalize_pending_records, recover_prepared_transition,
-    cycle_directions, plan_reversal_lots,
+    cycle_directions, FirstDirectionMode, long_candle_direction,
+    plan_reversal_lots, resolve_first_direction,
 )
+
+
+@pytest.mark.parametrize(
+    ("mode", "price", "middle", "expected"),
+    [
+        (FirstDirectionMode.PRESET, 105.0, 100.0, Direction.SELL),
+        (FirstDirectionMode.BOLLINGER, 105.0, 100.0, Direction.BUY),
+        (FirstDirectionMode.BOLLINGER, 95.0, 100.0, Direction.SELL),
+        (FirstDirectionMode.BOLLINGER, 100.0, 100.0, None),
+    ],
+)
+def test_first_direction_resolution_uses_bollinger_middle(mode, price, middle, expected):
+    assert resolve_first_direction(mode, Direction.SELL, price, middle) is expected
+
+
+def test_bollinger_middle_tie_does_not_open_a_market_order():
+    assert resolve_first_direction(
+        FirstDirectionMode.BOLLINGER, Direction.BUY, 100.0, 100.0,
+    ) is None
+
+
+def test_bollinger_stop_distance_is_one_quarter_of_band_width():
+    resolver = getattr(strategy_logic, "bollinger_stop_distance_points", None)
+    assert callable(resolver)
+    assert resolver(upper=110.0, lower=90.0, point=1.0) == 5
+    assert resolver(upper=1.1010, lower=1.0990, point=0.0001) == 5
+
+
+def test_bollinger_stop_distance_rejects_invalid_band_data():
+    resolver = getattr(strategy_logic, "bollinger_stop_distance_points", None)
+    assert callable(resolver)
+    assert resolver(upper=100.0, lower=100.0, point=1.0) is None
+    assert resolver(upper=90.0, lower=110.0, point=1.0) is None
+    assert resolver(upper=110.0, lower=90.0, point=0.0) is None
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_bollinger_first_direction_inputs_and_tie_guard_exist(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "FirstDirectionMode" in source
+    assert "首单方向确定方式" in source
+    assert re.search(r"布林带周期\s*=\s*20", source)
+    assert re.search(r"布林带标准差\s*=\s*2\.0", source)
+    assert "iBands" in source
+    assert "FIRST_DIRECTION_BOLLINGER" in source
+    assert re.search(r"price\s*==\s*middle|middle\s*==\s*price|MathAbs\([^\n]*middle", source)
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_bollinger_distance_mode_uses_upper_lower_width_and_quarter_stop(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "DISTANCE_BOLLINGER_RANGE" in source
+    assert re.search(r"上轨|MODE_UPPER|base.*upper|upper", source, flags=re.IGNORECASE)
+    assert re.search(r"下轨|MODE_LOWER|base.*lower|lower", source, flags=re.IGNORECASE)
+    assert re.search(r"/\s*4\.0|/\s*4", source)
+    assert "GetBollingerDistancePoints" in source
 
 
 @pytest.mark.parametrize(
@@ -40,6 +130,35 @@ def test_reversal_lot_plan_enforces_terminal_broker_limits(total_lots, status, l
 def test_reversal_lot_plan_rejects_non_positive_volume():
     with pytest.raises(ValueError):
         plan_reversal_lots(0.0)
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_split_reversal_records_total_as_next_group_first_lot(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "g_group_total_lots = TotalPosition" in source
+    assert "g_group_first_lots = g_group_total_lots;" in source
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_multi_reverse_pending_is_reconciled_to_current_group_state(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    body = re.search(
+        r"bool MultiPlaceReversePending\(.*?\n\s*\}\n\n",
+        source,
+        flags=re.DOTALL,
+    ).group(0)
+
+    assert "MultiNormalizeReversePending" in body
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_initial_double_fill_closes_the_other_initial_position(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    assert "if(high_filled && low_filled)" in source
+    assert ("MultiClosePositionsExcept" in source
+            if source_name.endswith("MT5.mq5")
+            else "ClosePreviousGroupAfterReverseFill" in source)
 
 
 def test_mt5_gui_migrates_legacy_state_without_fingerprint_once():
@@ -109,7 +228,7 @@ def test_mt5_gui_exposes_every_input_parameter_on_an_editable_page():
     assert render_content, "MT5 GUI content renderer must remain discoverable"
     body = render_content.group(0)
     for key in (
-        "first_direction", "cycle_mode", "distance_mode", "order_type",
+        "first_direction", "first_direction_mode", "cycle_mode", "distance_mode", "order_type",
         "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
         "favorable_grid_enable",
         "initial_lots", "initial_lots_multiplier", "max_reversals",
@@ -117,6 +236,7 @@ def test_mt5_gui_exposes_every_input_parameter_on_an_editable_page():
         "take_profit_distance_points", "candle_min_range_points",
         "candle_max_range_points", "average_candle_count",
         "average_stop_multiplier", "average_take_profit_multiplier",
+        "bollinger_period", "bollinger_deviation",
         "magic_number", "order_comment",
         "start_time", "end_time",
     ):
@@ -129,7 +249,7 @@ def test_mt5_gui_uses_dropdown_option_lists_for_all_selectable_modes():
     assert "bool GuiHandleDropdownClick" in source
     assert '"dropdown."' in source
     for key in (
-        "first_direction", "cycle_mode", "distance_mode", "order_type",
+        "first_direction", "first_direction_mode", "cycle_mode", "distance_mode", "order_type",
         "candle_order_mode", "candle_enable_multiple", "take_profit_mode",
         "favorable_grid_enable",
     ):
@@ -786,6 +906,24 @@ def test_cycle_templates_cover_both_modes_and_first_directions():
         Direction.SELL, Direction.BUY, Direction.SELL,
         Direction.SELL, Direction.BUY, Direction.SELL,
     ]
+    assert cycle_directions(Direction.BUY, CycleMode.MODE_4) == [
+        Direction.BUY, Direction.SELL, Direction.SELL, Direction.BUY,
+        Direction.BUY, Direction.SELL, Direction.SELL,
+    ]
+    assert cycle_directions(Direction.SELL, CycleMode.MODE_4) == [
+        Direction.SELL, Direction.BUY, Direction.BUY, Direction.SELL,
+        Direction.SELL, Direction.BUY, Direction.BUY,
+    ]
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_cycle_mode_four_uses_a_seven_order_cycle_in_both_experts(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "CYCLE_MODE_4" in source
+    assert "首单多=多空空多多空空" in source
+    assert "首单空=空多多空空多多" in source
+    assert "CycleLength" in source
 
 
 def test_mode_one_buy_uses_sell_stop_then_sell_limit_for_the_two_sell_steps():
@@ -1015,6 +1153,56 @@ def test_initial_entry_is_allowed_only_inside_the_configured_time_window():
     }
 
 
+def test_initial_entry_is_allowed_when_any_operation_window_matches():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        operation_windows=[(8 * 60, 9 * 60), (13 * 60, 14 * 60), (0, 0)],
+    )
+
+    assert model.on_tick(1.1000, 1.1002, now_minute=10 * 60) == []
+    actions = model.on_tick(1.1000, 1.1002, now_minute=13 * 60)
+
+    assert actions[0]["kind"] == "market"
+
+
+def test_disabled_operation_window_does_not_allow_initial_entry():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        operation_windows=[(0, 0), (0, 0), (0, 0)],
+    )
+
+    assert model.on_tick(1.1000, 1.1002, now_minute=12 * 60) == []
+
+
+def test_cross_midnight_operation_window_matches_both_sides_of_midnight():
+    evening_model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        operation_windows=[(22 * 60, 2 * 60), (0, 0), (0, 0)],
+    )
+    morning_model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        operation_windows=[(22 * 60, 2 * 60), (0, 0), (0, 0)],
+    )
+
+    assert evening_model.on_tick(1.1000, 1.1002, now_minute=23 * 60)
+    assert morning_model.on_tick(1.1000, 1.1002, now_minute=1 * 60)
+
+
+def test_existing_position_is_managed_outside_operation_windows():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        operation_windows=[(8 * 60, 9 * 60), (0, 0), (0, 0)],
+    )
+
+    model.on_tick(1.1000, 1.1002, now_minute=8 * 60)
+    stop_price = model.position.stop_loss
+    actions = model.on_tick(
+        bid=stop_price, ask=stop_price + 0.0002, now_minute=12 * 60,
+    )
+
+    assert actions[2]["kind"] == "market"
+
+
 def test_existing_position_can_switch_groups_outside_the_initial_entry_window():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
@@ -1029,6 +1217,49 @@ def test_existing_position_can_switch_groups_outside_the_initial_entry_window():
 
     assert actions[2]["kind"] == "market"
     assert actions[2]["direction"] is Direction.SELL
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_expert_advisors_define_three_operation_windows(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    for parameter in ("时段2开始时间", "时段2结束时间", "时段3开始时间", "时段3结束时间"):
+        assert f"input string         {parameter}" in source
+    assert "MAX_OPERATION_WINDOWS 3" in source
+    assert "for(int window = 0; window < MAX_OPERATION_WINDOWS; window++)" in source
+    assert "start_minutes == 0 && end_minutes == 0" in source
+
+
+def test_mt5_gui_exposes_all_three_operation_windows():
+    source = MT5_SOURCE.read_text(encoding="utf-8")
+    render_content = re.search(
+        r"bool GuiRenderContent\(\).*?\n\s*\}\n\nbool GuiRenderActions",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert render_content
+    body = render_content.group(0)
+    for key in (
+        "start_time", "end_time", "start_time_2", "end_time_2",
+        "start_time_3", "end_time_3",
+    ):
+        assert f'"{key}"' in body
+    for label in ("时段1开始时间", "时段1结束时间", "时段2开始时间",
+                  "时段2结束时间", "时段3开始时间", "时段3结束时间"):
+        assert label in body
+    assert "GuiScheduleSummaryText" in source
+
+
+def test_operation_window_documentation_explains_all_window_rules():
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    manual = (Path(__file__).parents[1] / "EA软件使用手册.html").read_text(encoding="utf-8")
+
+    for document in (readme, manual):
+        assert "时段2" in document
+        assert "时段3" in document
+        assert "00:00-00:00" in document
+        assert "跨午夜" in document
 
 
 def test_first_group_grid_add_uses_initial_lot_and_moves_tp_and_next_group_lot():
@@ -1263,6 +1494,99 @@ def test_favorable_grid_fill_updates_the_same_group_total_and_tp_flow():
     assert model.position.take_profit > model.position.entry
 
 
+def test_dynamic_stop_moves_buy_stop_only_for_favorable_grid_levels():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_stop = model.position.stop_loss
+    spacing = 500 * 0.0001 / 4
+
+    model.fill_grid_pending(level=1)
+    assert model.position.stop_loss == pytest.approx(initial_stop)
+
+    model.fill_favorable_grid_pending(level=1)
+    assert model.position.stop_loss == pytest.approx(initial_stop + spacing)
+
+    model.fill_favorable_grid_pending(level=2)
+    assert model.position.stop_loss == pytest.approx(initial_stop + 2 * spacing)
+
+
+def test_dynamic_stop_moves_sell_stop_down_for_favorable_grid_levels():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_stop = model.position.stop_loss
+    spacing = 500 * 0.0001 / 4
+
+    model.fill_favorable_grid_pending(level=1)
+    assert model.position.stop_loss == pytest.approx(initial_stop - spacing)
+
+
+def test_dynamic_stop_disabled_keeps_stop_fixed_after_favorable_fill():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_stop = model.position.stop_loss
+    model.fill_favorable_grid_pending(level=1)
+
+    assert model.position.stop_loss == pytest.approx(initial_stop)
+
+
+def test_dynamic_stop_uses_highest_favorable_level_when_price_skips_a_level():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_stop = model.position.stop_loss
+    spacing = 500 * 0.0001 / 4
+    model.fill_favorable_grid_pending(level=2)
+
+    assert model.position.stop_loss == pytest.approx(initial_stop + 2 * spacing)
+
+
+def test_dynamic_stop_removes_adverse_grid_levels_at_or_beyond_new_stop():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.fill_favorable_grid_pending(level=2)
+
+    assert set(model.grid_pendings) == {1}
+    assert all(pending.price > model.position.stop_loss
+               for pending in model.grid_pendings.values())
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_dynamic_stop_source_contract_is_present_for_both_platforms(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    assert "input int            动态止损 = 0;" in source
+    assert ("dynamic_stop_loss_enable" in source
+            if source_name.endswith("MT5.mq5")
+            else "DynamicStopLossEnable" in source)
+    assert "动态止损必须为0或1" in source
+    assert "favorable_grid_filled_mask" in source
+    assert "GridLevelBit" in source
+    assert "动态止损" in source
+    assert "MultiStopPrice" in source
+    if source_name.endswith("MT5.mq5"):
+        assert "GuiConfigLegacyFingerprint" in source
+        assert "Migrated legacy fingerprint after adding dynamic stop-loss" in source
+
+
 def test_grid_count_is_bounded_by_grid_fill_mask_capacity():
     mt4_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT4.mq4").read_text(encoding="utf-8")
     mt5_source = Path(__file__).parents[1].joinpath("NoMatterRiseFall_MT5.mq5").read_text(encoding="utf-8")
@@ -1436,6 +1760,66 @@ def test_average_distance_mode_does_not_use_single_candle_min_max_filter():
 
     assert actions[0]["kind"] == "market"
     assert model.group_stop_points == 150
+
+
+def test_long_candle_bullish_k1_opens_market_buy_with_fixed_distances():
+    model = StrategyModel(
+        Direction.SELL, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.LONG_CANDLE_MARKET,
+    )
+
+    actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=1000,
+        k1_open=1.0000, k1_close=1.0100,
+        long_candle_ranges=[900] * 20,
+    )
+
+    assert actions[0] == {"kind": "market", "direction": Direction.BUY, "lots": 0.01}
+    assert model.group_stop_points == 500
+    assert model.group_take_profit_points == 500
+    assert model.sequence[0] is Direction.BUY
+
+
+def test_long_candle_bearish_k1_opens_market_sell():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        distance_mode=DistanceMode.LONG_CANDLE_MARKET,
+    )
+
+    actions = model.on_tick(
+        bid=1.1000, ask=1.1002, candle_range_points=1000,
+        k1_open=1.0100, k1_close=1.0000,
+        long_candle_ranges=[900] * 20,
+    )
+
+    assert actions[0]["direction"] is Direction.SELL
+    assert model.sequence[0] is Direction.SELL
+
+
+@pytest.mark.parametrize(
+    ("k1_open", "k1_close", "k1_range", "prior_ranges"),
+    [
+        (1.0, 1.1, 900, [1000] + [900] * 19),
+        (1.0, 1.0, 1000, [900] * 20),
+        (1.0, 1.1, 1000, [900] * 19),
+    ],
+)
+def test_long_candle_signal_requires_long_non_doji_k1(
+    k1_open, k1_close, k1_range, prior_ranges,
+):
+    assert long_candle_direction(
+        k1_open, k1_close, k1_range, prior_ranges,
+    ) is None
+
+
+def test_mt4_and_mt5_expose_matching_long_candle_market_contract():
+    for source_path in (MT4_SOURCE, MT5_SOURCE):
+        source = source_path.read_text(encoding="utf-8")
+        assert "DISTANCE_LONG_CANDLE" in source
+        assert "K1" in source
+        assert "K2" in source or "shift = 2" in source
+        assert "市价做多" in source or "ORDER_TYPE_BUY" in source or "OP_BUY" in source
+        assert "市价做空" in source or "ORDER_TYPE_SELL" in source or "OP_SELL" in source
 
 
 def test_mt4_and_mt5_expose_matching_average_distance_contract():
@@ -1808,6 +2192,28 @@ def test_all_four_combinations_run_a_full_six_order_cycle(initial_direction, cyc
         else:
             expected_pending_types.append("SELL_STOP")
     assert pending_types == expected_pending_types
+
+
+@pytest.mark.parametrize("initial_direction", [Direction.BUY, Direction.SELL])
+def test_cycle_mode_four_runs_a_full_seven_order_cycle(initial_direction):
+    model = StrategyModel(
+        initial_direction, CycleMode.MODE_4, 0.01, 2.0, 500, 0.0001,
+        max_reversals=7, first_order_lot_type=1,
+    )
+    opened = []
+
+    actions = model.on_tick(bid=1.1000, ask=1.1002)
+    opened.append(actions[0]["direction"])
+    for _ in range(6):
+        position = model.position
+        if position.direction is Direction.BUY:
+            bid, ask = position.stop_loss, position.stop_loss + 0.0002
+        else:
+            bid, ask = position.stop_loss - 0.0002, position.stop_loss
+        actions = model.on_tick(bid=bid, ask=ask)
+        opened.append(actions[2]["direction"])
+
+    assert opened == cycle_directions(initial_direction, CycleMode.MODE_4)
 
 
 def test_no_money_closes_group_resets_state_and_restarts_on_next_tick():
@@ -2260,6 +2666,92 @@ def test_prepared_transition_sends_exactly_one_order_when_result_is_absent():
 
 
 @pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_stop_transition_never_waits_for_an_unfilled_reverse_pending(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+
+    stop_handler = source.split("if(StopReached", 1)[1].split(
+        "EnsureNextPending", 1,
+    )[0]
+    assert "&& !has_state_pending && g_pending_ticket" not in stop_handler
+
+    multi_stop_handler = source.split(
+        "if((type == POSITION_TYPE_BUY && SymbolInfoDouble(_Symbol, SYMBOL_BID) <= desired_stop_loss)",
+        1,
+    )[1] if source_name.endswith("MT5.mq5") else source.split(
+        "if((type == OP_BUY && Bid <= desired_stop_loss)",
+        1,
+    )[1]
+    assert "REVERSE_PENDING_UNKNOWN" not in multi_stop_handler.split(
+        "if(!MultiStopsVerified", 1,
+    )[0]
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_broker_closed_stop_recovers_before_starting_a_base_lot_group(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    manage = source.split("void Manage", 1)[1].split("struct MultiGroupState", 1)[0]
+
+    assert "RecoverFlatGroupAfterBrokerStop" in source
+    assert manage.index("RecoverFlatGroupAfterBrokerStop") < manage.index(
+        "const bool has_pending = HasOurPending()",
+    )
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_multi_group_broker_stop_recovers_before_removing_the_group(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    multi_manage = source.split("bool MultiManageGroup", 1)[1].split(
+        "bool MultiTryOpenCandleGroup", 1,
+    )[0]
+
+    assert "MultiRecoverFlatGroupAfterBrokerStop" in source
+    assert "MultiRecoverFlatGroupAfterBrokerStop(group)" in multi_manage
+    assert multi_manage.index("MultiRecoverFlatGroupAfterBrokerStop(group)") < multi_manage.index(
+        "group.active = false",
+    )
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_reverse_fill_closes_the_previous_group_before_promoting_the_new_group(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    manage = source.split("void Manage()", 1)[1].split(
+        "void ManageMultipleCandleGroups", 1,
+    )[0]
+    pending_fill = manage.split("if(pending_filled)", 1)[1].split(
+        "volume = Total", 1,
+    )[0]
+
+    assert "ClosePreviousGroupAfterReverseFill" in source
+    assert pending_fill.index("ClosePreviousGroupAfterReverseFill") < pending_fill.index(
+        "g_pending_index = -1",
+    )
+
+    multi_fill = source.split("bool MultiHandleReverseFill", 1)[1].split(
+        "bool ResetOrderGroupAfterOversizedReversal", 1,
+    )[0]
+    assert "MultiClosePositionsExcept" in source
+    assert multi_fill.index("MultiClosePositionsExcept") < multi_fill.index(
+        "group.pending_index = -1",
+    )
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
+def test_filled_reverse_waits_for_the_market_position_before_starting_a_new_cycle(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    manage = source.split("void Manage()", 1)[1].split(
+        "void ManageMultipleCandleGroups", 1,
+    )[0]
+    flat_recovery = manage.split("if(RecoverFlatGroupAfterBrokerStop())", 1)[1]
+
+    assert flat_recovery.index("GetReversePendingStatus()") < flat_recovery.index(
+        "const bool has_pending = HasOurPending()",
+    )
+    assert "REVERSE_PENDING_FILLED" in flat_recovery.split(
+        "const bool has_pending = HasOurPending()", 1,
+    )[0]
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT5.mq5", "NoMatterRiseFall_MT4.mq4"])
 def test_dedup_source_contract(source_name):
     source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
 
@@ -2417,7 +2909,7 @@ def test_multi_once_per_bar_does_not_open_another_group_until_next_candle_after_
         "MarkMultiCandleTriggerBar"
     )
 
-    orphan_start = "if(!has_position" if source_name.endswith(".mq5") else "if(!MultiFindPosition"
+    orphan_start = "if(!has_position" if source_name.endswith(".mq5") else "bool has_position ="
     orphan_path = multi_manage.split(orphan_start, 1)[1].split(
         "if(MultiHandleReverseFill", 1,
     )[0]
@@ -2492,6 +2984,183 @@ def test_mt5_and_mt4_have_a_fast_initial_oco_event_path(source_name):
     assert "void OnTimer()" in source
     if source_name.endswith(".mq5"):
         assert "void OnTradeTransaction" in source
+
+
+def test_mt5_market_entry_has_a_transaction_confirmed_single_group_request_lock():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    assert "StrategyState" in source
+    assert "g_trade_request_in_flight" in source
+    assert "g_trade_request_signal_id" in source
+    assert "g_trade_request_bar_time" in source
+    assert "OnTradeTransaction" in source
+    callback = source.split("void OnTradeTransaction", 1)[1].split(
+        "void OnTimer", 1,
+    )[0]
+    assert "ConfirmTradeRequest" in callback
+
+    manage = source.split("void Manage()", 1)[1].split(
+        "struct MultiGroupState", 1,
+    )[0]
+    initial_entry = manage.split("if(OpenMarket(first_direction, initial_lots))", 1)[0]
+    assert "g_trade_request_in_flight" in initial_entry
+
+
+def test_mt5_stop_prices_are_tick_aligned_and_validated_against_live_constraints():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    assert "double NormalizePriceToTick" in source
+    assert "bool ValidateStops" in source
+    assert "SYMBOL_TRADE_STOPS_LEVEL" in source
+    assert "SYMBOL_TRADE_FREEZE_LEVEL" in source
+    assert "SYMBOL_TRADE_TICK_SIZE" in source
+    assert "bool SetGroupStops" in source
+    set_group_stops = source.split("bool SetGroupStops", 1)[1].split(
+        "bool StopsVerified", 1,
+    )[0]
+    assert "ValidateStops" in set_group_stops
+
+    for function_name, next_name in (
+        ("bool PlaceInitialPendingOrder", "bool PlaceInitialPendingPair"),
+        ("bool PlaceNextPending", "bool StopReached"),
+        ("bool PlaceGridPending", "bool PrepareGridPendingForCurrentStop"),
+    ):
+        body = source.split(function_name, 1)[1].split(next_name, 1)[0]
+        assert "ValidateStops" in body or "BuildStopsForEntry" in body, function_name
+
+
+def test_mt5_grid_fill_lookup_does_not_scan_all_history_on_each_check():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    for function_name, next_name in (
+        ("bool FindFilledGridOrder", "bool PlaceGridPending"),
+        ("bool MultiFindFilledGridOrder", "void MultiSaveGroup"),
+    ):
+        body = source.split(function_name, 1)[1].split(next_name, 1)[0]
+        assert "HistorySelect(0, TimeCurrent())" not in body, function_name
+        assert "HistoryOrderSelect" in body or "GridFill" in body, function_name
+
+
+def test_mt5_multi_group_persistence_is_dirty_guarded():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    struct = source.split("struct MultiGroupState", 1)[1].split("};", 1)[0]
+    assert "dirty" in struct
+
+    save = source.split("void MultiSaveGroup", 1)[1].split(
+        "void MultiLoadGroup", 1,
+    )[0]
+    assert "if(!group.dirty)" in save
+    assert "group.dirty = false" in save
+
+
+def test_mt4_grid_fill_lookup_does_not_scan_all_history_on_each_check():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT4.mq4").read_text(
+        encoding="utf-8",
+    )
+
+    for function_name, next_name in (
+        ("bool FindFilledGridOrder", "bool PlaceGridPending"),
+        ("bool MultiFindFilledGridOrder", "int MultiGridFilledLevelCount"),
+    ):
+        body = source.split(function_name, 1)[1].split(next_name, 1)[0]
+        assert "OrdersHistoryTotal()" not in body, function_name
+        assert "OrderSelect" in body
+        assert "grid_order_ticket" in body or "MultiGridOrderTicket" in body
+
+
+def test_mt4_multi_group_persistence_is_dirty_guarded():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT4.mq4").read_text(
+        encoding="utf-8",
+    )
+
+    struct = source.split("struct MultiGroupState", 1)[1].split("};", 1)[0]
+    assert "dirty" in struct
+
+    save = source.split("void MultiSaveGroup", 1)[1].split(
+        "void MultiLoadGroups", 1,
+    )[0]
+    assert "if(!group.dirty)" in save
+    assert "group.dirty = false" in save
+
+
+def test_mt5_duplicate_single_group_exposure_is_recovered_without_manual_lockout():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    assert "bool RecoverDuplicateSingleGroupExposure" in source
+    manage = source.split("void Manage()", 1)[1].split(
+        "struct MultiGroupState", 1,
+    )[0]
+    duplicate_branch = manage.split("if(HasDuplicateSingleGroupExposure())", 1)[1].split(
+        "g_duplicate_exposure_logged = false;", 1,
+    )[0]
+    assert "RecoverDuplicateSingleGroupExposure" in duplicate_branch
+    assert "PositionClose" in source
+    assert "Resolve duplicate positions manually" not in duplicate_branch
+
+
+def test_mt5_multi_group_market_requests_are_locked_and_confirmed_per_group():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    struct = source.split("struct MultiGroupState", 1)[1].split(
+        "};", 1,
+    )[0]
+    for field in (
+        "request_in_flight",
+        "request_position_ticket",
+        "request_signal_id",
+        "signal_consumed",
+        "StrategyState state",
+    ):
+        assert field in struct
+
+    send = source.split("bool MultiSendMarketLeg", 1)[1].split(
+        "bool MultiOpenMarket", 1,
+    )[0]
+    assert "group.request_in_flight" in send
+    assert "MultiConfirmTradeRequest" in send
+
+    manage = source.split("bool MultiManageGroup", 1)[1].split(
+        "void ProcessInitialPendingFillEvent", 1,
+    )[0]
+    assert "group.request_in_flight" in manage
+
+
+def test_mt5_has_a_periodic_watchdog_for_silent_state_lockout_diagnosis():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    assert "void EmitStrategyWatchdog" in source
+    watchdog = source.split("void EmitStrategyWatchdog", 1)[1].split(
+        "void OnTradeTransaction", 1,
+    )[0]
+    for field in ("OpenPositions", "PendingOrders", "PausedGroups", "LastTradeTime"):
+        assert field in watchdog
+    assert "EmitStrategyWatchdog();" in source
+
+
+def test_mt5_in_flight_diagnostics_are_rate_limited():
+    source = (Path(__file__).parents[1] / "NoMatterRiseFall_MT5.mq5").read_text(
+        encoding="utf-8",
+    )
+
+    assert "g_last_single_request_wait_log" in source
+    assert "g_last_multi_request_wait_log" in source
+    assert "now - g_last_single_request_wait_log >= 10" in source
+    assert "now - g_last_multi_request_wait_log >= 10" in source
 
 
 def test_gui_draft_does_not_change_applied_config_until_apply():

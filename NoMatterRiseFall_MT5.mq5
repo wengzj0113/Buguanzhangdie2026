@@ -10,18 +10,27 @@ enum FirstDirection
    FIRST_SELL = 1  // 首单做空
   };
 
+enum FirstDirectionMode
+  {
+   FIRST_DIRECTION_PRESET = 0,     // 使用预设首单方向
+   FIRST_DIRECTION_BOLLINGER = 1   // 按布林带中轨判断首单方向
+  };
+
 enum CycleMode
   {
    CYCLE_MODE_1 = 0,  // 模式一：首单多=多空空多空空；首单空=空多多空多多
    CYCLE_MODE_2 = 1,  // 模式二：首单多=多空多空多多；首单空=空多空多空空
-   CYCLE_MODE_3 = 2   // 模式三：首单多=多空多多空多；首单空=空多空空多空
+   CYCLE_MODE_3 = 2,  // 模式三：首单多=多空多多空多；首单空=空多空空多空
+   CYCLE_MODE_4 = 3   // 模式四：首单多=多空空多多空空；首单空=空多多空空多多
   };
 
 enum DistanceMode
   {
    DISTANCE_FIXED = 0,         // 固定止盈止损距离
    DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
-   DISTANCE_AVERAGE_CANDLE_RANGE = 2 // 过去N根K线平均高度
+   DISTANCE_AVERAGE_CANDLE_RANGE = 2, // 过去N根K线平均高度
+   DISTANCE_LONG_CANDLE = 3,   // 长K线方向市价入场，距离使用固定值
+   DISTANCE_BOLLINGER_RANGE = 4 // 当前布林带上下轨距离的四分之一作为止损
   };
 
 enum OrderTypeMode
@@ -57,11 +66,29 @@ enum TransitionPhase
    TRANSITION_COMPLETE = 2
   };
 
+enum StrategyState
+  {
+   STATE_IDLE = 0,
+   STATE_SIGNAL_READY = 1,
+   STATE_ORDER_SENDING = 2,
+   STATE_POSITION_ACTIVE = 3,
+   STATE_PROTECTION_PENDING = 4,
+   STATE_RECOVERY = 5,
+   STATE_PAUSED_TEMP = 6,
+   STATE_FATAL = 7
+  };
+
 // 首单方向：做多或做空
 input FirstDirection 首单方向 = FIRST_BUY;
-// 固定距离和K线高度模式均使用用户选择的循环模式
+// 首单方向确定方式：预设方向或按当前价格相对布林带中轨判断
+input FirstDirectionMode 首单方向确定方式 = FIRST_DIRECTION_PRESET;
+// 首单方向判断使用的布林带周期（标准值为20）
+input int            布林带周期 = 20;
+// 首单方向判断使用的布林带标准差倍数（标准值为2.0）
+input double         布林带标准差 = 2.0;
+// 固定距离、平均K线高度和长K线模式均使用用户选择的循环模式
 input CycleMode      循环模式 = CYCLE_MODE_1;
-// 止盈止损距离来源：固定距离、上一根K线高度或过去N根K线平均高度
+// 入场/止盈止损距离模式：固定距离、K线高度、平均K线高度、长K线市价或布林带区间
 input DistanceMode   距离模式 = DISTANCE_FIXED;
 // K线高度模式下的正向或逆向开单方式
 input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
@@ -85,6 +112,10 @@ input int            最大反手次数 = 5;
 input int            网格数量 = 2;
 // 价格向有利方向移动时是否网格加单：0=关闭，1=开启
 input int            有利方向加单 = 0;
+// 有利方向网格成交后是否同步移动止损：0=关闭，1=开启
+input int            动态止损 = 0;
+// 可视化界面开关：0=关闭，1=开启
+input int            v_enable = 0;
 // 下一订单组网格手数相对上一组的倍数
 input double         网格手数倍数 = 2.0;
 // 固定距离模式下的止损点数
@@ -109,6 +140,14 @@ input string         订单注释 = "不管涨跌";
 input string         开始时间 = "08:00";
 // 允许开首单的结束时间，使用平台服务器时间，格式为 时:分
 input string         结束时间 = "23:00";
+// 时段2允许开首单的开始时间；00:00-00:00表示关闭
+input string         时段2开始时间 = "00:00";
+// 时段2允许开首单的结束时间；支持跨午夜
+input string         时段2结束时间 = "00:00";
+// 时段3允许开首单的开始时间；00:00-00:00表示关闭
+input string         时段3开始时间 = "00:00";
+// 时段3允许开首单的结束时间；支持跨午夜
+input string         时段3结束时间 = "00:00";
 
 // 内部兼容映射：以下名称不显示在参数设置中，仅用于保持既有逻辑代码兼容。
 #define InpFirstDirection 首单方向
@@ -123,6 +162,7 @@ input string         结束时间 = "23:00";
 #define FirstOrderMult 首单类型2倍数
 #define InpGridCount 网格数量
 #define FavorableGridEnable 有利方向加单
+#define DynamicStopLossEnable 动态止损
 #define MAX_GRID_COUNT 63
 #define MAX_SINGLE_REVERSAL_LOTS 100.0
 #define MAX_GROUP_REVERSAL_LOTS 200.0
@@ -149,6 +189,7 @@ struct ReversalLotPlan
 #define InpCandleMaxRangePoints K线最大高度
 #define InpMagicNumber 订单识别编号
 #define InpOrderComment 订单注释
+#define MAX_OPERATION_WINDOWS 3
 
 enum GuiPage
   {
@@ -201,6 +242,9 @@ const int GUI_EDITABLE_OPTION_MAX = 24;
 struct GuiConfig
   {
    FirstDirection first_direction;
+   FirstDirectionMode first_direction_mode;
+   int bollinger_period;
+   double bollinger_deviation;
    CycleMode cycle_mode;
    DistanceMode distance_mode;
    OrderTypeMode order_type;
@@ -212,6 +256,7 @@ struct GuiConfig
    int    first_order_lot_type;
    double first_order_mult;
    int    favorable_grid_enable;
+   int    dynamic_stop_loss_enable;
    int max_reversals;
    int grid_count;
    double grid_lot_multiplier;
@@ -226,6 +271,10 @@ struct GuiConfig
    string order_comment;
    string start_time;
    string end_time;
+   string start_time_2;
+   string end_time_2;
+   string start_time_3;
+   string end_time_3;
   };
 
 GuiConfig       g_gui_applied_config;
@@ -272,6 +321,30 @@ int    g_execution_lock_handle = INVALID_HANDLE;
 bool   g_duplicate_exposure_logged = false;
 int    g_transition_phase = TRANSITION_NONE;
 long   g_transition_id = 0;
+StrategyState g_strategy_state = STATE_IDLE;
+bool   g_trade_request_in_flight = false;
+ulong  g_trade_request_order_ticket = 0;
+ulong  g_trade_request_position_ticket = 0;
+long   g_trade_request_signal_id = 0;
+datetime g_trade_request_bar_time = 0;
+long   g_trade_request_direction = ORDER_TYPE_BUY;
+double g_trade_request_volume = 0.0;
+datetime g_trade_request_started = 0;
+int    g_trade_request_retry_count = 0;
+datetime g_last_single_request_wait_log = 0;
+datetime g_last_multi_request_wait_log = 0;
+datetime g_last_trade_time = 0;
+datetime g_last_watchdog_time = 0;
+bool   g_signal_consumed = false;
+long   g_signal_id = 0;
+datetime g_signal_bar_time = 0;
+long   g_signal_direction = ORDER_TYPE_BUY;
+int    g_signal_retry_count = 0;
+datetime g_signal_retry_after = 0;
+ulong  g_position_ticket = 0;
+int    g_protection_retry_count = 0;
+datetime g_protection_retry_after = 0;
+string g_protection_pause_reason = "";
 datetime g_last_candle_entry_bar_time = 0;
 int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
@@ -293,9 +366,17 @@ int    g_favorable_grid_filled_levels = 0;
 long   g_favorable_grid_filled_mask = 0;
 int    g_favorable_grid_pending_level = 0;
 double g_favorable_grid_pending_price = 0.0;
+ulong  g_grid_order_tickets[MAX_GRID_COUNT];
+ulong  g_favorable_grid_order_tickets[MAX_GRID_COUNT];
 bool   g_reset_pending = false;
-int    g_start_operation_minutes = 0;
-int    g_end_operation_minutes = 24 * 60;
+int    g_start_operation_minutes[MAX_OPERATION_WINDOWS];
+int    g_end_operation_minutes[MAX_OPERATION_WINDOWS];
+
+void ClearGridOrderTicketCache()
+  {
+   ArrayInitialize(g_grid_order_tickets, 0);
+   ArrayInitialize(g_favorable_grid_order_tickets, 0);
+  }
 
 void MultiClearAll();
 string SanitizeExecutionLockPart(string value);
@@ -466,7 +547,8 @@ string GuiConfigFingerprintText(const GuiConfig &config)
            + IntegerToString(config.first_order_lot_type) + "|"
            + DoubleToString(config.first_order_mult, 16) + "|"
            + IntegerToString(config.favorable_grid_enable) + "|"
-          + IntegerToString(config.max_reversals) + "|"
+           + IntegerToString(config.dynamic_stop_loss_enable) + "|"
+           + IntegerToString(config.max_reversals) + "|"
           + IntegerToString(config.grid_count) + "|"
           + DoubleToString(config.grid_lot_multiplier, 16) + "|"
           + IntegerToString(config.stop_loss_distance_points) + "|"
@@ -477,7 +559,12 @@ string GuiConfigFingerprintText(const GuiConfig &config)
           + DoubleToString(config.average_stop_multiplier, 16) + "|"
           + DoubleToString(config.average_take_profit_multiplier, 16) + "|"
           + IntegerToString((long)config.magic_number) + "|"
-          + config.order_comment + "|" + config.start_time + "|" + config.end_time;
+          + config.order_comment + "|" + config.start_time + "|" + config.end_time
+          + "|" + config.start_time_2 + "|" + config.end_time_2
+          + "|" + config.start_time_3 + "|" + config.end_time_3
+          + "|" + IntegerToString((int)config.first_direction_mode)
+          + "|" + IntegerToString(config.bollinger_period)
+          + "|" + DoubleToString(config.bollinger_deviation, 16);
   }
 
 double GuiConfigFingerprint(const GuiConfig &config)
@@ -493,6 +580,96 @@ double GuiConfigFingerprint(const GuiConfig &config)
 double GuiConfigFingerprint2(const GuiConfig &config)
   {
    const string text = GuiConfigFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index),
+                     1000000009.0);
+   return hash;
+  }
+
+string GuiConfigBeforeBollingerFingerprintText(const GuiConfig &config)
+  {
+   string text = GuiConfigFingerprintText(config);
+   const string suffix = "|" + IntegerToString((int)config.first_direction_mode)
+                         + "|" + IntegerToString(config.bollinger_period)
+                         + "|" + DoubleToString(config.bollinger_deviation, 16);
+   if(StringLen(text) >= StringLen(suffix))
+      text = StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+   return text;
+  }
+
+string GuiConfigPreOperationWindowsFingerprintText(const GuiConfig &config)
+  {
+   string text = GuiConfigBeforeBollingerFingerprintText(config);
+   const string suffix = "|" + config.start_time_2 + "|" + config.end_time_2
+                         + "|" + config.start_time_3 + "|" + config.end_time_3;
+   if(StringLen(text) >= StringLen(suffix))
+      text = StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+   return text;
+  }
+
+double GuiConfigBeforeBollingerFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index),
+                     1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeBollingerFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index),
+                     1000000009.0);
+   return hash;
+  }
+
+double GuiConfigPreOperationWindowsFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigPreOperationWindowsFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index),
+                     1000000007.0);
+   return hash;
+  }
+
+double GuiConfigPreOperationWindowsFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigPreOperationWindowsFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index),
+                     1000000009.0);
+   return hash;
+  }
+
+string GuiConfigLegacyFingerprintText(const GuiConfig &config)
+  {
+   string text = GuiConfigPreOperationWindowsFingerprintText(config);
+   const string marker = "|" + IntegerToString(config.dynamic_stop_loss_enable)
+                         + "|" + IntegerToString(config.max_reversals) + "|";
+   StringReplace(text, marker, "|" + IntegerToString(config.max_reversals) + "|");
+   return text;
+  }
+
+double GuiConfigLegacyFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigLegacyFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index),
+                     1000000007.0);
+   return hash;
+  }
+
+double GuiConfigLegacyFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigLegacyFingerprintText(config);
    double hash = 1000033.0;
    for(int index = 0; index < StringLen(text); index++)
       hash = MathMod(hash * 263.0 + StringGetCharacter(text, index),
@@ -532,12 +709,56 @@ bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
      {
       return MigrateLegacyGuiConfig(config, error);
      }
-   if(MathAbs(GlobalVariableGet(fingerprint_key)
-              - GuiConfigFingerprint(config)) > 0.5
-      || MathAbs(GlobalVariableGet(fingerprint2_key)
-                 - GuiConfigFingerprint2(config)) > 0.5)
-     {
-      error = "Cannot safely recover magic/order id "
+    const double persisted_fingerprint = GlobalVariableGet(fingerprint_key);
+    const double persisted_fingerprint2 = GlobalVariableGet(fingerprint2_key);
+    const bool current_match = MathAbs(persisted_fingerprint
+                                       - GuiConfigFingerprint(config)) <= 0.5
+                               && MathAbs(persisted_fingerprint2
+                                          - GuiConfigFingerprint2(config)) <= 0.5;
+    const bool pre_operation_windows_match = MathAbs(persisted_fingerprint
+                                                     - GuiConfigPreOperationWindowsFingerprint(config)) <= 0.5
+                                             && MathAbs(persisted_fingerprint2
+                                                        - GuiConfigPreOperationWindowsFingerprint2(config)) <= 0.5;
+    if(!current_match && pre_operation_windows_match)
+      {
+       if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+          || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+         {
+          error = "Failed to migrate the persisted configuration after adding operation windows.";
+          return false;
+         }
+       Print("Migrated legacy fingerprint after adding operation windows");
+       return true;
+      }
+    if(!current_match
+       && MathAbs(persisted_fingerprint - GuiConfigBeforeBollingerFingerprint(config)) <= 0.5
+       && MathAbs(persisted_fingerprint2 - GuiConfigBeforeBollingerFingerprint2(config)) <= 0.5)
+      {
+       if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+          || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+         {
+          error = "Failed to migrate the persisted configuration after adding Bollinger direction settings.";
+          return false;
+         }
+       Print("Migrated legacy fingerprint after adding Bollinger direction settings");
+       return true;
+      }
+    if(!current_match && config.dynamic_stop_loss_enable == 0
+       && MathAbs(persisted_fingerprint - GuiConfigLegacyFingerprint(config)) <= 0.5
+       && MathAbs(persisted_fingerprint2 - GuiConfigLegacyFingerprint2(config)) <= 0.5)
+      {
+       if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+          || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+         {
+          error = "Failed to migrate the persisted configuration fingerprint after adding dynamic stop-loss.";
+          return false;
+         }
+       Print("Migrated legacy fingerprint after adding dynamic stop-loss");
+       return true;
+      }
+    if(!current_match)
+      {
+       error = "Cannot safely recover magic/order id "
               + IntegerToString((long)config.magic_number)
               + "; input GUI configuration does not match the persisted active configuration.";
       return false;
@@ -617,6 +838,10 @@ void SaveState()
    GlobalVariableSet(prefix + ".reset", g_reset_pending ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".transitionphase", (double)g_transition_phase);
    GlobalVariableSet(prefix + ".transitionid", (double)g_transition_id);
+   GlobalVariableSet(prefix + ".signalconsumed", g_signal_consumed ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".signalid", (double)g_signal_id);
+   GlobalVariableSet(prefix + ".signalbar", (double)g_signal_bar_time);
+   GlobalVariableSet(prefix + ".signaldirection", (double)g_signal_direction);
    if(!GlobalVariableSet(prefix + ".configfingerprint",
                          GuiConfigFingerprint(g_gui_applied_config))
       || !GlobalVariableSet(prefix + ".configfingerprint2",
@@ -659,6 +884,10 @@ void ClearState()
    GlobalVariableDel(prefix + ".reset");
    GlobalVariableDel(prefix + ".transitionphase");
    GlobalVariableDel(prefix + ".transitionid");
+   GlobalVariableDel(prefix + ".signalconsumed");
+   GlobalVariableDel(prefix + ".signalid");
+   GlobalVariableDel(prefix + ".signalbar");
+   GlobalVariableDel(prefix + ".signaldirection");
    GlobalVariableDel(prefix + ".configfingerprint");
    GlobalVariableDel(prefix + ".configfingerprint2");
    g_had_position = false;
@@ -677,6 +906,26 @@ void ClearState()
    g_transition_phase = TRANSITION_NONE;
    g_transition_id = 0;
    g_reset_pending = false;
+   g_strategy_state = STATE_IDLE;
+   g_trade_request_in_flight = false;
+   g_trade_request_order_ticket = 0;
+   g_trade_request_position_ticket = 0;
+   g_trade_request_signal_id = 0;
+   g_trade_request_bar_time = 0;
+   g_trade_request_direction = ORDER_TYPE_BUY;
+   g_trade_request_volume = 0.0;
+   g_trade_request_started = 0;
+   g_trade_request_retry_count = 0;
+   g_last_single_request_wait_log = 0;
+   g_last_multi_request_wait_log = 0;
+   // Keep the consumed signal key across a flat-group cleanup so a second
+   // entry cannot be generated for the same bar/direction after TP or reset.
+   g_signal_retry_count = 0;
+   g_signal_retry_after = 0;
+   g_position_ticket = 0;
+   g_protection_retry_count = 0;
+   g_protection_retry_after = 0;
+   g_protection_pause_reason = "";
    g_group_stop_points = 0;
    g_group_take_profit_points = 0;
     g_cumulative_loss_lots = 0.0;
@@ -695,6 +944,7 @@ void ClearState()
     g_favorable_grid_filled_mask = 0;
     g_favorable_grid_pending_level = 0;
     g_favorable_grid_pending_price = 0.0;
+   ClearGridOrderTicketCache();
    string migration_error = "";
    if(!DisableLegacyStateFallback(migration_error))
       PrintFormat("Failed to disable legacy MT5 state fallback: %s", migration_error);
@@ -713,14 +963,24 @@ bool LoadStateFromPrefix(const string prefix)
       g_transition_phase = (int)MathRound(GlobalVariableGet(prefix + ".transitionphase"));
    if(GlobalVariableCheck(prefix + ".transitionid"))
       g_transition_id = (long)MathRound(GlobalVariableGet(prefix + ".transitionid"));
+   if(GlobalVariableCheck(prefix + ".signalconsumed"))
+      g_signal_consumed = GlobalVariableGet(prefix + ".signalconsumed") > 0.5;
+   if(GlobalVariableCheck(prefix + ".signalid"))
+      g_signal_id = (long)MathRound(GlobalVariableGet(prefix + ".signalid"));
+   if(GlobalVariableCheck(prefix + ".signalbar"))
+      g_signal_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".signalbar"));
+   if(GlobalVariableCheck(prefix + ".signaldirection"))
+      g_signal_direction = (long)MathRound(GlobalVariableGet(prefix + ".signaldirection"));
 
    const int saved_index = (int)MathRound(GlobalVariableGet(prefix + ".index"));
    const int saved_meta = (int)MathRound(GlobalVariableGet(prefix + ".meta"));
    const int saved_first = saved_meta % 2;
    const int saved_mode = saved_meta / 2;
-   if(saved_index >= 0 && saved_index < 6
+   if(saved_index >= 0
+      && saved_index < (saved_mode == CYCLE_MODE_4 ? 7 : 6)
       && (saved_first == FIRST_BUY || saved_first == FIRST_SELL)
-      && (saved_mode == CYCLE_MODE_1 || saved_mode == CYCLE_MODE_2 || saved_mode == CYCLE_MODE_3))
+      && (saved_mode == CYCLE_MODE_1 || saved_mode == CYCLE_MODE_2
+          || saved_mode == CYCLE_MODE_3 || saved_mode == CYCLE_MODE_4))
      {
       g_cycle_index = saved_index;
       g_active_first_direction = saved_first;
@@ -819,6 +1079,128 @@ double PriceNormalize(const double price)
    return NormalizeDouble(price, PriceDigits());
   }
 
+double NormalizePriceToTick(const double price)
+  {
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(!MathIsValidNumber(price) || price <= 0.0)
+      return 0.0;
+   const double step = tick_size > 0.0 ? tick_size : _Point;
+   return NormalizeDouble(MathRound(price / step) * step, PriceDigits());
+  }
+
+double PriceFloorToTick(const double price)
+  {
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double step = tick_size > 0.0 ? tick_size : _Point;
+   return NormalizeDouble(MathFloor(price / step + 0.0000000001) * step,
+                          PriceDigits());
+  }
+
+double PriceCeilToTick(const double price)
+  {
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double step = tick_size > 0.0 ? tick_size : _Point;
+   return NormalizeDouble(MathCeil(price / step - 0.0000000001) * step,
+                          PriceDigits());
+  }
+
+bool ValidateStops(const ENUM_POSITION_TYPE type, const double entryPrice,
+                   double &sl, double &tp, string &reason)
+  {
+   reason = "";
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   const long freeze_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const double step = tick_size > 0.0 ? tick_size : _Point;
+   const double minimum_distance = MathMax((double)stop_level,
+                                           (double)freeze_level) * _Point + step;
+   if(entryPrice <= 0.0 || bid <= 0.0 || ask <= 0.0 || minimum_distance <= 0.0)
+     {
+      reason = StringFormat("invalid market context entry=%.5f bid=%.5f ask=%.5f "
+                            "stop_level=%I64d freeze_level=%I64d tick_size=%.10f",
+                            entryPrice, bid, ask, stop_level, freeze_level, step);
+      return false;
+     }
+
+   const double requested_sl = sl;
+   const double requested_tp = tp;
+   const double reference = type == POSITION_TYPE_BUY ? bid : ask;
+   if(type == POSITION_TYPE_BUY)
+     {
+      sl = MathMin(sl, entryPrice - minimum_distance);
+      sl = MathMin(sl, reference - minimum_distance);
+      tp = MathMax(tp, entryPrice + minimum_distance);
+      tp = MathMax(tp, reference + minimum_distance);
+      sl = PriceFloorToTick(sl);
+      tp = PriceCeilToTick(tp);
+      if(sl <= 0.0 || sl >= entryPrice || sl >= reference
+         || tp <= entryPrice || tp <= reference)
+         {
+          reason = StringFormat("buy stop geometry invalid entry=%.5f bid=%.5f ask=%.5f "
+                                "sl=%.5f tp=%.5f min_distance=%.5f",
+                                entryPrice, bid, ask, sl, tp, minimum_distance);
+          return false;
+         }
+     }
+   else if(type == POSITION_TYPE_SELL)
+     {
+      sl = MathMax(sl, entryPrice + minimum_distance);
+      sl = MathMax(sl, reference + minimum_distance);
+      tp = MathMin(tp, entryPrice - minimum_distance);
+      tp = MathMin(tp, reference - minimum_distance);
+      sl = PriceCeilToTick(sl);
+      tp = PriceFloorToTick(tp);
+      if(sl <= entryPrice || sl <= reference || tp <= 0.0
+         || tp >= entryPrice || tp >= reference)
+         {
+          reason = StringFormat("sell stop geometry invalid entry=%.5f bid=%.5f ask=%.5f "
+                                "sl=%.5f tp=%.5f min_distance=%.5f",
+                                entryPrice, bid, ask, sl, tp, minimum_distance);
+          return false;
+         }
+     }
+   else
+     {
+      reason = "unsupported position type";
+      return false;
+     }
+
+   reason = StringFormat("requested_sl=%.5f requested_tp=%.5f adjusted_sl=%.5f "
+                         "adjusted_tp=%.5f bid=%.5f ask=%.5f stop_level=%I64d "
+                         "freeze_level=%I64d tick_size=%.10f",
+                         requested_sl, requested_tp, sl, tp, bid, ask,
+                         stop_level, freeze_level, step);
+   return true;
+  }
+
+bool BuildStopsForEntry(const long direction, const double entry,
+                        const int stop_loss_points, const int take_profit_points,
+                        double &stop_loss, double &take_profit, string &reason)
+  {
+   if(stop_loss_points <= 0 || take_profit_points <= 0)
+     {
+      reason = "stop/take-profit distance must be positive";
+      return false;
+     }
+   const double distance_sl = stop_loss_points * _Point;
+   const double distance_tp = take_profit_points * _Point;
+   if(direction == ORDER_TYPE_BUY)
+     {
+      stop_loss = entry - distance_sl;
+      take_profit = entry + distance_tp;
+     }
+   else
+     {
+      stop_loss = entry + distance_sl;
+      take_profit = entry - distance_tp;
+     }
+   const ENUM_POSITION_TYPE position_type = direction == ORDER_TYPE_BUY
+                                            ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   return ValidateStops(position_type, entry, stop_loss, take_profit, reason);
+  }
+
 int ParseTimeMinutes(const string value)
   {
    if(StringLen(value) != 5 || StringGetCharacter(value, 2) != 58)
@@ -836,6 +1218,18 @@ int ParseTimeMinutes(const string value)
    if(hour < 0 || hour > 23 || minute < 0 || minute > 59)
       return -1;
    return hour * 60 + minute;
+  }
+
+bool IsOperationWindowActive(const int current_minutes, const int start_minutes,
+                             const int end_minutes)
+  {
+   if(start_minutes == 0 && end_minutes == 0)
+      return false;
+   if(start_minutes == end_minutes)
+      return true;
+   if(start_minutes < end_minutes)
+      return current_minutes >= start_minutes && current_minutes < end_minutes;
+   return current_minutes >= start_minutes || current_minutes < end_minutes;
   }
 
 bool IsFinitePositive(const double value)
@@ -1131,15 +1525,28 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "首单方向设置无效。";
       return false;
      }
+   if(config.first_direction_mode != FIRST_DIRECTION_PRESET
+      && config.first_direction_mode != FIRST_DIRECTION_BOLLINGER)
+     {
+       error = "首单方向确定方式设置无效。";
+      return false;
+     }
+   if(config.bollinger_period <= 0 || !IsFinitePositive(config.bollinger_deviation))
+     {
+       error = "布林带周期必须大于0，标准差倍数必须为有限正数。";
+      return false;
+     }
    if(config.cycle_mode != CYCLE_MODE_1 && config.cycle_mode != CYCLE_MODE_2
-      && config.cycle_mode != CYCLE_MODE_3)
+      && config.cycle_mode != CYCLE_MODE_3 && config.cycle_mode != CYCLE_MODE_4)
      {
        error = "循环模式设置无效。";
       return false;
      }
    if(config.distance_mode != DISTANCE_FIXED
       && config.distance_mode != DISTANCE_CANDLE_RANGE
-      && config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE)
+      && config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE
+      && config.distance_mode != DISTANCE_LONG_CANDLE
+      && config.distance_mode != DISTANCE_BOLLINGER_RANGE)
      {
        error = "距离模式设置无效。";
       return false;
@@ -1171,9 +1578,14 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "止损首单类型必须为1或2。";
        return false;
       }
-    if(config.favorable_grid_enable != 0 && config.favorable_grid_enable != 1)
+     if(config.favorable_grid_enable != 0 && config.favorable_grid_enable != 1)
+       {
+        error = "有利方向加单必须为0或1。";
+        return false;
+       }
+    if(config.dynamic_stop_loss_enable != 0 && config.dynamic_stop_loss_enable != 1)
       {
-       error = "有利方向加单必须为0或1。";
+       error = "动态止损必须为0或1。";
        return false;
       }
     if(!IsFinitePositive(config.initial_lots)
@@ -1229,9 +1641,13 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "订单注释不能包含保留标记 .Grid 或 .G。";
       return false;
      }
-   if(ParseTimeMinutes(config.start_time) < 0 || ParseTimeMinutes(config.end_time) < 0)
+   if(ParseTimeMinutes(config.start_time) < 0 || ParseTimeMinutes(config.end_time) < 0
+      || ParseTimeMinutes(config.start_time_2) < 0
+      || ParseTimeMinutes(config.end_time_2) < 0
+      || ParseTimeMinutes(config.start_time_3) < 0
+      || ParseTimeMinutes(config.end_time_3) < 0)
      {
-      error = "Start and end time must use HH:MM within the server day.";
+      error = "All operation windows must use HH:MM within the server day.";
       return false;
      }
    return true;
@@ -1277,8 +1693,10 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
 
    GuiConfig previous_config = g_gui_applied_config;
    GuiConfig previous_draft = g_gui_draft_config;
-   const int previous_start_minutes = g_start_operation_minutes;
-   const int previous_end_minutes = g_end_operation_minutes;
+   int previous_start_minutes[MAX_OPERATION_WINDOWS];
+   int previous_end_minutes[MAX_OPERATION_WINDOWS];
+   ArrayCopy(previous_start_minutes, g_start_operation_minutes);
+   ArrayCopy(previous_end_minutes, g_end_operation_minutes);
    const bool previous_has_unapplied_changes = g_gui_has_unapplied_changes;
    const bool previous_config_initialized = g_gui_config_initialized;
    const string previous_object_prefix = g_gui_object_prefix;
@@ -1301,16 +1719,20 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
 
    g_gui_applied_config = config;
    g_gui_draft_config = config;
-   g_start_operation_minutes = ParseTimeMinutes(config.start_time);
-   g_end_operation_minutes = ParseTimeMinutes(config.end_time);
+   g_start_operation_minutes[0] = ParseTimeMinutes(config.start_time);
+   g_end_operation_minutes[0] = ParseTimeMinutes(config.end_time);
+   g_start_operation_minutes[1] = ParseTimeMinutes(config.start_time_2);
+   g_end_operation_minutes[1] = ParseTimeMinutes(config.end_time_2);
+   g_start_operation_minutes[2] = ParseTimeMinutes(config.start_time_3);
+   g_end_operation_minutes[2] = ParseTimeMinutes(config.end_time_3);
    g_trade.SetExpertMagicNumber(config.magic_number);
    if(magic_changed && !AcquireExecutionOwnership())
      {
       ReleaseExecutionOwnership();
       g_gui_applied_config = previous_config;
       g_gui_draft_config = previous_draft;
-      g_start_operation_minutes = previous_start_minutes;
-      g_end_operation_minutes = previous_end_minutes;
+      ArrayCopy(g_start_operation_minutes, previous_start_minutes);
+      ArrayCopy(g_end_operation_minutes, previous_end_minutes);
       g_trade.SetExpertMagicNumber(previous_config.magic_number);
       g_gui_has_unapplied_changes = previous_has_unapplied_changes;
       g_gui_config_initialized = previous_config_initialized;
@@ -1344,8 +1766,8 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
          ReleaseExecutionOwnership();
       g_gui_applied_config = previous_config;
       g_gui_draft_config = previous_draft;
-      g_start_operation_minutes = previous_start_minutes;
-      g_end_operation_minutes = previous_end_minutes;
+      ArrayCopy(g_start_operation_minutes, previous_start_minutes);
+      ArrayCopy(g_end_operation_minutes, previous_end_minutes);
       g_trade.SetExpertMagicNumber(previous_config.magic_number);
       g_gui_has_unapplied_changes = previous_has_unapplied_changes;
       g_gui_config_initialized = previous_config_initialized;
@@ -1370,8 +1792,8 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
          ReleaseExecutionOwnership();
          g_gui_applied_config = previous_config;
          g_gui_draft_config = previous_draft;
-         g_start_operation_minutes = previous_start_minutes;
-         g_end_operation_minutes = previous_end_minutes;
+      ArrayCopy(g_start_operation_minutes, previous_start_minutes);
+      ArrayCopy(g_end_operation_minutes, previous_end_minutes);
          g_trade.SetExpertMagicNumber(previous_config.magic_number);
          g_gui_has_unapplied_changes = previous_has_unapplied_changes;
          g_gui_config_initialized = previous_config_initialized;
@@ -1407,6 +1829,9 @@ GuiConfig LoadConfigFromInputs()
   {
    GuiConfig config;
    config.first_direction = 首单方向;
+   config.first_direction_mode = 首单方向确定方式;
+   config.bollinger_period = 布林带周期;
+   config.bollinger_deviation = 布林带标准差;
    config.cycle_mode = 循环模式;
    config.distance_mode = 距离模式;
    config.order_type = 开单方式;
@@ -1416,9 +1841,10 @@ GuiConfig LoadConfigFromInputs()
     config.initial_lots = 首单手数;
     config.initial_lots_multiplier = 首单手数倍数;
     config.first_order_lot_type = FirstOrderLotType;
-    config.first_order_mult = FirstOrderMult;
-    config.favorable_grid_enable = FavorableGridEnable;
-   config.max_reversals = 最大反手次数;
+     config.first_order_mult = FirstOrderMult;
+     config.favorable_grid_enable = FavorableGridEnable;
+     config.dynamic_stop_loss_enable = DynamicStopLossEnable;
+    config.max_reversals = 最大反手次数;
    config.grid_count = 网格数量;
    config.grid_lot_multiplier = 网格手数倍数;
    config.stop_loss_distance_points = 固定止损距离;
@@ -1432,6 +1858,10 @@ GuiConfig LoadConfigFromInputs()
    config.order_comment = 订单注释;
    config.start_time = 开始时间;
    config.end_time = 结束时间;
+   config.start_time_2 = 时段2开始时间;
+   config.end_time_2 = 时段2结束时间;
+   config.start_time_3 = 时段3开始时间;
+   config.end_time_3 = 时段3结束时间;
 
    return config;
   }
@@ -1441,27 +1871,36 @@ bool IsInitialEntryAllowed()
    MqlDateTime current_time;
    TimeToStruct(TimeCurrent(), current_time);
    const int current_minutes = current_time.hour * 60 + current_time.min;
-   if(g_start_operation_minutes == g_end_operation_minutes)
-      return true;
-   if(g_start_operation_minutes < g_end_operation_minutes)
-      return current_minutes >= g_start_operation_minutes
-             && current_minutes < g_end_operation_minutes;
-   return current_minutes >= g_start_operation_minutes
-          || current_minutes < g_end_operation_minutes;
+   for(int window = 0; window < MAX_OPERATION_WINDOWS; window++)
+     {
+      if(IsOperationWindowActive(current_minutes, g_start_operation_minutes[window],
+                                 g_end_operation_minutes[window]))
+         return true;
+     }
+   return false;
+  }
+
+int CycleLength(const int cycle_mode)
+  {
+   return cycle_mode == CYCLE_MODE_4 ? 7 : 6;
   }
 
 long SequenceDirection(const int index)
   {
-   const int normalized_index = ((index % 6) + 6) % 6;
+   const int cycle_length = CycleLength(g_active_cycle_mode);
+   const int normalized_index = ((index % cycle_length) + cycle_length) % cycle_length;
    bool buy_direction = false;
    if(g_active_cycle_mode == CYCLE_MODE_1)
       buy_direction = normalized_index == 0 || normalized_index == 3;
    else if(g_active_cycle_mode == CYCLE_MODE_2)
       buy_direction = normalized_index == 0 || normalized_index == 2
                       || normalized_index == 4 || normalized_index == 5;
-   else
+   else if(g_active_cycle_mode == CYCLE_MODE_3)
       buy_direction = normalized_index == 0 || normalized_index == 2
                       || normalized_index == 3 || normalized_index == 5;
+   else
+      buy_direction = normalized_index == 0 || normalized_index == 3
+                      || normalized_index == 4;
 
    if(g_active_first_direction == FIRST_SELL)
       buy_direction = !buy_direction;
@@ -1470,7 +1909,7 @@ long SequenceDirection(const int index)
 
 int NextCycleIndex()
   {
-   return (g_cycle_index + 1) % 6;
+   return (g_cycle_index + 1) % CycleLength(g_active_cycle_mode);
   }
 
 long PendingTypeForDirection(const long direction, const double entry)
@@ -1531,6 +1970,95 @@ bool GetAverageCandleRangePoints(int &average_range_points)
    return average_range_points > 0;
   }
 
+bool GetLongCandleDirection(long &first_direction)
+  {
+   // K1 使用上一根已完成K线；K2～K21为用于比较的前20根K线。
+   if(Bars(_Symbol, _Period) < 22)
+      return false;
+
+   const double k1_open = iOpen(_Symbol, _Period, 1);
+   const double k1_close = iClose(_Symbol, _Period, 1);
+   const double k1_high = iHigh(_Symbol, _Period, 1);
+   const double k1_low = iLow(_Symbol, _Period, 1);
+   if(k1_open <= 0.0 || k1_close <= 0.0 || k1_high <= k1_low)
+      return false;
+
+   const double k1_range = k1_high - k1_low;
+   double max_prior_range = 0.0;
+   for(int shift = 2; shift <= 21; shift++)
+     {
+      const double high = iHigh(_Symbol, _Period, shift);
+      const double low = iLow(_Symbol, _Period, shift);
+      if(high <= 0.0 || low <= 0.0 || high <= low)
+         return false;
+      max_prior_range = MathMax(max_prior_range, high - low);
+     }
+   if(k1_range < max_prior_range)
+      return false;
+
+   if(k1_close > k1_open)
+      first_direction = ORDER_TYPE_BUY;
+   else if(k1_close < k1_open)
+      first_direction = ORDER_TYPE_SELL;
+   else
+      return false;
+   return true;
+  }
+
+bool GetBollingerFirstDirection(long &first_direction)
+  {
+   if(g_gui_applied_config.bollinger_period <= 0
+      || g_gui_applied_config.bollinger_deviation <= 0.0)
+      return false;
+   const int handle = iBands(_Symbol, _Period,
+                             g_gui_applied_config.bollinger_period, 0,
+                             g_gui_applied_config.bollinger_deviation, PRICE_CLOSE);
+   if(handle == INVALID_HANDLE)
+      return false;
+   double middle[1];
+   const int copied = CopyBuffer(handle, 0, 0, 1, middle);
+   IndicatorRelease(handle);
+   if(copied != 1 || middle[0] == EMPTY_VALUE || middle[0] <= 0.0)
+      return false;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0 || tick.ask <= 0.0)
+      return false;
+   const double price = (tick.bid + tick.ask) * 0.5;
+   const double epsilon = _Point * 0.5;
+   if(MathAbs(price - middle[0]) <= epsilon)
+      return false;
+   if(price > middle[0])
+      first_direction = ORDER_TYPE_BUY;
+   else
+      first_direction = ORDER_TYPE_SELL;
+   return true;
+  }
+
+bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
+  {
+   if(g_gui_applied_config.bollinger_period <= 0
+      || g_gui_applied_config.bollinger_deviation <= 0.0)
+      return false;
+   const int handle = iBands(_Symbol, _Period,
+                             g_gui_applied_config.bollinger_period, 0,
+                             g_gui_applied_config.bollinger_deviation, PRICE_CLOSE);
+   if(handle == INVALID_HANDLE)
+      return false;
+   double upper[1];
+   double lower[1];
+   const int upper_copied = CopyBuffer(handle, 1, 0, 1, upper);
+   const int lower_copied = CopyBuffer(handle, 2, 0, 1, lower);
+   IndicatorRelease(handle);
+   if(upper_copied != 1 || lower_copied != 1
+      || upper[0] == EMPTY_VALUE || lower[0] == EMPTY_VALUE
+      || upper[0] <= lower[0])
+      return false;
+   const double width_points = (upper[0] - lower[0]) / _Point;
+   stop_loss_points = (int)MathRound(width_points / 4.0);
+   take_profit_points = g_gui_applied_config.take_profit_distance_points;
+   return stop_loss_points > 0 && take_profit_points > 0;
+  }
+
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(g_gui_applied_config.distance_mode == DISTANCE_FIXED)
@@ -1553,6 +2081,16 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
          stop_loss_points * g_gui_applied_config.average_take_profit_multiplier);
       return stop_loss_points > 0 && take_profit_points > 0;
      }
+
+   if(g_gui_applied_config.distance_mode == DISTANCE_LONG_CANDLE)
+     {
+      stop_loss_points = g_gui_applied_config.stop_loss_distance_points;
+      take_profit_points = g_gui_applied_config.take_profit_distance_points;
+      return stop_loss_points > 0 && take_profit_points > 0;
+     }
+
+   if(g_gui_applied_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+      return GetBollingerDistancePoints(stop_loss_points, take_profit_points);
 
    double previous_high = 0.0;
    double previous_low = 0.0;
@@ -1753,6 +2291,32 @@ bool CloseAllPositions(const long position_type)
                      candidate, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
          closed = false;
         }
+     }
+   return closed;
+  }
+
+bool ClosePreviousGroupAfterReverseFill(const ulong keep_ticket)
+  {
+   if(keep_ticket == 0 || !IsOurPosition(keep_ticket))
+      return false;
+   bool closed = true;
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket || !IsOurPosition(candidate))
+         continue;
+      if(!g_trade.PositionClose(candidate))
+        {
+         PrintFormat("Previous group close failed after reverse fill, ticket=%I64u, retcode=%u, %s",
+                     candidate, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+         closed = false;
+        }
+     }
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(candidate != 0 && candidate != keep_ticket && IsOurPosition(candidate))
+         closed = false;
      }
    return closed;
   }
@@ -2125,31 +2689,72 @@ bool ProcessReset()
 void SetStops(const ulong position_ticket, const long type, const double entry,
               const int stop_loss_points, const int take_profit_points)
   {
-   const double distance_sl = stop_loss_points * _Point;
-   const double distance_tp = take_profit_points * _Point;
    double stop_loss = 0.0;
    double take_profit = 0.0;
-   if(type == POSITION_TYPE_BUY)
+   string reason = "";
+   const long direction = type == POSITION_TYPE_BUY ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!BuildStopsForEntry(direction, entry, stop_loss_points, take_profit_points,
+                          stop_loss, take_profit, reason))
      {
-      stop_loss = PriceNormalize(entry - distance_sl);
-      take_profit = PriceNormalize(entry + distance_tp);
-     }
-   else
-     {
-      stop_loss = PriceNormalize(entry + distance_sl);
-      take_profit = PriceNormalize(entry - distance_tp);
+      PrintFormat("[GROUP=single][STATE=%s][EVENT=PROTECTION_VALIDATION_FAILED] "
+                  "[POSITION=%I64u][ENTRY=%.5f][SL=%.5f][TP=%.5f][ERROR=%s]",
+                  StrategyStateText(g_strategy_state), position_ticket, entry,
+                  stop_loss, take_profit, reason);
+      return;
      }
 
    if(!g_trade.PositionModify(position_ticket, stop_loss, take_profit))
-      PrintFormat("PositionModify failed, ticket=%I64u, retcode=%u, %s",
-                  position_ticket, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+      PrintFormat("[GROUP=single][STATE=%s][EVENT=POSITION_MODIFY_FAILED] "
+                  "[POSITION=%I64u][ENTRY=%.5f][SL=%.5f][TP=%.5f][RETCODE=%u] "
+                  "[ERROR=%s]",
+                  StrategyStateText(g_strategy_state), position_ticket, entry,
+                  stop_loss, take_profit, g_trade.ResultRetcode(), reason);
+  }
+
+bool ProtectionRetryAllowed()
+  {
+   if(g_strategy_state != STATE_PAUSED_TEMP)
+      return true;
+   if(TimeCurrent() < g_protection_retry_after)
+      return false;
+   g_strategy_state = STATE_RECOVERY;
+   g_protection_retry_after = 0;
+   LogSingleTradeEvent("PROTECTION_RETRY_RESUMED", 0, g_position_ticket,
+                       0.0, 0.0, 0.0, g_protection_pause_reason);
+   return true;
+  }
+
+void RegisterProtectionFailure(const uint retcode, const string reason)
+  {
+   g_strategy_state = STATE_PROTECTION_PENDING;
+   g_protection_retry_count++;
+   g_protection_pause_reason = reason;
+   if(g_protection_retry_count >= 3)
+     {
+      g_strategy_state = STATE_PAUSED_TEMP;
+      g_protection_retry_after = TimeCurrent() + 10;
+     }
+   LogSingleTradeEvent("PROTECTION_RETRY_SCHEDULED", retcode, g_position_ticket,
+                       0.0, 0.0, 0.0, reason);
   }
 
 double GroupStopPrice(const long type)
   {
-   if(type == POSITION_TYPE_BUY)
-      return PriceNormalize(g_group_anchor_price - g_group_stop_points * _Point);
-   return PriceNormalize(g_group_anchor_price + g_group_stop_points * _Point);
+   double stop_loss = type == POSITION_TYPE_BUY
+                      ? g_group_anchor_price - g_group_stop_points * _Point
+                      : g_group_anchor_price + g_group_stop_points * _Point;
+   if(g_gui_applied_config.dynamic_stop_loss_enable == 1
+      && g_gui_applied_config.grid_count >= 2)
+     {
+      const int level = HighestFavorableGridLevel(g_favorable_grid_filled_mask);
+      const double grid_spacing = g_group_stop_points * _Point
+                                  / g_gui_applied_config.grid_count;
+      if(type == POSITION_TYPE_BUY)
+         stop_loss += level * grid_spacing;
+      else
+         stop_loss -= level * grid_spacing;
+     }
+   return PriceNormalize(stop_loss);
   }
 
 double GroupTakeProfitPrice(const long type)
@@ -2165,8 +2770,18 @@ double GroupTakeProfitPrice(const long type)
 
 bool SetGroupStops(const long type)
   {
-   const double stop_loss = GroupStopPrice(type);
-   const double take_profit = GroupTakeProfitPrice(type);
+   if(!ProtectionRetryAllowed())
+      return false;
+   double stop_loss = GroupStopPrice(type);
+   double take_profit = GroupTakeProfitPrice(type);
+   string reason = "";
+   if(!ValidateStops((ENUM_POSITION_TYPE)type, g_group_anchor_price,
+                     stop_loss, take_profit, reason))
+     {
+      RegisterProtectionFailure(0, reason);
+      return false;
+     }
+   g_strategy_state = STATE_PROTECTION_PENDING;
    bool modified = true;
    for(int index = PositionsTotal() - 1; index >= 0; index--)
      {
@@ -2180,20 +2795,40 @@ bool SetGroupStops(const long type)
           continue;
        if(!g_trade.PositionModify(candidate, stop_loss, take_profit))
         {
-         PrintFormat("Group PositionModify failed, ticket=%I64u, retcode=%u, %s",
-                     candidate, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+         const uint retcode = g_trade.ResultRetcode();
+         RegisterProtectionFailure(retcode, reason + " "
+                                   + g_trade.ResultRetcodeDescription());
+         PrintFormat("[GROUP=single][STATE=%s][EVENT=POSITION_MODIFY_FAILED] "
+                     "[POSITION=%I64u][ENTRY=%.5f][SL=%.5f][TP=%.5f][RETCODE=%u] "
+                     "[ERROR=%s]",
+                     StrategyStateText(g_strategy_state), candidate,
+                     g_group_anchor_price, stop_loss, take_profit, retcode, reason);
          modified = false;
         }
      }
    g_last_take_profit = take_profit;
-   return modified && StopsVerified(type);
+   const bool verified = modified && StopsVerified(type);
+   if(verified)
+     {
+      g_protection_retry_count = 0;
+      g_protection_retry_after = 0;
+      g_protection_pause_reason = "";
+      g_strategy_state = STATE_POSITION_ACTIVE;
+     }
+   else if(modified)
+      RegisterProtectionFailure(0, "position stops are not visible after modify");
+   return verified;
    }
 
 bool StopsVerified(const long type)
   {
    bool found = false;
-   const double stop_loss = GroupStopPrice(type);
-   const double take_profit = GroupTakeProfitPrice(type);
+   double stop_loss = GroupStopPrice(type);
+   double take_profit = GroupTakeProfitPrice(type);
+   string reason = "";
+   if(!ValidateStops((ENUM_POSITION_TYPE)type, g_group_anchor_price,
+                     stop_loss, take_profit, reason))
+      return false;
    for(int index = PositionsTotal() - 1; index >= 0; index--)
      {
       const ulong candidate = PositionGetTicket(index);
@@ -2261,9 +2896,26 @@ bool UpdateLinearTakeProfit(const long type)
 
 bool SendMarketLeg(const long order_type, const double requested_volume)
   {
+   if(g_trade_request_in_flight)
+     {
+      LogSingleTradeEvent("REQUEST_BLOCKED_IN_FLIGHT");
+      return false;
+     }
    const double volume = VolumeNormalize(requested_volume);
    if(volume <= 0.0)
       return false;
+
+   g_trade_request_in_flight = true;
+   g_trade_request_direction = order_type;
+   g_trade_request_volume = volume;
+   g_trade_request_bar_time = g_signal_bar_time > 0
+                              ? g_signal_bar_time : iTime(_Symbol, _Period, 0);
+   g_trade_request_signal_id = g_signal_id != 0
+                               ? g_signal_id
+                               : BuildSignalId(g_trade_request_bar_time, order_type);
+   g_trade_request_started = TimeCurrent();
+   g_strategy_state = STATE_ORDER_SENDING;
+   LogSingleTradeEvent("REQUEST_SUBMITTED", 0, 0, 0.0, 0.0, 0.0);
 
    bool sent = false;
    if(order_type == ORDER_TYPE_BUY)
@@ -2274,14 +2926,21 @@ bool SendMarketLeg(const long order_type, const double requested_volume)
                           g_gui_applied_config.order_comment);
 
    const uint retcode = g_trade.ResultRetcode();
+   g_trade_request_order_ticket = g_trade.ResultOrder();
    const bool completed = retcode == TRADE_RETCODE_DONE
                           || retcode == TRADE_RETCODE_DONE_PARTIAL;
    if(!sent || !completed)
      {
-      PrintFormat("Market order failed, retcode=%u, %s",
-                  retcode, g_trade.ResultRetcodeDescription());
+      HandleTradeRequestFailure(retcode, g_trade.ResultRetcodeDescription());
       if(retcode == TRADE_RETCODE_NO_MONEY)
          BeginResetAfterNoMoney();
+      return false;
+     }
+   if(!ConfirmTradeRequestFromVisiblePosition())
+     {
+      g_strategy_state = STATE_ORDER_SENDING;
+      LogSingleTradeEvent("WAITING_DEAL_CONFIRMATION", retcode,
+                          g_trade_request_order_ticket);
       return false;
      }
    return true;
@@ -2371,14 +3030,19 @@ bool PlaceInitialPendingOrder(const long direction, const double entry,
    ticket = 0;
    const long pending_type = PendingTypeForDirection(direction, entry);
    const double normalized_entry = PriceNormalize(entry);
-   const double distance = distance_points * _Point;
    double stop_loss = 0.0;
    double take_profit = 0.0;
+   string reason = "";
+   if(!BuildStopsForEntry(direction, normalized_entry, distance_points, distance_points,
+                          stop_loss, take_profit, reason))
+     {
+      PrintFormat("Initial pending stops rejected: entry=%.5f sl=%.5f tp=%.5f %s",
+                  normalized_entry, stop_loss, take_profit, reason);
+      return false;
+     }
    bool sent = false;
    if(direction == ORDER_TYPE_BUY)
      {
-      stop_loss = PriceNormalize(normalized_entry - distance);
-      take_profit = PriceNormalize(normalized_entry + distance);
       sent = pending_type == ORDER_TYPE_BUY_STOP
              ? g_trade.BuyStop(volume, normalized_entry, _Symbol, stop_loss, take_profit,
                                ORDER_TIME_GTC, 0, comment)
@@ -2387,8 +3051,6 @@ bool PlaceInitialPendingOrder(const long direction, const double entry,
      }
    else
      {
-      stop_loss = PriceNormalize(normalized_entry + distance);
-      take_profit = PriceNormalize(normalized_entry - distance);
       sent = pending_type == ORDER_TYPE_SELL_STOP
              ? g_trade.SellStop(volume, normalized_entry, _Symbol, stop_loss, take_profit,
                                 ORDER_TIME_GTC, 0, comment)
@@ -2514,6 +3176,7 @@ bool HandleInitialPendingFill()
        g_favorable_grid_filled_mask = 0;
        g_favorable_grid_pending_level = 0;
        g_favorable_grid_pending_price = 0.0;
+       ClearGridOrderTicketCache();
        g_grid_lots = g_previous_grid_lots > 0.0
                     ? VolumeNormalize(g_previous_grid_lots
                                       * g_gui_applied_config.grid_lot_multiplier)
@@ -2572,17 +3235,21 @@ bool PlaceNextPending(const long next_direction, const double stop_loss,
       return false;
    const double volume = VolumeNormalize(plan.first_lots);
    const double entry = PriceNormalize(stop_loss);
-   const double distance_sl = stop_loss_points * _Point;
-   const double distance_tp = take_profit_points * _Point;
    double pending_sl = 0.0;
    double pending_tp = 0.0;
+   string reason = "";
+   if(!BuildStopsForEntry(next_direction, entry, stop_loss_points,
+                          take_profit_points, pending_sl, pending_tp, reason))
+     {
+      PrintFormat("Reverse pending stops rejected: entry=%.5f sl=%.5f tp=%.5f %s",
+                  entry, pending_sl, pending_tp, reason);
+      return false;
+     }
    const long pending_type = PendingTypeForDirection(next_direction, entry);
    bool sent = false;
 
    if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
      {
-      pending_sl = PriceNormalize(entry - distance_sl);
-      pending_tp = PriceNormalize(entry + distance_tp);
       if(pending_type == ORDER_TYPE_BUY_STOP)
          sent = g_trade.BuyStop(volume, entry, _Symbol, pending_sl, pending_tp,
                                 ORDER_TIME_GTC, 0, g_gui_applied_config.order_comment);
@@ -2592,8 +3259,6 @@ bool PlaceNextPending(const long next_direction, const double stop_loss,
      }
    else
      {
-      pending_sl = PriceNormalize(entry + distance_sl);
-      pending_tp = PriceNormalize(entry - distance_tp);
       if(pending_type == ORDER_TYPE_SELL_STOP)
          sent = g_trade.SellStop(volume, entry, _Symbol, pending_sl, pending_tp,
                                  ORDER_TIME_GTC, 0, g_gui_applied_config.order_comment);
@@ -2611,7 +3276,7 @@ bool PlaceNextPending(const long next_direction, const double stop_loss,
       return false;
      }
    g_pending_ticket = g_trade.ResultOrder();
-   g_pending_index = (g_cycle_index + 1) % 6;
+   g_pending_index = (g_cycle_index + 1) % CycleLength(g_active_cycle_mode);
    SaveState();
    return true;
   }
@@ -2684,6 +3349,14 @@ int GridFilledLevelCountForMask(const long mask)
    return count;
   }
 
+int HighestFavorableGridLevel(const long mask)
+  {
+   for(int level = g_gui_applied_config.grid_count - 1; level >= 1; level--)
+      if((mask & GridLevelBit(level)) != 0)
+         return level;
+   return 0;
+  }
+
 int GridFilledLevelCount()
   {
    return GridFilledLevelCountForMask(g_grid_filled_mask);
@@ -2721,6 +3394,7 @@ bool NormalizeGridPendingLevel(const long expected_direction, const int expected
                                ulong &keep_ticket)
   {
    keep_ticket = 0;
+   bool keep_favorable = false;
    for(int index = 0; index < OrdersTotal(); index++)
      {
       const ulong candidate = OrderGetTicket(index);
@@ -2735,8 +3409,18 @@ bool NormalizeGridPendingLevel(const long expected_direction, const int expected
                                   expected_price, expected_volume))
          continue;
       if(keep_ticket == 0 || candidate < keep_ticket)
+        {
          keep_ticket = candidate;
-     }
+         keep_favorable = StringFind(OrderGetString(ORDER_COMMENT), ".Grid.F.") >= 0;
+        }
+      }
+   if(expected_level > 0 && expected_level < MAX_GRID_COUNT)
+      {
+       if(keep_favorable)
+          g_favorable_grid_order_tickets[expected_level] = keep_ticket;
+       else
+          g_grid_order_tickets[expected_level] = keep_ticket;
+      }
    bool normalized = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
@@ -2758,26 +3442,26 @@ bool NormalizeGridPendingLevel(const long expected_direction, const int expected
   }
 
 bool FindFilledGridOrder(const long position_type, const int level,
-                         const double expected_price, double &fill_price)
+                         const double expected_price, const bool favorable,
+                         double &fill_price)
   {
-   if(!HistorySelect(0, TimeCurrent()))
+   if(level <= 0 || level >= MAX_GRID_COUNT)
       return false;
-   for(int index = HistoryOrdersTotal() - 1; index >= 0; index--)
+   ulong ticket = favorable ? g_favorable_grid_order_tickets[level]
+                            : g_grid_order_tickets[level];
+   if(ticket == 0 || !HistoryOrderSelect(ticket))
+      return false;
+   const string comment = HistoryOrderGetString(ticket, ORDER_COMMENT);
+   if(HistoryOrderGetString(ticket, ORDER_SYMBOL) == _Symbol
+      && (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
+         == g_gui_applied_config.magic_number
+      && HistoryOrderGetInteger(ticket, ORDER_STATE) == ORDER_STATE_FILLED
+      && IsGridPendingComment(comment)
+      && GridPendingLevelFromComment(comment) == level
+      && PendingDirection(HistoryOrderGetInteger(ticket, ORDER_TYPE)) == position_type
+      && MathAbs(HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN) - expected_price)
+         <= _Point * 0.5)
      {
-      const ulong ticket = HistoryOrderGetTicket(index);
-      const string comment = ticket == 0 ? "" : HistoryOrderGetString(ticket, ORDER_COMMENT);
-      const int comment_level = GridPendingLevelFromComment(comment);
-      if(ticket == 0
-         || HistoryOrderGetString(ticket, ORDER_SYMBOL) != _Symbol
-         || (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
-            != g_gui_applied_config.magic_number
-         || HistoryOrderGetInteger(ticket, ORDER_STATE) != ORDER_STATE_FILLED
-         || !IsGridPendingComment(comment)
-         || (comment_level > 0 && comment_level != level)
-         || PendingDirection(HistoryOrderGetInteger(ticket, ORDER_TYPE)) != position_type
-         || MathAbs(HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN) - expected_price)
-            > _Point * 0.5)
-         continue;
       fill_price = HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN);
       return true;
      }
@@ -2793,10 +3477,18 @@ bool PlaceGridPending(const long position_type, const int level, const bool favo
 
    const double entry = favorable ? FavorableGridLevelPrice(position_type, level)
                                   : GridLevelPrice(position_type, level);
-   const double stop_loss = GroupStopPrice(position_type);
-   const double take_profit = position_type == POSITION_TYPE_BUY
-                              ? PriceNormalize(entry + g_group_take_profit_points * _Point)
-                              : PriceNormalize(entry - g_group_take_profit_points * _Point);
+   double stop_loss = GroupStopPrice(position_type);
+   double take_profit = position_type == POSITION_TYPE_BUY
+                        ? PriceNormalize(entry + g_group_take_profit_points * _Point)
+                        : PriceNormalize(entry - g_group_take_profit_points * _Point);
+   string reason = "";
+   if(!ValidateStops((ENUM_POSITION_TYPE)position_type, entry,
+                     stop_loss, take_profit, reason))
+     {
+      PrintFormat("Grid pending stops rejected: entry=%.5f sl=%.5f tp=%.5f %s",
+                  entry, stop_loss, take_profit, reason);
+      return false;
+     }
    const double volume = VolumeNormalize(g_grid_lots);
    const long pending_type = PendingTypeForDirection(position_type == POSITION_TYPE_BUY
                                                      ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
@@ -2835,13 +3527,313 @@ bool PlaceGridPending(const long position_type, const int level, const bool favo
       {
        g_favorable_grid_pending_level = level;
        g_favorable_grid_pending_price = entry;
+       g_favorable_grid_order_tickets[level] = g_trade.ResultOrder();
       }
     else
       {
        g_grid_pending_level = level;
        g_grid_pending_price = entry;
+       g_grid_order_tickets[level] = g_trade.ResultOrder();
       }
    SaveState();
+   return true;
+  }
+
+string StrategyStateText(const StrategyState state)
+  {
+   switch(state)
+     {
+      case STATE_IDLE: return "IDLE";
+      case STATE_SIGNAL_READY: return "SIGNAL_READY";
+      case STATE_ORDER_SENDING: return "ORDER_SENDING";
+      case STATE_POSITION_ACTIVE: return "POSITION_ACTIVE";
+      case STATE_PROTECTION_PENDING: return "PROTECTION_PENDING";
+      case STATE_RECOVERY: return "RECOVERY";
+      case STATE_PAUSED_TEMP: return "PAUSED_TEMP";
+      case STATE_FATAL: return "FATAL";
+     }
+   return "UNKNOWN";
+  }
+
+long BuildSignalId(const datetime bar_time, const long direction)
+  {
+   const long safe_bar = bar_time > 0 ? (long)bar_time : (long)TimeCurrent();
+   return safe_bar * 10 + direction;
+  }
+
+void LogSingleTradeEvent(const string event, const uint retcode = 0,
+                         const ulong ticket = 0, const double entry = 0.0,
+                         const double stop_loss = 0.0, const double take_profit = 0.0,
+                         const string error = "")
+  {
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   const long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   const long freeze_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   PrintFormat("[GROUP=single][STATE=%s][EVENT=%s][POSITION=%I64u][ORDER=%I64u] "
+               "[DEAL=0][SIGNAL_ID=%I64d][BAR_TIME=%s][BID=%.5f][ASK=%.5f] "
+               "[ENTRY=%.5f][SL=%.5f][TP=%.5f][STOP_LEVEL=%I64d][FREEZE_LEVEL=%I64d] "
+               "[TICK_SIZE=%.10f][RETCODE=%u][ERROR=%s]",
+               StrategyStateText(g_strategy_state), event, g_position_ticket,
+               g_trade_request_order_ticket, g_trade_request_signal_id,
+               TimeToString(g_trade_request_bar_time, TIME_DATE|TIME_MINUTES),
+               bid, ask, entry, stop_loss, take_profit, stop_level, freeze_level,
+               tick_size, retcode, error);
+  }
+
+bool FindPositionForOrderType(const long order_type, ulong &ticket)
+  {
+   const long position_type = order_type == ORDER_TYPE_BUY
+                              ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   for(int index = 0; index < PositionsTotal(); index++)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(!IsOurPosition(candidate)
+         || PositionGetInteger(POSITION_TYPE) != position_type)
+         continue;
+      ticket = candidate;
+      return true;
+     }
+   return false;
+  }
+
+bool RecoverDuplicateSingleGroupExposure()
+  {
+   if(!DeleteAllPending())
+     {
+      g_strategy_state = STATE_RECOVERY;
+      Print("[GROUP=single][STATE=RECOVERY][EVENT=DUPLICATE_PENDING_CLEANUP_RETRY] "
+            "pending orders remain; new orders stay blocked until cleanup succeeds.");
+      return false;
+     }
+
+   ulong primary_base_ticket = 0;
+   long primary_time_msc = LONG_MAX;
+   for(int index = 0; index < PositionsTotal(); index++)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(!IsOurPosition(candidate)
+         || IsGridPendingComment(PositionGetString(POSITION_COMMENT)))
+         continue;
+      const long open_time_msc = PositionGetInteger(POSITION_TIME_MSC);
+      if(primary_base_ticket == 0 || open_time_msc < primary_time_msc
+         || (open_time_msc == primary_time_msc && candidate < primary_base_ticket))
+        {
+         primary_base_ticket = candidate;
+         primary_time_msc = open_time_msc;
+        }
+     }
+
+   bool recovered = true;
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(!IsOurPosition(candidate)
+         || IsGridPendingComment(PositionGetString(POSITION_COMMENT))
+         || candidate == primary_base_ticket)
+         continue;
+      if(!g_trade.PositionClose(candidate))
+        {
+         recovered = false;
+         PrintFormat("[GROUP=single][STATE=RECOVERY][EVENT=DUPLICATE_CLOSE_FAILED] "
+                     "[POSITION=%I64u][RETCODE=%u][ERROR=%s]",
+                     candidate, g_trade.ResultRetcode(),
+                     g_trade.ResultRetcodeDescription());
+        }
+     }
+
+   const double price_tolerance = _Point * 0.5;
+   const double volume_tolerance = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
+   for(int left = 0; left < PositionsTotal(); left++)
+     {
+      const ulong left_ticket = PositionGetTicket(left);
+      if(!IsOurPosition(left_ticket)
+         || !IsGridPendingComment(PositionGetString(POSITION_COMMENT)))
+         continue;
+      const long left_type = PositionGetInteger(POSITION_TYPE);
+      const double left_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double left_volume = PositionGetDouble(POSITION_VOLUME);
+      const long left_time_msc = PositionGetInteger(POSITION_TIME_MSC);
+      for(int right = left + 1; right < PositionsTotal(); right++)
+        {
+         const ulong right_ticket = PositionGetTicket(right);
+         if(!IsOurPosition(right_ticket)
+            || !IsGridPendingComment(PositionGetString(POSITION_COMMENT))
+            || PositionGetInteger(POSITION_TYPE) != left_type
+            || MathAbs(PositionGetDouble(POSITION_PRICE_OPEN) - left_price)
+               > price_tolerance
+            || MathAbs(PositionGetDouble(POSITION_VOLUME) - left_volume)
+               > volume_tolerance)
+            continue;
+         const long right_time_msc = PositionGetInteger(POSITION_TIME_MSC);
+         const ulong close_ticket = right_time_msc > left_time_msc
+                                    || (right_time_msc == left_time_msc
+                                        && right_ticket > left_ticket)
+                                    ? right_ticket : left_ticket;
+         if(!g_trade.PositionClose(close_ticket))
+           {
+            recovered = false;
+            PrintFormat("[GROUP=single][STATE=RECOVERY][EVENT=DUPLICATE_GRID_CLOSE_FAILED] "
+                        "[POSITION=%I64u][RETCODE=%u][ERROR=%s]",
+                        close_ticket, g_trade.ResultRetcode(),
+                        g_trade.ResultRetcodeDescription());
+           }
+        }
+     }
+
+   if(recovered && !HasDuplicateSingleGroupExposure())
+     {
+      g_duplicate_exposure_logged = false;
+      g_strategy_state = g_position_ticket > 0
+                         ? STATE_POSITION_ACTIVE : STATE_RECOVERY;
+      PrintFormat("[GROUP=single][STATE=%s][EVENT=DUPLICATE_RECOVERED] "
+                  "primary_position=%I64u; pending orders canceled; group resumed.",
+                  StrategyStateText(g_strategy_state), primary_base_ticket);
+      return true;
+     }
+   g_strategy_state = STATE_RECOVERY;
+   Print("[GROUP=single][STATE=RECOVERY][EVENT=DUPLICATE_RECOVERY_RETRY] "
+         "duplicate exposure remains; retrying on the next tick.");
+   return false;
+  }
+
+bool PrepareInitialSignal(const datetime bar_time, const long direction)
+  {
+   const long signal_id = BuildSignalId(bar_time, direction);
+   if(g_signal_consumed && g_signal_id == signal_id
+      && g_signal_bar_time == bar_time && g_signal_direction == direction)
+     {
+      if(g_signal_retry_count >= 3 || TimeCurrent() < g_signal_retry_after)
+         return false;
+     }
+   if(g_signal_id != signal_id || g_signal_bar_time != bar_time
+      || g_signal_direction != direction)
+      g_signal_retry_count = 0;
+   g_signal_consumed = true;
+   g_signal_id = signal_id;
+   g_signal_bar_time = bar_time;
+   g_signal_direction = direction;
+   g_signal_retry_after = 0;
+   g_strategy_state = STATE_SIGNAL_READY;
+   LogSingleTradeEvent("SIGNAL_READY");
+   return true;
+  }
+
+void ClearTradeRequest(const string event)
+  {
+   g_trade_request_in_flight = false;
+   g_trade_request_order_ticket = 0;
+   g_trade_request_position_ticket = 0;
+   g_trade_request_signal_id = 0;
+   g_trade_request_bar_time = 0;
+   g_trade_request_direction = ORDER_TYPE_BUY;
+   g_trade_request_volume = 0.0;
+   g_trade_request_started = 0;
+   g_trade_request_retry_count = 0;
+   if(g_position_ticket > 0)
+      g_strategy_state = STATE_POSITION_ACTIVE;
+   else if(g_strategy_state != STATE_PAUSED_TEMP)
+      g_strategy_state = STATE_RECOVERY;
+   LogSingleTradeEvent(event);
+  }
+
+bool ConfirmTradeRequestFromVisiblePosition()
+  {
+   if(!g_trade_request_in_flight)
+      return true;
+   ulong ticket = 0;
+   if(!FindPositionForOrderType(g_trade_request_direction, ticket))
+      return false;
+   g_position_ticket = ticket;
+   g_last_trade_time = TimeCurrent();
+   g_trade_request_position_ticket = ticket;
+   g_trade_request_in_flight = false;
+   g_signal_retry_count = 0;
+   g_signal_retry_after = 0;
+   g_strategy_state = STATE_POSITION_ACTIVE;
+   LogSingleTradeEvent("POSITION_CONFIRMED", 0, ticket);
+   return true;
+  }
+
+bool ConfirmTradeRequestFromTransaction(const MqlTradeTransaction &trans)
+  {
+   if(!g_trade_request_in_flight || trans.type != TRADE_TRANSACTION_DEAL_ADD
+      || trans.deal == 0 || trans.symbol != _Symbol)
+      return false;
+   if(!HistoryDealSelect(trans.deal))
+      return false;
+   if((ulong)HistoryDealGetInteger(trans.deal, DEAL_MAGIC)
+         != g_gui_applied_config.magic_number
+      || HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN)
+      return false;
+   const long deal_type = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   const long expected_deal_type = g_trade_request_direction == ORDER_TYPE_BUY
+                                   ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
+   if(deal_type != expected_deal_type)
+      return false;
+   g_position_ticket = trans.position;
+   g_last_trade_time = TimeCurrent();
+   g_trade_request_position_ticket = trans.position;
+   g_trade_request_order_ticket = trans.order;
+   g_trade_request_in_flight = false;
+   g_signal_retry_count = 0;
+   g_signal_retry_after = 0;
+   g_strategy_state = STATE_POSITION_ACTIVE;
+   LogSingleTradeEvent("DEAL_CONFIRMED", 0, trans.position,
+                       trans.price, 0.0, 0.0,
+                       HistoryDealGetString(trans.deal, DEAL_COMMENT));
+   return true;
+  }
+
+bool IsAmbiguousTradeRetcode(const uint retcode)
+  {
+   return retcode == TRADE_RETCODE_TIMEOUT
+          || retcode == TRADE_RETCODE_PRICE_CHANGED
+          || retcode == TRADE_RETCODE_PRICE_OFF
+          || retcode == TRADE_RETCODE_REQUOTE
+          || retcode == TRADE_RETCODE_LOCKED
+          || retcode == TRADE_RETCODE_TOO_MANY_REQUESTS;
+  }
+
+void HandleTradeRequestFailure(const uint retcode, const string description)
+  {
+   g_strategy_state = STATE_RECOVERY;
+   g_trade_request_retry_count++;
+   if(g_signal_consumed && g_trade_request_signal_id == g_signal_id)
+     {
+      g_signal_retry_count++;
+      g_signal_retry_after = TimeCurrent() + 1;
+     }
+   LogSingleTradeEvent("REQUEST_FAILED", retcode, 0, 0.0, 0.0, 0.0, description);
+   if(IsAmbiguousTradeRetcode(retcode))
+      return;
+   ClearTradeRequest("REQUEST_RELEASED");
+  }
+
+bool PrepareGridPendingForCurrentStop(const long position_type, const double entry,
+                                      const bool favorable, ulong &ticket)
+  {
+   if(g_gui_applied_config.dynamic_stop_loss_enable != 1 || ticket == 0)
+      return true;
+   const double stop_loss = GroupStopPrice(position_type);
+   const double tolerance = _Point * 0.5;
+   const bool adverse_level_invalid = !favorable
+                                      && ((position_type == POSITION_TYPE_BUY
+                                           && entry <= stop_loss + tolerance)
+                                          || (position_type == POSITION_TYPE_SELL
+                                              && entry >= stop_loss - tolerance));
+   if(!OrderSelect(ticket))
+     {
+      ticket = 0;
+      return true;
+     }
+   if(!adverse_level_invalid
+      && MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      return true;
+   if(!DeletePendingTicket(ticket, "Dynamic grid pending cleanup"))
+      return false;
+   ticket = 0;
    return true;
   }
 
@@ -2863,7 +3855,8 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
          continue;
       double fill_price = 0.0;
       if(FindFilledGridOrder(position_type, level,
-                             GridLevelPrice(position_type, level), fill_price))
+                             GridLevelPrice(position_type, level), false,
+                             fill_price))
         {
          g_grid_filled_mask |= level_bit;
          latest_entry = fill_price;
@@ -2878,7 +3871,8 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
             continue;
          double fill_price = 0.0;
          if(FindFilledGridOrder(position_type, level,
-                                FavorableGridLevelPrice(position_type, level), fill_price))
+                                FavorableGridLevelPrice(position_type, level), true,
+                                fill_price))
            {
             g_favorable_grid_filled_mask |= level_bit;
             latest_entry = fill_price;
@@ -2923,11 +3917,20 @@ void EnsureGridPending(const long position_type)
          continue;
       const double expected_price = GridLevelPrice(position_type, level);
       ulong grid_ticket = 0;
-      if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
-                                    expected_volume, grid_ticket))
-         continue;
-      if(grid_ticket == 0)
-         PlaceGridPending(position_type, level, false);
+       if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
+                                     expected_volume, grid_ticket))
+          continue;
+       if(!PrepareGridPendingForCurrentStop(position_type, expected_price, false,
+                                            grid_ticket))
+          return;
+       if(grid_ticket == 0
+          && ((position_type == POSITION_TYPE_BUY
+               && expected_price <= GroupStopPrice(position_type) + _Point * 0.5)
+              || (position_type == POSITION_TYPE_SELL
+                  && expected_price >= GroupStopPrice(position_type) - _Point * 0.5)))
+          continue;
+       if(grid_ticket == 0)
+          PlaceGridPending(position_type, level, false);
       if(grid_ticket > 0 || g_grid_pending_level == level)
         {
          g_grid_pending_level = level;
@@ -2943,11 +3946,14 @@ void EnsureGridPending(const long position_type)
             continue;
          const double expected_price = FavorableGridLevelPrice(position_type, level);
          ulong grid_ticket = 0;
-         if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
-                                       expected_volume, grid_ticket))
-            continue;
-         if(grid_ticket == 0)
-            PlaceGridPending(position_type, level, true);
+          if(!NormalizeGridPendingLevel(expected_direction, level, expected_price,
+                                        expected_volume, grid_ticket))
+             continue;
+          if(!PrepareGridPendingForCurrentStop(position_type, expected_price, true,
+                                               grid_ticket))
+             return;
+          if(grid_ticket == 0)
+             PlaceGridPending(position_type, level, true);
          if(grid_ticket > 0 || g_favorable_grid_pending_level == level)
            {
             g_favorable_grid_pending_level = level;
@@ -3026,8 +4032,11 @@ bool Transition(const long position_type, const double volume,
                                                       next_stop_points, next_take_profit_points);
    if(!DeleteAllPending())
       return false;
-   if(GetReversePendingStatus() == REVERSE_PENDING_FILLED)
-      return false;
+   // A stop transition is a market-order transition.  Any reverse pending
+   // order from the stopped group is stale now, including a stale ticket
+   // whose history status can no longer be trusted.
+   g_pending_ticket = 0;
+   g_pending_index = -1;
    if(HasDuplicateSingleGroupExposure())
       return false;
    g_cumulative_loss_lots += g_group_total_lots > 0.0 ? g_group_total_lots : volume;
@@ -3071,8 +4080,8 @@ bool Transition(const long position_type, const double volume,
     g_group_anchor_price = next_entry;
     g_group_last_entry = next_entry;
     g_group_linear_extreme = next_entry;
-    g_group_first_lots = next_volume;
-    g_group_total_lots = TotalPositionVolume(next_position_type);
+     g_group_total_lots = TotalPositionVolume(next_position_type);
+     g_group_first_lots = g_group_total_lots;
     g_grid_filled_levels = 0;
     g_grid_filled_mask = 0;
     g_grid_pending_level = 0;
@@ -3081,6 +4090,7 @@ bool Transition(const long position_type, const double volume,
     g_favorable_grid_filled_mask = 0;
     g_favorable_grid_pending_level = 0;
     g_favorable_grid_pending_price = 0.0;
+   ClearGridOrderTicketCache();
     g_grid_lots = VolumeNormalize(
       g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
    if(!SetGroupStops(next_position_type) || !StopsVerified(next_position_type))
@@ -3149,8 +4159,8 @@ bool ResumePreparedTransition()
     g_group_anchor_price = entry;
     g_group_last_entry = entry;
     g_group_linear_extreme = entry;
-    g_group_first_lots = volume;
-    g_group_total_lots = TotalPositionVolume(position_type);
+     g_group_total_lots = TotalPositionVolume(position_type);
+     g_group_first_lots = g_group_total_lots;
     g_grid_filled_levels = 0;
     g_grid_filled_mask = 0;
     g_grid_pending_level = 0;
@@ -3159,6 +4169,7 @@ bool ResumePreparedTransition()
     g_favorable_grid_filled_mask = 0;
     g_favorable_grid_pending_level = 0;
     g_favorable_grid_pending_price = 0.0;
+   ClearGridOrderTicketCache();
     g_grid_lots = VolumeNormalize(
       g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
    if(!SetGroupStops(position_type) || !StopsVerified(position_type))
@@ -3169,6 +4180,30 @@ bool ResumePreparedTransition()
      }
    g_transition_phase = TRANSITION_COMPLETE;
    SaveState();
+   return true;
+  }
+
+bool RecoverFlatGroupAfterBrokerStop()
+  {
+   if(!g_had_position || g_transition_phase != TRANSITION_NONE
+      || g_group_first_lots <= 0.0 || g_group_stop_points <= 0
+      || g_group_take_profit_points <= 0)
+      return false;
+
+   const long position_type = g_last_position_type;
+   const double stop_loss = GroupStopPrice(position_type);
+   const double take_profit = GroupTakeProfitPrice(position_type);
+   if(PastLastTakeProfit() || !StopReached(position_type, stop_loss))
+      return false;
+
+   const double stopped_group_volume = g_group_total_lots > 0.0
+                                      ? g_group_total_lots
+                                      : g_group_first_lots;
+   PrintFormat("Broker stop closed the group before EA processing; recovering the reverse market order. "
+               "first_lots=%.2f, group_lots=%.2f, next_lots=%.2f",
+               g_group_first_lots, stopped_group_volume,
+               NextGroupLotsAfterStopRaw(stopped_group_volume));
+   Transition(position_type, stopped_group_volume, stop_loss, take_profit);
    return true;
   }
 
@@ -3199,16 +4234,38 @@ void Manage()
    if(GuiProcessPendingReset())
       return;
 
+   if(g_trade_request_in_flight)
+     {
+      if(!ConfirmTradeRequestFromVisiblePosition())
+        {
+         g_strategy_state = STATE_ORDER_SENDING;
+         const datetime now = TimeCurrent();
+         if(g_last_single_request_wait_log == 0
+            || now - g_last_single_request_wait_log >= 10)
+           {
+            LogSingleTradeEvent("REQUEST_STILL_IN_FLIGHT");
+            g_last_single_request_wait_log = now;
+           }
+         return;
+        }
+      // Let the following tick initialize the position and its group state.
+      // This closes the visibility gap between a DONE result and the
+      // terminal's position snapshot.
+      return;
+     }
+   if(!ProtectionRetryAllowed())
+      return;
+
    if(HasDuplicateSingleGroupExposure())
      {
-      DeleteAllPending();
       if(!g_duplicate_exposure_logged)
         {
-         Print("Duplicate single-group exposure detected: pending orders canceled and new orders paused. "
-               "Resolve duplicate positions manually before restarting this strategy scope.");
+         Print("[GROUP=single][STATE=RECOVERY][EVENT=DUPLICATE_DETECTED] "
+               "pending orders will be canceled and duplicate positions will be normalized automatically.");
          g_duplicate_exposure_logged = true;
         }
-      return;
+      if(!RecoverDuplicateSingleGroupExposure())
+         return;
      }
    g_duplicate_exposure_logged = false;
 
@@ -3266,12 +4323,18 @@ void Manage()
                                   && (g_pending_ticket == 0
                                       || (reverse_pending_status == REVERSE_PENDING_FILLED
                                           && pending_position_found));
-      if(!pending_filled)
-         HandleGridFill(position_type, previous_group_total_lots);
-      if(pending_filled)
-        {
-         if(g_reversal_count >= g_gui_applied_config.max_reversals)
-           {
+       if(!pending_filled)
+          HandleGridFill(position_type, previous_group_total_lots);
+       if(pending_filled)
+         {
+          if(!ClosePreviousGroupAfterReverseFill(position_ticket))
+            {
+             Print("Reverse fill detected, but the previous order group is not fully closed; retrying.");
+             SaveState();
+             return;
+            }
+          if(g_reversal_count >= g_gui_applied_config.max_reversals)
+            {
             BeginResetAfterMaxReversals();
             return;
            }
@@ -3293,6 +4356,7 @@ void Manage()
           g_favorable_grid_filled_mask = 0;
           g_favorable_grid_pending_level = 0;
           g_favorable_grid_pending_price = 0.0;
+          ClearGridOrderTicketCache();
           g_grid_lots = VolumeNormalize(
             g_previous_grid_lots * g_gui_applied_config.grid_lot_multiplier);
          g_transition_phase = TRANSITION_COMPLETE;
@@ -3398,11 +4462,13 @@ void Manage()
       if(StopReached(position_type, stop_loss))
         {
          const int latest_pending_status = GetReversePendingStatus();
-         if(latest_pending_status == REVERSE_PENDING_FILLED)
+         if(latest_pending_status == REVERSE_PENDING_FILLED && pending_position_found)
             return;
-         if(latest_pending_status == REVERSE_PENDING_UNKNOWN
-            && !has_state_pending && g_pending_ticket > 0)
-            return;
+         if(latest_pending_status == REVERSE_PENDING_ACTIVE
+            || latest_pending_status == REVERSE_PENDING_UNKNOWN
+            || (latest_pending_status == REVERSE_PENDING_FILLED
+                && !pending_position_found))
+            Print("Stop reached; canceling the old reverse pending order and forcing a market reversal.");
          Transition(position_type, volume, stop_loss, take_profit);
          return;
         }
@@ -3423,6 +4489,16 @@ void Manage()
       g_pending_index = -1;
       ClearState();
       MarkCandleEntryBarProcessed(completed_bar_time);
+      return;
+     }
+
+   if(RecoverFlatGroupAfterBrokerStop())
+      return;
+
+   const int flat_pending_status = GetReversePendingStatus();
+   if(flat_pending_status == REVERSE_PENDING_FILLED)
+     {
+      Print("Reverse pending order is filled; waiting for the resulting market position before starting a new cycle.");
       return;
      }
 
@@ -3475,12 +4551,26 @@ void Manage()
       g_active_first_direction = (int)first_direction;
       g_active_cycle_mode = g_gui_applied_config.cycle_mode;
      }
+   else if(g_gui_applied_config.distance_mode == DISTANCE_LONG_CANDLE)
+     {
+      if(!GetLongCandleDirection(first_direction)
+         || !GetDistancePoints(initial_stop_points, initial_take_profit_points))
+         return;
+      g_active_first_direction = first_direction == ORDER_TYPE_BUY
+                                 ? FIRST_BUY : FIRST_SELL;
+      g_active_cycle_mode = g_gui_applied_config.cycle_mode;
+     }
    else
      {
-      g_active_first_direction = g_gui_applied_config.first_direction;
+      if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_BOLLINGER
+         && !GetBollingerFirstDirection(first_direction))
+         return;
+      if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_PRESET)
+         first_direction = g_gui_applied_config.first_direction == FIRST_SELL
+                           ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      g_active_first_direction = first_direction == ORDER_TYPE_BUY
+                                 ? FIRST_BUY : FIRST_SELL;
       g_active_cycle_mode = g_gui_applied_config.cycle_mode;
-      first_direction = g_gui_applied_config.first_direction == FIRST_BUY
-                        ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
       if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
          return;
      }
@@ -3494,6 +4584,8 @@ void Manage()
                                    ? NextGroupLotsAfterStop(g_group_first_lots)
                                    : VolumeNormalize(g_cumulative_loss_lots))
                                 : VolumeNormalize(g_gui_applied_config.initial_lots);
+   if(!PrepareInitialSignal(iTime(_Symbol, _Period, 0), first_direction))
+      return;
    if(OpenMarket(first_direction, initial_lots))
      {
       if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
@@ -3506,6 +4598,8 @@ void Manage()
        if(FindPosition(position_ticket, position_type, volume, entry,
                        stop_loss, take_profit))
          {
+          g_position_ticket = position_ticket;
+          g_strategy_state = STATE_POSITION_ACTIVE;
           g_group_anchor_price = entry;
           g_group_last_entry = entry;
           g_group_linear_extreme = entry;
@@ -3515,6 +4609,7 @@ void Manage()
          g_grid_filled_mask = 0;
          g_grid_pending_level = 0;
           g_grid_pending_price = 0.0;
+         ClearGridOrderTicketCache();
          g_grid_lots = g_previous_grid_lots > 0.0
                        ? VolumeNormalize(g_previous_grid_lots
                                          * g_gui_applied_config.grid_lot_multiplier)
@@ -3529,6 +4624,7 @@ struct MultiGroupState
   {
    int      id;
    bool     active;
+   bool     dirty;
    int      first_direction;
    int      cycle_mode;
    int      cycle_index;
@@ -3562,11 +4658,65 @@ struct MultiGroupState
    long     favorable_grid_filled_mask;
    int      favorable_grid_pending_level;
    double   favorable_grid_pending_price;
+   bool     request_in_flight;
+   ulong    request_order_ticket;
+   ulong    request_position_ticket;
+   long     request_signal_id;
+   datetime request_bar_time;
+   long     request_direction;
+   double   request_volume;
+   int      request_retry_count;
+   bool     signal_consumed;
+   long     signal_id;
+   datetime signal_bar_time;
+   StrategyState state;
   };
 
 MultiGroupState g_multi_groups[];
 datetime g_multi_last_trigger_bar = 0;
 int g_multi_next_id = 1;
+ulong g_multi_grid_order_tickets[];
+ulong g_multi_favorable_grid_order_tickets[];
+
+int MultiGridTicketCacheIndex(const int group_id, const int level)
+  {
+   if(group_id <= 0 || level <= 0 || level >= MAX_GRID_COUNT)
+      return -1;
+   return group_id * MAX_GRID_COUNT + level;
+  }
+
+void MultiEnsureGridTicketCache(const int group_id)
+  {
+   const int required = (group_id + 1) * MAX_GRID_COUNT;
+   if(ArraySize(g_multi_grid_order_tickets) < required)
+      ArrayResize(g_multi_grid_order_tickets, required);
+   if(ArraySize(g_multi_favorable_grid_order_tickets) < required)
+      ArrayResize(g_multi_favorable_grid_order_tickets, required);
+  }
+
+void MultiRememberGridOrderTicket(const int group_id, const int level,
+                                  const bool favorable, const ulong ticket)
+  {
+   const int cache_index = MultiGridTicketCacheIndex(group_id, level);
+   if(cache_index < 0)
+      return;
+   MultiEnsureGridTicketCache(group_id);
+   if(favorable)
+      g_multi_favorable_grid_order_tickets[cache_index] = ticket;
+   else
+      g_multi_grid_order_tickets[cache_index] = ticket;
+  }
+
+ulong MultiGridOrderTicket(const int group_id, const int level,
+                           const bool favorable)
+  {
+   const int cache_index = MultiGridTicketCacheIndex(group_id, level);
+   if(cache_index < 0)
+      return 0;
+   MultiEnsureGridTicketCache(group_id);
+   return favorable ? g_multi_favorable_grid_order_tickets[cache_index]
+                    : g_multi_grid_order_tickets[cache_index];
+  }
 
 bool ResetInMemoryStrategyState()
   {
@@ -3574,6 +4724,8 @@ bool ResetInMemoryStrategyState()
       return false;
    g_multi_last_trigger_bar = 0;
    g_multi_next_id = 1;
+   ArrayResize(g_multi_grid_order_tickets, 0);
+   ArrayResize(g_multi_favorable_grid_order_tickets, 0);
    g_had_position = false;
    g_last_position_type = POSITION_TYPE_BUY;
    g_last_take_profit = 0.0;
@@ -3603,14 +4755,16 @@ bool ResetInMemoryStrategyState()
    g_group_anchor_price = 0.0;
    g_group_last_entry = 0.0;
    g_group_linear_extreme = 0.0;
-    g_grid_filled_levels = 0;
-    g_grid_filled_mask = 0;
-    g_grid_pending_level = 0;
+         g_grid_filled_levels = 0;
+         g_grid_filled_mask = 0;
+         ClearGridOrderTicketCache();
+         g_grid_pending_level = 0;
     g_grid_pending_price = 0.0;
     g_favorable_grid_filled_levels = 0;
     g_favorable_grid_filled_mask = 0;
     g_favorable_grid_pending_level = 0;
     g_favorable_grid_pending_price = 0.0;
+    ClearGridOrderTicketCache();
     return true;
   }
 
@@ -3698,6 +4852,7 @@ void MultiResetState(MultiGroupState &group, const int group_id)
   {
    group.id = group_id;
    group.active = true;
+   group.dirty = true;
    group.first_direction = FIRST_BUY;
    group.cycle_mode = CYCLE_MODE_1;
    group.cycle_index = 0;
@@ -3731,6 +4886,18 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.favorable_grid_filled_mask = 0;
    group.favorable_grid_pending_level = 0;
    group.favorable_grid_pending_price = 0.0;
+   group.request_in_flight = false;
+   group.request_order_ticket = 0;
+   group.request_position_ticket = 0;
+   group.request_signal_id = 0;
+   group.request_bar_time = 0;
+   group.request_direction = ORDER_TYPE_BUY;
+   group.request_volume = 0.0;
+   group.request_retry_count = 0;
+   group.signal_consumed = false;
+   group.signal_id = 0;
+   group.signal_bar_time = 0;
+   group.state = STATE_IDLE;
   }
 
 void MultiClearAll()
@@ -3841,8 +5008,9 @@ bool MultiNormalizeGridPendingLevel(const MultiGroupState &group,
                                     const long expected_direction, const int expected_level,
                                     const double expected_price, const double expected_volume,
                                     ulong &keep_ticket)
-  {
-   keep_ticket = 0;
+   {
+    keep_ticket = 0;
+   bool keep_favorable = false;
    for(int index = 0; index < OrdersTotal(); index++)
      {
       const ulong candidate = OrderGetTicket(index);
@@ -3857,8 +5025,12 @@ bool MultiNormalizeGridPendingLevel(const MultiGroupState &group,
                                        expected_price, expected_volume))
          continue;
       if(keep_ticket == 0 || candidate < keep_ticket)
+        {
          keep_ticket = candidate;
+         keep_favorable = StringFind(OrderGetString(ORDER_COMMENT), ".Grid.F.") >= 0;
+        }
      }
+   MultiRememberGridOrderTicket(group.id, expected_level, keep_favorable, keep_ticket);
    bool normalized = true;
    for(int index = OrdersTotal() - 1; index >= 0; index--)
      {
@@ -3881,26 +5053,30 @@ bool MultiNormalizeGridPendingLevel(const MultiGroupState &group,
 
 bool MultiFindFilledGridOrder(const MultiGroupState &group, const long position_type,
                               const int level, const double expected_price,
+                              const bool favorable,
                               double &fill_price)
   {
-   if(!HistorySelect(0, TimeCurrent()))
+   ulong ticket = MultiGridOrderTicket(group.id, level, favorable);
+   if(ticket == 0
+      && (favorable ? group.favorable_grid_pending_level
+                    : group.grid_pending_level) == level)
+      ticket = favorable ? group.favorable_grid_pending_ticket
+                         : group.grid_pending_ticket;
+   if(ticket == 0 || !HistoryOrderSelect(ticket))
       return false;
-   for(int index = HistoryOrdersTotal() - 1; index >= 0; index--)
+   const string comment = HistoryOrderGetString(ticket, ORDER_COMMENT);
+   if(HistoryOrderGetString(ticket, ORDER_SYMBOL) == _Symbol
+      && (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
+         == g_gui_applied_config.magic_number
+      && HistoryOrderGetInteger(ticket, ORDER_STATE) == ORDER_STATE_FILLED
+      && MultiIsGridPendingAtLevel(group,
+                                   HistoryOrderGetInteger(ticket, ORDER_TYPE),
+                                   comment,
+                                   HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN),
+                                   HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL),
+                                   position_type, level, expected_price,
+                                   HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL)))
      {
-      const ulong ticket = HistoryOrderGetTicket(index);
-      if(ticket == 0
-         || HistoryOrderGetString(ticket, ORDER_SYMBOL) != _Symbol
-         || (ulong)HistoryOrderGetInteger(ticket, ORDER_MAGIC)
-            != g_gui_applied_config.magic_number
-         || HistoryOrderGetInteger(ticket, ORDER_STATE) != ORDER_STATE_FILLED
-         || !MultiIsGridPendingAtLevel(group,
-                                       HistoryOrderGetInteger(ticket, ORDER_TYPE),
-                                       HistoryOrderGetString(ticket, ORDER_COMMENT),
-                                       HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN),
-                                       HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL),
-                                       position_type, level, expected_price,
-                                       HistoryOrderGetDouble(ticket, ORDER_VOLUME_INITIAL)))
-         continue;
       fill_price = HistoryOrderGetDouble(ticket, ORDER_PRICE_OPEN);
       return true;
      }
@@ -3916,8 +5092,61 @@ int MultiGridFilledLevelCount(const MultiGroupState &group)
    return count;
   }
 
-void MultiSaveGroup(const MultiGroupState &group)
+bool MultiStateChanged(const MultiGroupState &before,
+                       const MultiGroupState &after)
   {
+   return before.active != after.active
+          || before.first_direction != after.first_direction
+          || before.cycle_mode != after.cycle_mode
+          || before.cycle_index != after.cycle_index
+          || before.pending_index != after.pending_index
+          || before.reversal_count != after.reversal_count
+          || before.pending_ticket != after.pending_ticket
+          || before.initial_high_ticket != after.initial_high_ticket
+          || before.initial_low_ticket != after.initial_low_ticket
+          || before.initial_high_price != after.initial_high_price
+          || before.initial_low_price != after.initial_low_price
+          || before.initial_high_direction != after.initial_high_direction
+          || before.initial_low_direction != after.initial_low_direction
+          || before.grid_pending_ticket != after.grid_pending_ticket
+          || before.stop_points != after.stop_points
+          || before.take_profit_points != after.take_profit_points
+          || before.cumulative_loss_lots != after.cumulative_loss_lots
+          || before.first_lots != after.first_lots
+          || before.previous_grid_lots != after.previous_grid_lots
+          || before.grid_lots != after.grid_lots
+          || before.total_lots != after.total_lots
+          || before.transition_target_lots != after.transition_target_lots
+          || before.anchor_price != after.anchor_price
+          || before.last_entry != after.last_entry
+          || before.linear_extreme != after.linear_extreme
+          || before.grid_filled_levels != after.grid_filled_levels
+          || before.grid_filled_mask != after.grid_filled_mask
+          || before.grid_pending_level != after.grid_pending_level
+          || before.grid_pending_price != after.grid_pending_price
+          || before.favorable_grid_pending_ticket != after.favorable_grid_pending_ticket
+          || before.favorable_grid_filled_levels != after.favorable_grid_filled_levels
+          || before.favorable_grid_filled_mask != after.favorable_grid_filled_mask
+          || before.favorable_grid_pending_level != after.favorable_grid_pending_level
+          || before.favorable_grid_pending_price != after.favorable_grid_pending_price
+          || before.request_in_flight != after.request_in_flight
+          || before.request_order_ticket != after.request_order_ticket
+          || before.request_position_ticket != after.request_position_ticket
+          || before.request_signal_id != after.request_signal_id
+          || before.request_bar_time != after.request_bar_time
+          || before.request_direction != after.request_direction
+          || before.request_volume != after.request_volume
+          || before.request_retry_count != after.request_retry_count
+          || before.signal_consumed != after.signal_consumed
+          || before.signal_id != after.signal_id
+          || before.signal_bar_time != after.signal_bar_time
+          || before.state != after.state;
+  }
+
+void MultiSaveGroup(MultiGroupState &group)
+  {
+   if(!group.dirty)
+      return;
    const string prefix = MultiStatePrefix(group.id);
    GlobalVariableSet(prefix + ".active", group.active ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".first", (double)group.first_direction);
@@ -3960,6 +5189,7 @@ void MultiSaveGroup(const MultiGroupState &group)
                             GuiConfigFingerprint2(g_gui_applied_config)))
       PrintFormat("Failed to persist MT5 GUI configuration fingerprint: %s",
                   StatePrefix());
+   group.dirty = false;
   }
 
 void MultiLoadGroups()
@@ -4038,6 +5268,7 @@ void MultiLoadGroups()
          state.favorable_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridpendinglevel"));
       if(GlobalVariableCheck(prefix + ".favorablegridpendingprice"))
          state.favorable_grid_pending_price = GlobalVariableGet(prefix + ".favorablegridpendingprice");
+      state.dirty = false;
       g_multi_groups[index] = state;
      }
   }
@@ -4099,6 +5330,35 @@ bool MultiClosePositions(const int group_id)
    return closed;
   }
 
+bool MultiClosePositionsExcept(const int group_id, const ulong keep_ticket)
+  {
+   if(keep_ticket == 0 || !MultiIsOurPosition(keep_ticket, group_id))
+      return false;
+   bool closed = true;
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket
+         || !MultiIsOurPosition(candidate, group_id))
+         continue;
+      if(!g_trade.PositionClose(candidate))
+        {
+         PrintFormat("Previous multi-group close failed after reverse fill, group=%d, ticket=%I64u, retcode=%u, %s",
+                     group_id, candidate, g_trade.ResultRetcode(),
+                     g_trade.ResultRetcodeDescription());
+         closed = false;
+        }
+     }
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = PositionGetTicket(index);
+      if(candidate != 0 && candidate != keep_ticket
+         && MultiIsOurPosition(candidate, group_id))
+         closed = false;
+     }
+   return closed;
+  }
+
 bool MultiDeletePending(const int group_id)
   {
    bool deleted = true;
@@ -4132,14 +5392,17 @@ bool MultiDeletePending(const int group_id)
 
 long MultiSequenceDirection(const MultiGroupState &group, const int index)
   {
-   const int normalized = ((index % 6) + 6) % 6;
+   const int cycle_length = CycleLength(group.cycle_mode);
+   const int normalized = ((index % cycle_length) + cycle_length) % cycle_length;
    bool buy = false;
    if(group.cycle_mode == CYCLE_MODE_1)
       buy = normalized == 0 || normalized == 3;
    else if(group.cycle_mode == CYCLE_MODE_2)
       buy = normalized == 0 || normalized == 2 || normalized == 4 || normalized == 5;
-   else
+   else if(group.cycle_mode == CYCLE_MODE_3)
       buy = normalized == 0 || normalized == 2 || normalized == 3 || normalized == 5;
+   else
+      buy = normalized == 0 || normalized == 3 || normalized == 4;
    if(group.first_direction == FIRST_SELL)
       buy = !buy;
    return buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
@@ -4147,9 +5410,21 @@ long MultiSequenceDirection(const MultiGroupState &group, const int index)
 
 double MultiStopPrice(const MultiGroupState &group, const long type)
   {
-   if(type == POSITION_TYPE_BUY)
-      return PriceNormalize(group.anchor_price - group.stop_points * _Point);
-   return PriceNormalize(group.anchor_price + group.stop_points * _Point);
+   double stop_loss = type == POSITION_TYPE_BUY
+                      ? group.anchor_price - group.stop_points * _Point
+                      : group.anchor_price + group.stop_points * _Point;
+   if(g_gui_applied_config.dynamic_stop_loss_enable == 1
+      && g_gui_applied_config.grid_count >= 2)
+     {
+      const int level = HighestFavorableGridLevel(group.favorable_grid_filled_mask);
+      const double grid_spacing = group.stop_points * _Point
+                                  / g_gui_applied_config.grid_count;
+      if(type == POSITION_TYPE_BUY)
+         stop_loss += level * grid_spacing;
+      else
+         stop_loss -= level * grid_spacing;
+     }
+   return PriceNormalize(stop_loss);
   }
 
 double MultiTakeProfitPrice(const MultiGroupState &group, const long type)
@@ -4165,8 +5440,6 @@ double MultiTakeProfitPrice(const MultiGroupState &group, const long type)
 
 bool MultiSetStops(const MultiGroupState &group, const long type)
   {
-   const double stop_loss = MultiStopPrice(group, type);
-   const double take_profit = MultiTakeProfitPrice(group, type);
    bool modified = true;
    for(int index = PositionsTotal() - 1; index >= 0; index--)
      {
@@ -4174,6 +5447,19 @@ bool MultiSetStops(const MultiGroupState &group, const long type)
       if(!MultiIsOurPosition(ticket, group.id)
          || PositionGetInteger(POSITION_TYPE) != type)
          continue;
+      double stop_loss = MultiStopPrice(group, type);
+      double take_profit = MultiTakeProfitPrice(group, type);
+      string reason = "";
+      if(!ValidateStops((ENUM_POSITION_TYPE)type,
+                        PositionGetDouble(POSITION_PRICE_OPEN),
+                        stop_loss, take_profit, reason))
+        {
+         modified = false;
+         PrintFormat("[GROUP=%d][STATE=PROTECTION_PENDING][EVENT=STOP_VALIDATION_FAILED] "
+                     "[POSITION=%I64u][SL=%.5f][TP=%.5f][ERROR=%s]",
+                     group.id, ticket, stop_loss, take_profit, reason);
+         continue;
+        }
       const double old_sl = PositionGetDouble(POSITION_SL);
       const double old_tp = PositionGetDouble(POSITION_TP);
       if(MathAbs(old_sl - stop_loss) <= _Point * 0.5
@@ -4181,9 +5467,10 @@ bool MultiSetStops(const MultiGroupState &group, const long type)
          continue;
       if(!g_trade.PositionModify(ticket, stop_loss, take_profit))
         {
-         PrintFormat("Multi group stops modify failed, group=%d, ticket=%I64u, retcode=%u, %s",
-                     group.id, ticket, g_trade.ResultRetcode(),
-                     g_trade.ResultRetcodeDescription());
+         PrintFormat("[GROUP=%d][STATE=PROTECTION_PENDING][EVENT=POSITION_MODIFY_FAILED] "
+                     "[POSITION=%I64u][SL=%.5f][TP=%.5f][RETCODE=%u][ERROR=%s]",
+                     group.id, ticket, stop_loss, take_profit,
+                     g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
          modified = false;
         }
      }
@@ -4193,8 +5480,6 @@ bool MultiSetStops(const MultiGroupState &group, const long type)
 bool MultiStopsVerified(const MultiGroupState &group, const long type)
   {
    bool found = false;
-   const double stop_loss = MultiStopPrice(group, type);
-   const double take_profit = MultiTakeProfitPrice(group, type);
    for(int index = PositionsTotal() - 1; index >= 0; index--)
      {
       const ulong ticket = PositionGetTicket(index);
@@ -4202,6 +5487,13 @@ bool MultiStopsVerified(const MultiGroupState &group, const long type)
          || PositionGetInteger(POSITION_TYPE) != type)
          continue;
       found = true;
+      double stop_loss = MultiStopPrice(group, type);
+      double take_profit = MultiTakeProfitPrice(group, type);
+      string reason = "";
+      if(!ValidateStops((ENUM_POSITION_TYPE)type,
+                        PositionGetDouble(POSITION_PRICE_OPEN),
+                        stop_loss, take_profit, reason))
+         return false;
       if(PositionGetDouble(POSITION_SL) <= 0.0
          || PositionGetDouble(POSITION_TP) <= 0.0
          || MathAbs(PositionGetDouble(POSITION_SL) - stop_loss) > _Point * 0.5
@@ -4211,21 +5503,124 @@ bool MultiStopsVerified(const MultiGroupState &group, const long type)
    return found;
   }
 
+void MultiLogTradeEvent(const MultiGroupState &group, const string event,
+                        const uint retcode = 0, const string error = "")
+  {
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   PrintFormat("[GROUP=%d][STATE=%s][EVENT=%s][POSITION=%I64u][ORDER=%I64u] "
+               "[SIGNAL_ID=%I64d][BAR_TIME=%s][BID=%.5f][ASK=%.5f] "
+               "[STOP_LEVEL=%I64d][FREEZE_LEVEL=%I64d][TICK_SIZE=%.10f] "
+               "[RETCODE=%u][ERROR=%s]",
+               group.id, StrategyStateText(group.state), event,
+               group.request_position_ticket, group.request_order_ticket,
+               group.request_signal_id,
+               TimeToString(group.request_bar_time, TIME_DATE|TIME_MINUTES),
+               bid, ask, SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),
+               SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL),
+               SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE), retcode, error);
+  }
+
+bool MultiConfirmTradeRequestFromVisible(MultiGroupState &group)
+  {
+   if(!group.request_in_flight)
+      return true;
+   ulong ticket = 0;
+   long type = POSITION_TYPE_BUY;
+   double volume = 0.0;
+   double entry = 0.0;
+   double stop_loss = 0.0;
+   double take_profit = 0.0;
+   if(!MultiFindPosition(group.id, ticket, type, volume, entry, stop_loss,
+                          take_profit)
+      || (group.request_direction == ORDER_TYPE_BUY && type != POSITION_TYPE_BUY)
+      || (group.request_direction == ORDER_TYPE_SELL && type != POSITION_TYPE_SELL))
+      return false;
+   group.request_in_flight = false;
+   group.request_position_ticket = ticket;
+   group.state = STATE_POSITION_ACTIVE;
+   group.dirty = true;
+   MultiLogTradeEvent(group, "POSITION_CONFIRMED");
+   return true;
+  }
+
+bool MultiConfirmTradeRequestFromTransaction(const MqlTradeTransaction &trans)
+  {
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD || trans.deal == 0
+      || trans.symbol != _Symbol || !HistoryDealSelect(trans.deal)
+      || (ulong)HistoryDealGetInteger(trans.deal, DEAL_MAGIC)
+         != g_gui_applied_config.magic_number
+      || HistoryDealGetInteger(trans.deal, DEAL_ENTRY) != DEAL_ENTRY_IN)
+      return false;
+   const string comment = HistoryDealGetString(trans.deal, DEAL_COMMENT);
+   for(int index = 0; index < ArraySize(g_multi_groups); index++)
+     {
+      MultiGroupState group = g_multi_groups[index];
+      if(!group.active || !group.request_in_flight
+         || !MultiCommentMatches(comment, group.id))
+         continue;
+      const long deal_type = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+      const long expected_type = group.request_direction == ORDER_TYPE_BUY
+                                 ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
+      if(deal_type != expected_type)
+         continue;
+      group.request_in_flight = false;
+      group.request_order_ticket = trans.order;
+      group.request_position_ticket = trans.position;
+      group.state = STATE_POSITION_ACTIVE;
+      group.dirty = true;
+      g_multi_groups[index] = group;
+      MultiLogTradeEvent(group, "DEAL_CONFIRMED");
+      return true;
+     }
+   return false;
+  }
+
 bool MultiSendMarketLeg(MultiGroupState &group, const long type, const double volume)
   {
+   if(group.request_in_flight)
+     {
+      MultiLogTradeEvent(group, "REQUEST_BLOCKED_IN_FLIGHT");
+      return false;
+     }
    const double normalized_volume = VolumeNormalize(volume);
    if(normalized_volume <= 0.0)
       return false;
+   group.request_in_flight = true;
+   group.request_direction = type;
+   group.request_volume = normalized_volume;
+   group.request_bar_time = group.signal_bar_time > 0
+                            ? group.signal_bar_time : iTime(_Symbol, _Period, 0);
+   group.request_signal_id = group.signal_id != 0
+                             ? group.signal_id
+                             : BuildSignalId(group.request_bar_time, type);
+   group.state = STATE_ORDER_SENDING;
+   MultiLogTradeEvent(group, "REQUEST_SUBMITTED");
    const string comment = MultiGroupComment(group.id, false);
    bool sent = type == ORDER_TYPE_BUY
                ? g_trade.Buy(normalized_volume, _Symbol, 0.0, 0.0, 0.0, comment)
                : g_trade.Sell(normalized_volume, _Symbol, 0.0, 0.0, 0.0, comment);
    if(!sent || g_trade.ResultRetcode() == TRADE_RETCODE_NO_MONEY)
      {
-      PrintFormat("Multi group market order failed, group=%d, retcode=%u, %s",
-                  group.id, g_trade.ResultRetcode(), g_trade.ResultRetcodeDescription());
+      const uint retcode = g_trade.ResultRetcode();
+      group.request_retry_count++;
+      group.state = STATE_RECOVERY;
+      group.request_order_ticket = g_trade.ResultOrder();
+      MultiLogTradeEvent(group, "REQUEST_FAILED", retcode,
+                         g_trade.ResultRetcodeDescription());
+      if(IsAmbiguousTradeRetcode(retcode))
+         return false;
+      group.request_in_flight = false;
       if(g_trade.ResultRetcode() == TRADE_RETCODE_NO_MONEY)
          BeginResetAfterNoMoney();
+      return false;
+     }
+   group.request_order_ticket = g_trade.ResultOrder();
+   if(!MultiConfirmTradeRequestFromVisible(group))
+     {
+      group.state = STATE_ORDER_SENDING;
+      MultiLogTradeEvent(group, "WAITING_DEAL_CONFIRMATION",
+                         g_trade.ResultRetcode());
       return false;
      }
    return true;
@@ -4379,10 +5774,25 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       double entry = 0.0;
       double stop_loss = 0.0;
       double take_profit = 0.0;
-      if(!FindPositionByPendingOrder(filled_ticket, position_ticket, position_type,
-                                     volume, entry, stop_loss, take_profit))
-         return true;
-      group.first_direction = position_type == POSITION_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+       if(!FindPositionByPendingOrder(filled_ticket, position_ticket, position_type,
+                                      volume, entry, stop_loss, take_profit))
+          return true;
+       if(high_filled && low_filled)
+         {
+          ulong other_position_ticket = 0;
+          long other_position_type = POSITION_TYPE_BUY;
+          double other_volume = 0.0;
+          double other_entry = 0.0;
+          double other_stop_loss = 0.0;
+          double other_take_profit = 0.0;
+          if(!FindPositionByPendingOrder(other_ticket, other_position_ticket,
+                                         other_position_type, other_volume, other_entry,
+                                         other_stop_loss, other_take_profit))
+             return true;
+          if(!ClosePreviousGroupAfterReverseFill(position_ticket))
+             return true;
+         }
+       group.first_direction = position_type == POSITION_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
       group.cycle_index = 0;
       group.pending_index = -1;
       group.pending_ticket = 0;
@@ -4438,41 +5848,97 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
    return true;
   }
 
+bool MultiNormalizeReversePending(const MultiGroupState &group,
+                                  const long expected_direction,
+                                  const double expected_price,
+                                  const double expected_volume,
+                                  ulong &keep_ticket)
+  {
+   keep_ticket = 0;
+   const double price_tolerance = _Point * 0.5;
+   const double volume_tolerance = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
+         continue;
+      const string comment = OrderGetString(ORDER_COMMENT);
+      if(!MultiCommentMatches(comment, group.id)
+         || IsGridPendingComment(comment)
+         || MultiIsInitialPendingComment(comment))
+         continue;
+      if(PendingDirection(OrderGetInteger(ORDER_TYPE)) == expected_direction
+         && MathAbs(OrderGetDouble(ORDER_PRICE_OPEN) - expected_price) <= price_tolerance
+         && MathAbs(OrderGetDouble(ORDER_VOLUME_CURRENT) - expected_volume)
+            <= volume_tolerance
+         && (keep_ticket == 0 || candidate < keep_ticket))
+         keep_ticket = candidate;
+     }
+   bool normalized = true;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0 || candidate == keep_ticket
+         || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
+         continue;
+      const string comment = OrderGetString(ORDER_COMMENT);
+      if(!MultiCommentMatches(comment, group.id)
+         || IsGridPendingComment(comment)
+         || MultiIsInitialPendingComment(comment))
+         continue;
+      if(!DeletePendingTicket(candidate, "Multi reverse pending reconciliation"))
+         normalized = false;
+     }
+   return normalized;
+  }
+
 bool MultiPlaceReversePending(MultiGroupState &group, const long current_type)
   {
    if(group.reversal_count >= g_gui_applied_config.max_reversals
       || group.stop_points <= 0
       || group.take_profit_points <= 0 || group.total_lots <= 0.0)
       return false;
-   ulong existing_ticket = 0;
-   long existing_type = 0;
-   double existing_volume = 0.0;
-   double existing_price = 0.0;
-   if(MultiFindPending(group.id, false, existing_ticket, existing_type,
-                       existing_volume, existing_price))
-     {
-      group.pending_ticket = existing_ticket;
-      return true;
-     }
-   const int next_index = (group.cycle_index + 1) % 6;
+   const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
    const long next_direction = MultiSequenceDirection(group, next_index);
    const double entry = MultiStopPrice(group, current_type);
-   const long pending_type = PendingTypeForDirection(next_direction, entry);
    ReversalLotPlan plan;
    if(!BuildReversalLotPlan(MultiNextGroupLotsRaw(group, group.total_lots), plan)
       || plan.status != REVERSAL_LOT_SINGLE)
       return false;
    const double volume = VolumeNormalize(plan.first_lots);
-   const double distance_sl = group.stop_points * _Point;
-   const double distance_tp = group.take_profit_points * _Point;
+   ulong existing_ticket = 0;
+   if(!MultiNormalizeReversePending(group, next_direction, entry, volume,
+                                    existing_ticket))
+      return false;
+   if(existing_ticket > 0)
+     {
+      group.pending_ticket = existing_ticket;
+      group.pending_index = next_index;
+      return true;
+   }
+   const long pending_type = PendingTypeForDirection(next_direction, entry);
    double pending_sl = 0.0;
    double pending_tp = 0.0;
+   string reason = "";
+   if(!BuildStopsForEntry(next_direction, entry, group.stop_points,
+                          group.take_profit_points, pending_sl, pending_tp,
+                          reason))
+     {
+      PrintFormat("[GROUP=%d][STATE=%s][EVENT=REVERSE_PENDING_STOP_REJECTED] "
+                  "[ENTRY=%.5f][SL=%.5f][TP=%.5f][ERROR=%s]",
+                  group.id, StrategyStateText(group.state), entry, pending_sl,
+                  pending_tp, reason);
+      return false;
+     }
    bool sent = false;
    const string comment = MultiGroupComment(group.id, false);
    if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
      {
-      pending_sl = PriceNormalize(entry - distance_sl);
-      pending_tp = PriceNormalize(entry + distance_tp);
       sent = pending_type == ORDER_TYPE_BUY_STOP
              ? g_trade.BuyStop(volume, entry, _Symbol, pending_sl, pending_tp,
                                ORDER_TIME_GTC, 0, comment)
@@ -4481,8 +5947,6 @@ bool MultiPlaceReversePending(MultiGroupState &group, const long current_type)
      }
    else
      {
-      pending_sl = PriceNormalize(entry + distance_sl);
-      pending_tp = PriceNormalize(entry - distance_tp);
       sent = pending_type == ORDER_TYPE_SELL_STOP
              ? g_trade.SellStop(volume, entry, _Symbol, pending_sl, pending_tp,
                                 ORDER_TIME_GTC, 0, comment)
@@ -4524,6 +5988,11 @@ double MultiFavorableGridLevelPrice(const MultiGroupState &group, const long typ
           : PriceNormalize(group.anchor_price - distance);
   }
 
+bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
+                                           const long position_type,
+                                           const double entry, const bool favorable,
+                                           ulong &ticket);
+
 bool MultiPlaceGridPending(MultiGroupState &group, const long type)
   {
    if(g_gui_applied_config.grid_count < 2
@@ -4537,18 +6006,29 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
          continue;
       const double entry = MultiGridLevelPrice(group, type, level);
       ulong existing_ticket = 0;
-      if(!MultiNormalizeGridPendingLevel(group,
-                                         type == POSITION_TYPE_BUY
-                                         ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
-                                         level, entry, volume, existing_ticket))
-         continue;
-      if(existing_ticket == 0)
+       if(!MultiNormalizeGridPendingLevel(group,
+                                          type == POSITION_TYPE_BUY
+                                          ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                                          level, entry, volume, existing_ticket))
+          continue;
+       if(!PrepareMultiGridPendingForCurrentStop(group, type, entry, false,
+                                                 existing_ticket))
+          return false;
+       if(existing_ticket == 0
+          && ((type == POSITION_TYPE_BUY && entry <= MultiStopPrice(group, type) + _Point * 0.5)
+              || (type == POSITION_TYPE_SELL && entry >= MultiStopPrice(group, type) - _Point * 0.5)))
+          continue;
+       if(existing_ticket == 0)
         {
          const long pending_type = PendingTypeForDirection(type, entry);
-         const double stop_loss = MultiStopPrice(group, type);
-         const double take_profit = type == POSITION_TYPE_BUY
-                                    ? PriceNormalize(entry + group.take_profit_points * _Point)
-                                    : PriceNormalize(entry - group.take_profit_points * _Point);
+         double stop_loss = MultiStopPrice(group, type);
+         double take_profit = type == POSITION_TYPE_BUY
+                              ? PriceNormalize(entry + group.take_profit_points * _Point)
+                              : PriceNormalize(entry - group.take_profit_points * _Point);
+         string stop_reason = "";
+         if(!ValidateStops((ENUM_POSITION_TYPE)type, entry, stop_loss,
+                           take_profit, stop_reason))
+            continue;
          const string comment = g_gui_applied_config.order_comment
                                 + MultiGroupTag(group.id) + ".Grid."
                                 + IntegerToString(level);
@@ -4577,6 +6057,7 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
       group.grid_pending_ticket = existing_ticket;
       group.grid_pending_level = level;
       group.grid_pending_price = entry;
+      MultiRememberGridOrderTicket(group.id, level, false, existing_ticket);
       placed = true;
       }
     if(g_gui_applied_config.favorable_grid_enable == 1)
@@ -4586,18 +6067,25 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
             continue;
          const double entry = MultiFavorableGridLevelPrice(group, type, level);
          ulong existing_ticket = 0;
-         if(!MultiNormalizeGridPendingLevel(group,
-                                            type == POSITION_TYPE_BUY
-                                            ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
-                                            level, entry, volume, existing_ticket))
-            continue;
-         if(existing_ticket == 0)
+          if(!MultiNormalizeGridPendingLevel(group,
+                                             type == POSITION_TYPE_BUY
+                                             ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
+                                             level, entry, volume, existing_ticket))
+             continue;
+          if(!PrepareMultiGridPendingForCurrentStop(group, type, entry, true,
+                                                    existing_ticket))
+             return false;
+          if(existing_ticket == 0)
            {
             const long pending_type = PendingTypeForDirection(type, entry);
-            const double stop_loss = MultiStopPrice(group, type);
-            const double take_profit = type == POSITION_TYPE_BUY
-                                       ? PriceNormalize(entry + group.take_profit_points * _Point)
-                                       : PriceNormalize(entry - group.take_profit_points * _Point);
+            double stop_loss = MultiStopPrice(group, type);
+            double take_profit = type == POSITION_TYPE_BUY
+                                 ? PriceNormalize(entry + group.take_profit_points * _Point)
+                                 : PriceNormalize(entry - group.take_profit_points * _Point);
+            string stop_reason = "";
+            if(!ValidateStops((ENUM_POSITION_TYPE)type, entry, stop_loss,
+                              take_profit, stop_reason))
+               continue;
             const string comment = g_gui_applied_config.order_comment
                                    + MultiGroupTag(group.id) + ".Grid.F."
                                    + IntegerToString(level);
@@ -4626,6 +6114,7 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
          group.favorable_grid_pending_ticket = existing_ticket;
          group.favorable_grid_pending_level = level;
          group.favorable_grid_pending_price = entry;
+         MultiRememberGridOrderTicket(group.id, level, true, existing_ticket);
          placed = true;
         }
     group.grid_filled_levels = MultiGridFilledLevelCount(group);
@@ -4634,6 +6123,34 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
        if((group.favorable_grid_filled_mask & GridLevelBit(level)) != 0)
           group.favorable_grid_filled_levels++;
    return placed;
+  }
+
+bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
+                                           const long position_type,
+                                           const double entry, const bool favorable,
+                                           ulong &ticket)
+  {
+   if(g_gui_applied_config.dynamic_stop_loss_enable != 1 || ticket == 0)
+      return true;
+   const double stop_loss = MultiStopPrice(group, position_type);
+   const double tolerance = _Point * 0.5;
+   const bool adverse_level_invalid = !favorable
+                                      && ((position_type == POSITION_TYPE_BUY
+                                           && entry <= stop_loss + tolerance)
+                                          || (position_type == POSITION_TYPE_SELL
+                                              && entry >= stop_loss - tolerance));
+   if(!OrderSelect(ticket))
+     {
+      ticket = 0;
+      return true;
+     }
+   if(!adverse_level_invalid
+      && MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      return true;
+   if(!DeletePendingTicket(ticket, "Dynamic multi grid pending cleanup"))
+      return false;
+   ticket = 0;
+   return true;
   }
 
 bool MultiHandleGridFill(MultiGroupState &group, const long type, const double current_total)
@@ -4652,7 +6169,8 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
          continue;
       double fill_price = 0.0;
       if(MultiFindFilledGridOrder(group, type, level,
-                                  MultiGridLevelPrice(group, type, level), fill_price))
+                                  MultiGridLevelPrice(group, type, level), false,
+                                  fill_price))
         {
          group.grid_filled_mask |= level_bit;
          latest_entry = fill_price;
@@ -4668,7 +6186,7 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
          double fill_price = 0.0;
          if(MultiFindFilledGridOrder(group, type, level,
                                      MultiFavorableGridLevelPrice(group, type, level),
-                                     fill_price))
+                                     true, fill_price))
            {
             group.favorable_grid_filled_mask |= level_bit;
             latest_entry = fill_price;
@@ -4695,16 +6213,43 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
    return true;
   }
 
-bool MultiHandleReverseFill(MultiGroupState &group, const long type, const double entry,
-                            const double current_total)
+bool MultiHandleReverseFill(MultiGroupState &group, long &type, double &entry,
+                             double &current_total)
   {
    if(group.pending_ticket == 0 || group.pending_index < 0
       || group.pending_index == group.cycle_index)
       return false;
    const int status = MultiPendingStatus(group.pending_ticket, group.id, false);
-   if(status != REVERSE_PENDING_FILLED)
-      return false;
-   if(group.reversal_count >= g_gui_applied_config.max_reversals)
+    if(status != REVERSE_PENDING_FILLED)
+       return false;
+    ulong filled_ticket = 0;
+    long filled_type = type;
+    double filled_volume = 0.0;
+    double filled_entry = entry;
+    double filled_stop_loss = 0.0;
+    double filled_take_profit = 0.0;
+    if(!FindPositionByPendingOrder(group.pending_ticket, filled_ticket, filled_type,
+                                   filled_volume, filled_entry, filled_stop_loss,
+                                   filled_take_profit)
+       && !FindPositionByTicket(group.pending_ticket, filled_ticket, filled_type,
+                                filled_volume, filled_entry, filled_stop_loss,
+                                filled_take_profit))
+       return true;
+    if(!MultiClosePositionsExcept(group.id, filled_ticket))
+      {
+       PrintFormat("Reverse fill detected for multi group %d, but the previous order group is not fully closed; retrying.",
+                   group.id);
+       return true;
+      }
+    const long promoted_type = filled_type;
+    const double promoted_entry = filled_entry;
+    const double promoted_total = MultiTotalPositionVolume(group.id, promoted_type);
+    if(promoted_total <= 0.0)
+       return true;
+    type = promoted_type;
+    entry = promoted_entry;
+    current_total = promoted_total;
+    if(group.reversal_count >= g_gui_applied_config.max_reversals)
      {
       BeginResetAfterMaxReversals();
       return true;
@@ -4715,11 +6260,11 @@ bool MultiHandleReverseFill(MultiGroupState &group, const long type, const doubl
    group.cycle_index = group.pending_index;
    group.pending_index = -1;
    group.pending_ticket = 0;
-    group.anchor_price = entry;
-    group.last_entry = entry;
-    group.linear_extreme = entry;
-    group.first_lots = current_total;
-    group.total_lots = current_total;
+    group.anchor_price = promoted_entry;
+    group.last_entry = promoted_entry;
+    group.linear_extreme = promoted_entry;
+    group.first_lots = promoted_total;
+    group.total_lots = promoted_total;
    group.grid_filled_levels = 0;
    group.grid_filled_mask = 0;
    group.grid_pending_level = 0;
@@ -4733,8 +6278,8 @@ bool MultiHandleReverseFill(MultiGroupState &group, const long type, const doubl
    group.grid_lots = group.previous_grid_lots > 0.0
                      ? VolumeNormalize(group.previous_grid_lots
                                        * g_gui_applied_config.grid_lot_multiplier)
-                     : current_total;
-   MultiSetStops(group, type);
+                      : promoted_total;
+    MultiSetStops(group, promoted_type);
    return true;
   }
 
@@ -4748,8 +6293,107 @@ bool ResetOrderGroupAfterOversizedReversal(MultiGroupState &group)
    return true;
   }
 
+bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
+  {
+   if(!group.active || group.transition_target_lots > 0.0
+      || group.first_lots <= 0.0 || group.stop_points <= 0
+      || group.take_profit_points <= 0)
+      return false;
+
+   const long current_type = MultiSequenceDirection(group, group.cycle_index);
+   const double stop_loss = MultiStopPrice(group, current_type);
+   const double take_profit = MultiTakeProfitPrice(group, current_type);
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if((current_type == POSITION_TYPE_BUY && bid >= take_profit)
+      || (current_type == POSITION_TYPE_SELL && ask <= take_profit))
+      return false;
+   if(!((current_type == POSITION_TYPE_BUY && bid <= stop_loss)
+        || (current_type == POSITION_TYPE_SELL && ask >= stop_loss)))
+      return false;
+
+   const double stopped_group_volume = group.total_lots > 0.0
+                                      ? group.total_lots : group.first_lots;
+   const double next_group_lots = MultiNextGroupLotsAfterStopRaw(
+      group, stopped_group_volume);
+   ReversalLotPlan reversal_plan;
+   if(!BuildReversalLotPlan(next_group_lots, reversal_plan))
+      return true;
+   PrintFormat("Broker stop closed multi group %d before EA processing; recovering the reverse market order. "
+               "first_lots=%.2f, group_lots=%.2f, next_lots=%.2f",
+               group.id, group.first_lots, stopped_group_volume, next_group_lots);
+   if(reversal_plan.status == REVERSAL_LOT_RESTART_GROUP)
+     {
+      ResetOrderGroupAfterOversizedReversal(group);
+      return true;
+     }
+   if(!MultiDeletePending(group.id))
+      return true;
+   group.cumulative_loss_lots += stopped_group_volume;
+   group.previous_grid_lots = group.grid_lots;
+   const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
+   const long next_type = MultiSequenceDirection(group, next_index);
+   group.reversal_count++;
+   group.cycle_index = next_index;
+   group.pending_index = -1;
+   group.pending_ticket = 0;
+   group.transition_target_lots = next_group_lots;
+   if(!MultiOpenMarket(group, next_type, next_group_lots))
+      return true;
+
+   ulong ticket = 0;
+   long type = POSITION_TYPE_BUY;
+   double total = 0.0;
+   double entry = 0.0;
+   double actual_stop_loss = 0.0;
+   double actual_take_profit = 0.0;
+   if(!MultiFindPosition(group.id, ticket, type, total, entry,
+                         actual_stop_loss, actual_take_profit))
+      return true;
+   group.transition_target_lots = 0.0;
+   group.anchor_price = entry;
+   group.last_entry = entry;
+   group.linear_extreme = entry;
+   group.first_lots = total;
+   group.total_lots = total;
+   group.grid_filled_levels = 0;
+   group.grid_filled_mask = 0;
+   group.grid_pending_level = 0;
+   group.grid_pending_ticket = 0;
+   group.grid_pending_price = 0.0;
+   group.favorable_grid_pending_ticket = 0;
+   group.favorable_grid_filled_levels = 0;
+   group.favorable_grid_filled_mask = 0;
+   group.favorable_grid_pending_level = 0;
+   group.favorable_grid_pending_price = 0.0;
+   group.grid_lots = group.previous_grid_lots > 0.0
+                     ? VolumeNormalize(group.previous_grid_lots
+                                       * g_gui_applied_config.grid_lot_multiplier)
+                     : total;
+   if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
+      return true;
+   MultiPlaceReversePending(group, type);
+   MultiPlaceGridPending(group, type);
+   return true;
+  }
+
 bool MultiManageGroup(MultiGroupState &group)
   {
+   if(group.request_in_flight)
+     {
+      if(!MultiConfirmTradeRequestFromVisible(group))
+        {
+         group.state = STATE_ORDER_SENDING;
+         const datetime now = TimeCurrent();
+         if(g_last_multi_request_wait_log == 0
+            || now - g_last_multi_request_wait_log >= 10)
+           {
+            MultiLogTradeEvent(group, "REQUEST_STILL_IN_FLIGHT");
+            g_last_multi_request_wait_log = now;
+           }
+        }
+      return true;
+     }
    if(MultiHandleInitialPendingFill(group))
       return true;
    ulong ticket = 0;
@@ -4758,10 +6402,26 @@ bool MultiManageGroup(MultiGroupState &group)
    double entry = 0.0;
    double stop_loss = 0.0;
    double take_profit = 0.0;
-   const bool has_position = MultiFindPosition(group.id, ticket, type, total, entry,
-                                               stop_loss, take_profit);
+   bool has_position = MultiFindPosition(group.id, ticket, type, total, entry,
+                                         stop_loss, take_profit);
+   // A failed market reversal must remain recoverable. The old reverse
+   // pending order is not a substitute for the required market order.
+   if(!has_position && group.transition_target_lots > 0.0)
+     {
+      if(!MultiDeletePending(group.id))
+         return true;
+      const long expected_type = MultiSequenceDirection(group, group.cycle_index);
+      if(!MultiOpenMarket(group, expected_type, group.transition_target_lots))
+         return true;
+      has_position = MultiFindPosition(group.id, ticket, type, total, entry,
+                                       stop_loss, take_profit);
+      if(!has_position)
+         return true;
+     }
    if(!has_position)
      {
+      if(MultiRecoverFlatGroupAfterBrokerStop(group))
+         return true;
       const int pending_status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(pending_status == REVERSE_PENDING_ACTIVE
          || pending_status == REVERSE_PENDING_FILLED)
@@ -4881,21 +6541,8 @@ bool MultiManageGroup(MultiGroupState &group)
    if((type == POSITION_TYPE_BUY && SymbolInfoDouble(_Symbol, SYMBOL_BID) <= desired_stop_loss)
       || (type == POSITION_TYPE_SELL && SymbolInfoDouble(_Symbol, SYMBOL_ASK) >= desired_stop_loss))
      {
-      const int pending_status = MultiPendingStatus(group.pending_ticket, group.id, false);
-      ulong active_reverse_ticket = 0;
-      long active_reverse_type = 0;
-      double active_reverse_volume = 0.0;
-      double active_reverse_price = 0.0;
-      const bool has_active_reverse = MultiFindPending(group.id, false,
-                                                        active_reverse_ticket,
-                                                        active_reverse_type,
-                                                        active_reverse_volume,
-                                                        active_reverse_price);
-      if(pending_status == REVERSE_PENDING_FILLED)
-         return true;
-      if(pending_status == REVERSE_PENDING_UNKNOWN
-         && !has_active_reverse && group.pending_ticket > 0)
-         return true;
+      PrintFormat("Stop reached for group %d; canceling the old reverse pending order and forcing a market reversal.",
+                  group.id);
       if(group.reversal_count >= g_gui_applied_config.max_reversals)
         {
          BeginResetAfterMaxReversals();
@@ -4916,7 +6563,7 @@ bool MultiManageGroup(MultiGroupState &group)
       group.previous_grid_lots = group.grid_lots;
       if(!MultiClosePositions(group.id))
          return false;
-      const int next_index = (group.cycle_index + 1) % 6;
+      const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
       const long next_type = MultiSequenceDirection(group, next_index);
       group.reversal_count++;
       group.cycle_index = next_index;
@@ -4983,9 +6630,16 @@ void ProcessInitialPendingFillEvent()
       && g_gui_applied_config.candle_enable_multiple == 1)
      {
       for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
-         if(g_multi_groups[index].active
-            && MultiHandleInitialPendingFill(g_multi_groups[index]))
+        {
+         if(!g_multi_groups[index].active)
+            continue;
+         MultiGroupState before = g_multi_groups[index];
+         if(MultiHandleInitialPendingFill(g_multi_groups[index])
+            && MultiStateChanged(before, g_multi_groups[index]))
+            g_multi_groups[index].dirty = true;
+         if(g_multi_groups[index].dirty)
             MultiSaveGroup(g_multi_groups[index]);
+        }
       return;
      }
    HandleInitialPendingFill();
@@ -5018,10 +6672,14 @@ bool MultiTryOpenCandleGroup()
    MultiGroupState state;
    const int new_group_id = g_multi_next_id++;
    MultiResetState(state, new_group_id);
-   state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
-   state.cycle_mode = g_gui_applied_config.cycle_mode;
+    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+    state.cycle_mode = g_gui_applied_config.cycle_mode;
     state.stop_points = range_points;
     state.take_profit_points = range_points;
+    state.signal_bar_time = current_bar;
+    state.signal_id = BuildSignalId(current_bar, first_direction) * 1000 + new_group_id;
+    state.signal_consumed = true;
+    state.state = STATE_SIGNAL_READY;
     if(g_gui_applied_config.candle_order_mode == KORDER_ONCE_PER_BAR)
       {
        if(!MultiPlaceInitialPendingPair(state, previous_high, previous_low,
@@ -5041,9 +6699,16 @@ bool MultiTryOpenCandleGroup()
        MultiRemoveGroup(new_index);
        return false;
       }
-    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+   state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+   state.signal_id = BuildSignalId(current_bar, first_direction) * 1000 + new_group_id;
    if(!MultiOpenMarket(state, first_direction, g_gui_applied_config.initial_lots))
      {
+      if(state.request_in_flight)
+        {
+         g_multi_groups[new_index] = state;
+         MultiSaveGroup(g_multi_groups[new_index]);
+         return true;
+        }
       MultiRemoveGroup(new_index);
       return false;
      }
@@ -5055,6 +6720,12 @@ bool MultiTryOpenCandleGroup()
    double take_profit = 0.0;
    if(!MultiFindPosition(state.id, ticket, type, total, entry, stop_loss, take_profit))
      {
+      if(state.request_in_flight)
+        {
+         g_multi_groups[new_index] = state;
+         MultiSaveGroup(g_multi_groups[new_index]);
+         return true;
+        }
       MultiRemoveGroup(new_index);
       return false;
      }
@@ -5099,13 +6770,16 @@ void ManageMultipleCandleGroups()
    for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
      {
       const bool was_active = g_multi_groups[index].active;
+      MultiGroupState before = g_multi_groups[index];
       MultiManageGroup(g_multi_groups[index]);
+      if(MultiStateChanged(before, g_multi_groups[index]))
+         g_multi_groups[index].dirty = true;
       if(was_active && !g_multi_groups[index].active)
         {
          MultiRemoveGroup(index);
          closed_group = true;
         }
-      else if(g_multi_groups[index].active)
+      else if(g_multi_groups[index].active && g_multi_groups[index].dirty)
          MultiSaveGroup(g_multi_groups[index]);
       if(g_reset_pending)
          return;
@@ -5113,6 +6787,55 @@ void ManageMultipleCandleGroups()
    if(closed_group)
       return;
    MultiTryOpenCandleGroup();
+  }
+
+int CountManagedPositions()
+  {
+   int count = 0;
+   for(int index = 0; index < PositionsTotal(); index++)
+      if(IsOurPosition(PositionGetTicket(index)))
+         count++;
+   return count;
+  }
+
+int CountManagedPendingOrders()
+  {
+   int count = 0;
+   for(int index = 0; index < OrdersTotal(); index++)
+     {
+      const ulong ticket = OrderGetTicket(index);
+      if(ticket != 0 && OrderGetString(ORDER_SYMBOL) == _Symbol
+         && (ulong)OrderGetInteger(ORDER_MAGIC) == g_gui_applied_config.magic_number
+         && IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
+         count++;
+     }
+   return count;
+  }
+
+int CountPausedGroups()
+  {
+   int count = g_strategy_state == STATE_PAUSED_TEMP ? 1 : 0;
+   for(int index = 0; index < ArraySize(g_multi_groups); index++)
+      if(g_multi_groups[index].active
+         && g_multi_groups[index].state == STATE_PAUSED_TEMP)
+         count++;
+   return count;
+  }
+
+void EmitStrategyWatchdog()
+  {
+   const datetime now = TimeCurrent();
+   if(now <= 0 || (g_last_watchdog_time > 0 && now - g_last_watchdog_time < 300))
+      return;
+   g_last_watchdog_time = now;
+   PrintFormat("[WATCHDOG][EVENT=EA_ALIVE][STATE=%s][OpenPositions=%d] "
+               "[PendingOrders=%d][PausedGroups=%d][LastTradeTime=%s] "
+               "[LastSignalTime=%s][RequestInFlight=%s][LastError=%d]",
+               StrategyStateText(g_strategy_state), CountManagedPositions(),
+               CountManagedPendingOrders(), CountPausedGroups(),
+               TimeToString(g_last_trade_time, TIME_DATE|TIME_MINUTES),
+               TimeToString(g_signal_bar_time, TIME_DATE|TIME_MINUTES),
+               g_trade_request_in_flight ? "true" : "false", GetLastError());
   }
 
 string GuiObjectPrefix()
@@ -5286,12 +7009,19 @@ string GuiFirstDirectionText(const FirstDirection value)
    return value == FIRST_SELL ? "做空" : "做多";
   }
 
+string GuiFirstDirectionModeText(const FirstDirectionMode value)
+  {
+   return value == FIRST_DIRECTION_BOLLINGER ? "布林带判断" : "预设方向";
+  }
+
 string GuiCycleModeText(const CycleMode value)
   {
    if(value == CYCLE_MODE_2)
       return "模式2";
    if(value == CYCLE_MODE_3)
       return "模式3";
+   if(value == CYCLE_MODE_4)
+      return "模式4";
    return "模式1";
   }
 
@@ -5301,17 +7031,38 @@ string GuiDistanceModeText(const DistanceMode value)
       return "K线高度";
    if(value == DISTANCE_AVERAGE_CANDLE_RANGE)
       return "平均K线高度";
+   if(value == DISTANCE_LONG_CANDLE)
+      return "长K线市价";
+   if(value == DISTANCE_BOLLINGER_RANGE)
+      return "布林带区间";
    return "固定距离";
   }
 
 string GuiDistanceSummaryText(const GuiConfig &config)
   {
+   if(config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+      return "布林带宽度/4 / "
+             + IntegerToString(config.take_profit_distance_points);
    if(config.distance_mode == DISTANCE_AVERAGE_CANDLE_RANGE)
       return "均高N=" + IntegerToString(config.average_candle_count)
              + " ×止损" + DoubleToString(config.average_stop_multiplier, 2)
              + " / 止盈" + DoubleToString(config.average_take_profit_multiplier, 2);
    return IntegerToString(config.stop_loss_distance_points) + "/"
           + IntegerToString(config.take_profit_distance_points);
+  }
+
+string GuiOperationWindowText(const string start_time, const string end_time)
+  {
+   if(ParseTimeMinutes(start_time) == 0 && ParseTimeMinutes(end_time) == 0)
+      return "关闭";
+   return start_time + " - " + end_time;
+  }
+
+string GuiScheduleSummaryText(const GuiConfig &config)
+  {
+   return GuiOperationWindowText(config.start_time, config.end_time) + " / "
+          + GuiOperationWindowText(config.start_time_2, config.end_time_2) + " / "
+          + GuiOperationWindowText(config.start_time_3, config.end_time_3);
   }
 
 string GuiOrderTypeText(const OrderTypeMode value)
@@ -5345,9 +7096,13 @@ bool GuiIsEditableDropdownKey(const string key)
           || key == "average_candle_count"
           || key == "average_stop_multiplier"
           || key == "average_take_profit_multiplier"
+          || key == "bollinger_period"
+          || key == "bollinger_deviation"
           || key == "grid_count" || key == "grid_lot_multiplier"
           || key == "max_reversals" || key == "start_time"
-          || key == "end_time";
+          || key == "end_time" || key == "start_time_2"
+          || key == "end_time_2" || key == "start_time_3"
+          || key == "end_time_3";
   }
 
 int GuiEditableDropdownOptionCount(const string key)
@@ -5367,13 +7122,17 @@ int GuiEditableDropdownOptionCount(const string key)
       return 6;
    if(key == "average_stop_multiplier" || key == "average_take_profit_multiplier")
       return 6;
+   if(key == "bollinger_period" || key == "bollinger_deviation")
+      return 6;
    if(key == "grid_count")
       return 10;
    if(key == "grid_lot_multiplier")
       return 9;
    if(key == "max_reversals")
       return 19;
-   if(key == "start_time" || key == "end_time")
+   if(key == "start_time" || key == "end_time"
+      || key == "start_time_2" || key == "end_time_2"
+      || key == "start_time_3" || key == "end_time_3")
       return 24;
    return 0;
   }
@@ -5427,6 +7186,24 @@ string GuiEditableDropdownOptionText(const string key, const int index)
       if(index == 4) return "3.0";
       if(index == 5) return "4.0";
      }
+   if(key == "bollinger_period")
+     {
+      if(index == 0) return "5";
+      if(index == 1) return "10";
+      if(index == 2) return "20";
+      if(index == 3) return "30";
+      if(index == 4) return "50";
+      if(index == 5) return "100";
+     }
+   if(key == "bollinger_deviation")
+     {
+      if(index == 0) return "1.0";
+      if(index == 1) return "1.5";
+      if(index == 2) return "2.0";
+      if(index == 3) return "2.5";
+      if(index == 4) return "3.0";
+      if(index == 5) return "4.0";
+     }
    if(key == "stop_loss_distance_points"
       || key == "take_profit_distance_points"
       || key == "candle_min_range_points"
@@ -5447,7 +7224,9 @@ string GuiEditableDropdownOptionText(const string key, const int index)
      }
    if(key == "max_reversals" && index >= 0 && index < 19)
       return IntegerToString(index + 2);
-   if(key == "start_time" || key == "end_time")
+   if(key == "start_time" || key == "end_time"
+      || key == "start_time_2" || key == "end_time_2"
+      || key == "start_time_3" || key == "end_time_3")
      {
       for(int hour = 0; hour < 24; hour++)
         {
@@ -5460,13 +7239,14 @@ string GuiEditableDropdownOptionText(const string key, const int index)
 
 int GuiDropdownOptionCount(const string key)
   {
-   if(key == "first_direction" || key == "distance_mode" || key == "order_type"
+   if(key == "first_direction" || key == "first_direction_mode"
+       || key == "distance_mode" || key == "order_type"
        || key == "candle_order_mode" || key == "candle_enable_multiple"
        || key == "take_profit_mode" || key == "first_order_lot_type"
-       || key == "favorable_grid_enable")
-      return key == "distance_mode" ? 3 : 2;
+        || key == "favorable_grid_enable" || key == "dynamic_stop_loss_enable")
+      return key == "distance_mode" ? 5 : 2;
    if(key == "cycle_mode")
-      return 3;
+      return 4;
    return 0;
   }
 
@@ -5474,18 +7254,24 @@ string GuiDropdownOptionText(const string key, const int index)
   {
    if(key == "first_direction")
       return index == 1 ? "做空" : "做多";
+   if(key == "first_direction_mode")
+      return index == 1 ? "布林带判断" : "预设方向";
    if(key == "cycle_mode")
      {
       if(index == 1)
          return "模式2";
       if(index == 2)
          return "模式3";
+      if(index == 3)
+         return "模式4";
       return "模式1";
      }
    if(key == "distance_mode")
      {
       if(index == 1) return "K线高度";
       if(index == 2) return "平均K线高度";
+      if(index == 3) return "长K线市价";
+      if(index == 4) return "布林带区间";
       return "固定距离";
      }
    if(key == "order_type")
@@ -5498,7 +7284,9 @@ string GuiDropdownOptionText(const string key, const int index)
        return index == 1 ? "线性移动" : "网格移动";
    if(key == "first_order_lot_type")
        return index == 1 ? "上一组首单" : "累计组总手数";
-   if(key == "favorable_grid_enable")
+    if(key == "favorable_grid_enable")
+       return index == 1 ? "开启" : "关闭";
+    if(key == "dynamic_stop_loss_enable")
        return index == 1 ? "开启" : "关闭";
    return "";
   }
@@ -5507,6 +7295,8 @@ int GuiDropdownValueIndex(const string key)
   {
    if(key == "first_direction")
       return g_gui_draft_config.first_direction == FIRST_SELL ? 1 : 0;
+   if(key == "first_direction_mode")
+      return g_gui_draft_config.first_direction_mode == FIRST_DIRECTION_BOLLINGER ? 1 : 0;
    if(key == "cycle_mode")
       return (int)g_gui_draft_config.cycle_mode;
    if(key == "distance_mode")
@@ -5521,8 +7311,10 @@ int GuiDropdownValueIndex(const string key)
        return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
    if(key == "first_order_lot_type")
        return g_gui_draft_config.first_order_lot_type == 2 ? 1 : 0;
-   if(key == "favorable_grid_enable")
+    if(key == "favorable_grid_enable")
        return g_gui_draft_config.favorable_grid_enable == 1 ? 1 : 0;
+    if(key == "dynamic_stop_loss_enable")
+       return g_gui_draft_config.dynamic_stop_loss_enable == 1 ? 1 : 0;
    return -1;
   }
 
@@ -5532,6 +7324,10 @@ bool GuiSetDropdownValue(const string key, const int index)
       return false;
    if(key == "first_direction")
       g_gui_draft_config.first_direction = index == 1 ? FIRST_SELL : FIRST_BUY;
+   else if(key == "first_direction_mode")
+      g_gui_draft_config.first_direction_mode = index == 1
+                                                ? FIRST_DIRECTION_BOLLINGER
+                                                : FIRST_DIRECTION_PRESET;
    else if(key == "cycle_mode")
       g_gui_draft_config.cycle_mode = (CycleMode)index;
    else if(key == "distance_mode")
@@ -5546,8 +7342,10 @@ bool GuiSetDropdownValue(const string key, const int index)
        g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
    else if(key == "first_order_lot_type")
        g_gui_draft_config.first_order_lot_type = index == 1 ? 2 : 1;
-   else if(key == "favorable_grid_enable")
+    else if(key == "favorable_grid_enable")
        g_gui_draft_config.favorable_grid_enable = index == 1 ? 1 : 0;
+   else if(key == "dynamic_stop_loss_enable")
+       g_gui_draft_config.dynamic_stop_loss_enable = index == 1 ? 1 : 0;
    else
       return false;
    return true;
@@ -5573,7 +7371,9 @@ int GuiAnyDropdownValueIndex(const string key)
    if(!GuiIsEditableDropdownKey(key))
       return GuiDropdownValueIndex(key);
    const int option_count = GuiEditableDropdownOptionCount(key);
-   const bool time_value = key == "start_time" || key == "end_time";
+   const bool time_value = key == "start_time" || key == "end_time"
+                           || key == "start_time_2" || key == "end_time_2"
+                           || key == "start_time_3" || key == "end_time_3";
    string current = "";
    if(key == "initial_lots")
       current = DoubleToString(g_gui_draft_config.initial_lots, 8);
@@ -5599,12 +7399,24 @@ int GuiAnyDropdownValueIndex(const string key)
       current = DoubleToString(g_gui_draft_config.average_stop_multiplier, 8);
    else if(key == "average_take_profit_multiplier")
       current = DoubleToString(g_gui_draft_config.average_take_profit_multiplier, 8);
+   else if(key == "bollinger_period")
+      current = IntegerToString(g_gui_draft_config.bollinger_period);
+   else if(key == "bollinger_deviation")
+      current = DoubleToString(g_gui_draft_config.bollinger_deviation, 8);
    else if(key == "max_reversals")
       current = IntegerToString(g_gui_draft_config.max_reversals);
    else if(key == "start_time")
       current = g_gui_draft_config.start_time;
    else if(key == "end_time")
       current = g_gui_draft_config.end_time;
+   else if(key == "start_time_2")
+      current = g_gui_draft_config.start_time_2;
+   else if(key == "end_time_2")
+      current = g_gui_draft_config.end_time_2;
+   else if(key == "start_time_3")
+      current = g_gui_draft_config.start_time_3;
+   else if(key == "end_time_3")
+      current = g_gui_draft_config.end_time_3;
    for(int index = 0; index < option_count; index++)
      {
       const string option = GuiEditableDropdownOptionText(key, index);
@@ -5643,6 +7455,10 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.average_stop_multiplier = StringToDouble(value);
    else if(key == "average_take_profit_multiplier")
       g_gui_draft_config.average_take_profit_multiplier = StringToDouble(value);
+   else if(key == "bollinger_period")
+      g_gui_draft_config.bollinger_period = (int)StringToInteger(value);
+   else if(key == "bollinger_deviation")
+      g_gui_draft_config.bollinger_deviation = StringToDouble(value);
    else if(key == "grid_count")
       g_gui_draft_config.grid_count = (int)StringToInteger(value);
    else if(key == "grid_lot_multiplier")
@@ -5653,6 +7469,14 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.start_time = value;
    else if(key == "end_time")
       g_gui_draft_config.end_time = value;
+   else if(key == "start_time_2")
+      g_gui_draft_config.start_time_2 = value;
+   else if(key == "end_time_2")
+      g_gui_draft_config.end_time_2 = value;
+   else if(key == "start_time_3")
+      g_gui_draft_config.start_time_3 = value;
+   else if(key == "end_time_3")
+      g_gui_draft_config.end_time_3 = value;
    else
       return false;
    return true;
@@ -5660,7 +7484,10 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
 
 int GuiDropdownOptionColumns(const string key)
   {
-   if(key == "start_time" || key == "end_time" || key == "max_reversals")
+   if(key == "start_time" || key == "end_time"
+      || key == "start_time_2" || key == "end_time_2"
+      || key == "start_time_3" || key == "end_time_3"
+      || key == "max_reversals")
       return 2;
    return 1;
   }
@@ -5744,20 +7571,23 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
    const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
    const int first_y = 60 + 94 + 18;
    const int row_gap = 64;
-   string keys[10];
+   string keys[14];
    int field_count = 0;
    if(g_gui_page == GUI_PAGE_OPENING)
      {
       keys[0] = "first_direction";
-      keys[1] = "cycle_mode";
-      keys[2] = "order_type";
-      keys[3] = "candle_order_mode";
-      keys[4] = "candle_enable_multiple";
-       keys[5] = "initial_lots";
-       keys[6] = "initial_lots_multiplier";
-       keys[7] = "first_order_lot_type";
-      keys[8] = "first_order_mult";
-       field_count = 9;
+      keys[1] = "first_direction_mode";
+      keys[2] = "cycle_mode";
+      keys[3] = "order_type";
+      keys[4] = "candle_order_mode";
+      keys[5] = "candle_enable_multiple";
+      keys[6] = "initial_lots";
+      keys[7] = "initial_lots_multiplier";
+      keys[8] = "first_order_lot_type";
+      keys[9] = "first_order_mult";
+      keys[10] = "bollinger_period";
+      keys[11] = "bollinger_deviation";
+      field_count = 12;
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
@@ -5769,21 +7599,26 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
       keys[5] = "take_profit_mode";
       field_count = 6;
      }
-   else if(g_gui_page == GUI_PAGE_GRID)
-     {
-      keys[0] = "grid_count";
-      keys[1] = "grid_lot_multiplier";
-      keys[2] = "favorable_grid_enable";
-      field_count = 3;
-     }
+    else if(g_gui_page == GUI_PAGE_GRID)
+      {
+       keys[0] = "grid_count";
+       keys[1] = "grid_lot_multiplier";
+       keys[2] = "favorable_grid_enable";
+       keys[3] = "dynamic_stop_loss_enable";
+       field_count = 4;
+      }
    else if(g_gui_page == GUI_PAGE_RISK)
      {
       keys[0] = "max_reversals";
       keys[1] = "start_time";
       keys[2] = "end_time";
-      keys[3] = "magic_number";
-      keys[4] = "order_comment";
-      field_count = 5;
+      keys[3] = "start_time_2";
+      keys[4] = "end_time_2";
+      keys[5] = "start_time_3";
+      keys[6] = "end_time_3";
+      keys[7] = "magic_number";
+      keys[8] = "order_comment";
+      field_count = 9;
      }
    for(int index = 0; index < field_count; index++)
      {
@@ -6022,15 +7857,15 @@ bool GuiRefreshOverviewData()
    const string order_group = (g_had_position || snapshot.pending_order_count > 0)
                               ? "第" + IntegerToString(g_cycle_index + 1) + "组"
                               : "无活跃订单组";
-   const string cycle = "阶段" + IntegerToString(g_cycle_index + 1) + "/6"
+   const string cycle = "阶段" + IntegerToString(g_cycle_index + 1) + "/"
+                        + IntegerToString(CycleLength(g_active_cycle_mode))
                         + (g_pending_index >= 0
                            ? " · 待转" + IntegerToString(g_pending_index + 1)
                            : "");
    const string first_direction = GuiFirstDirectionText(g_active_first_direction == FIRST_SELL
                                                         ? FIRST_SELL : FIRST_BUY);
    const string stops = GuiDistanceSummaryText(g_gui_applied_config);
-   const string schedule = g_gui_applied_config.start_time + " - "
-                           + g_gui_applied_config.end_time;
+   const string schedule = GuiScheduleSummaryText(g_gui_applied_config);
 
    bool ok = true;
    ok = GuiRefreshOverviewText("title.status", "● " + GuiRunStateText()) && ok;
@@ -6170,7 +8005,7 @@ bool GuiRenderNavigation()
                                             GUI_NAV_WIDTH, GUI_WINDOW_HEIGHT - GUI_TITLE_HEIGHT,
                                             GuiColorInput(), GuiColorBorder()), "navigation"))
       ok = false;
-    const string pages[5] = {"总览  01", "开仓  09", "距离与止盈  06", "网格  03", "风控与时段  05"};
+    const string pages[5] = {"总览  01", "开仓  12", "距离与止盈  06", "网格  03", "风控与时段  05"};
    for(int index = 0; index < 5; index++)
      {
       const GuiPage page = (GuiPage)index;
@@ -6260,7 +8095,7 @@ bool GuiRenderContent()
    if(g_gui_page == GUI_PAGE_OPENING)
      {
       section_title = "开仓参数";
-       section_note = "9项";
+       section_note = "12项";
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
@@ -6322,7 +8157,8 @@ bool GuiRenderContent()
                                  : "无活跃订单组",
                                  left_x, summary_y + row_gap, ok)) ok = false;
       if(!GuiRenderReadOnlyField("overview.cycle", "循环阶段",
-                                 "阶段" + IntegerToString(g_cycle_index + 1) + "/6"
+                                 "阶段" + IntegerToString(g_cycle_index + 1) + "/"
+                                 + IntegerToString(CycleLength(g_active_cycle_mode))
                                  + (g_pending_index >= 0
                                     ? " · 待转" + IntegerToString(g_pending_index + 1)
                                     : ""),
@@ -6375,7 +8211,7 @@ bool GuiRenderContent()
                                   GuiTakeProfitModeText(g_gui_applied_config.take_profit_mode),
                                   left_x, summary_y + row_gap * 9, ok)) ok = false;
        if(!GuiRenderReadOnlyField("overview.schedule", "运行时间",
-                                  g_gui_applied_config.start_time + " - " + g_gui_applied_config.end_time,
+                                  GuiScheduleSummaryText(g_gui_applied_config),
                                   right_x, summary_y + row_gap * 9, ok)) ok = false;
        if(!GuiRenderReadOnlyField("overview.magic_number", "订单识别编号",
                                   IntegerToString((long)g_gui_applied_config.magic_number),
@@ -6394,36 +8230,47 @@ bool GuiRenderContent()
       if(!GuiRenderEnumField("first_direction", "首单方向",
                              GuiFirstDirectionText(g_gui_draft_config.first_direction), left_x, row, ok))
          ok = false;
+      if(!GuiRenderEnumField("first_direction_mode", "首单方向确定方式",
+                             GuiFirstDirectionModeText(g_gui_draft_config.first_direction_mode), right_x, row, ok))
+         ok = false;
       if(!GuiRenderEnumField("cycle_mode", "循环模式",
-                             GuiCycleModeText(g_gui_draft_config.cycle_mode), right_x, row, ok))
+                             GuiCycleModeText(g_gui_draft_config.cycle_mode), left_x, row + row_gap, ok))
          ok = false;
       if(!GuiRenderEnumField("order_type", "开单方式",
-                             GuiOrderTypeText(g_gui_draft_config.order_type), left_x, row + row_gap, ok))
+                             GuiOrderTypeText(g_gui_draft_config.order_type), right_x, row + row_gap, ok))
          ok = false;
       if(!GuiRenderEnumField("candle_order_mode", "K线开单模式",
-                             GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), right_x,
-                             row + row_gap, ok))
+                             GuiCandleOrderModeText(g_gui_draft_config.candle_order_mode), left_x,
+                             row + row_gap * 2, ok))
          ok = false;
       if(!GuiRenderEnumField("candle_enable_multiple", "K线多组",
-                             GuiMultipleText(g_gui_draft_config.candle_enable_multiple), left_x,
+                             GuiMultipleText(g_gui_draft_config.candle_enable_multiple), right_x,
                              row + row_gap * 2, ok))
          ok = false;
       if(!GuiRenderEditableDropdownField("initial_lots", "首单手数",
-                                         DoubleToString(g_gui_draft_config.initial_lots, 8), right_x,
-                                         row + row_gap * 2, ok))
+                                         DoubleToString(g_gui_draft_config.initial_lots, 8), left_x,
+                                         row + row_gap * 3, ok))
          ok = false;
       if(!GuiRenderEditableDropdownField("initial_lots_multiplier", "首单手数倍数",
                                           DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8),
-                                          left_x, row + row_gap * 3, ok))
+                                          right_x, row + row_gap * 3, ok))
           ok = false;
        if(!GuiRenderEnumField("first_order_lot_type", "止损首单类型",
                               g_gui_draft_config.first_order_lot_type == 2
                               ? "上一组首单" : "累计组总手数",
-                              right_x, row + row_gap * 3, ok))
+                              left_x, row + row_gap * 4, ok))
           ok = false;
        if(!GuiRenderEditableDropdownField("first_order_mult", "首单类型2倍数",
                                           DoubleToString(g_gui_draft_config.first_order_mult, 8),
-                                          left_x, row + row_gap * 4, ok))
+                                          right_x, row + row_gap * 4, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("bollinger_period", "布林带周期",
+                                          IntegerToString(g_gui_draft_config.bollinger_period),
+                                          left_x, row + row_gap * 5, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("bollinger_deviation", "布林带标准差",
+                                          DoubleToString(g_gui_draft_config.bollinger_deviation, 8),
+                                          right_x, row + row_gap * 5, ok))
           ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
@@ -6485,18 +8332,22 @@ bool GuiRenderContent()
        if(!GuiRenderEnumField("favorable_grid_enable", "有利方向加单",
                               g_gui_draft_config.favorable_grid_enable == 1 ? "开启" : "关闭",
                               left_x, row + 64, ok))
+           ok = false;
+        if(!GuiRenderEnumField("dynamic_stop_loss_enable", "动态止损",
+                               g_gui_draft_config.dynamic_stop_loss_enable == 1 ? "开启" : "关闭",
+                               right_x, row + 64, ok))
+           ok = false;
+        if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
+                                  IntegerToString(g_grid_filled_levels), left_x, row + 128, ok))
+           ok = false;
+        if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
+                                  g_grid_pending_price > 0.0
+                                  ? DoubleToString(g_grid_pending_price, _Digits) : "--", right_x,
+                                  row + 128, ok))
+           ok = false;
+        if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
+                                  DoubleToString(g_group_total_lots, 2), left_x, row + 192, ok))
           ok = false;
-       if(!GuiRenderReadOnlyField("grid.filled", "已成交网格",
-                                 IntegerToString(g_grid_filled_levels), right_x, row + 64, ok))
-          ok = false;
-       if(!GuiRenderReadOnlyField("grid.pending", "挂单价",
-                                 g_grid_pending_price > 0.0
-                                 ? DoubleToString(g_grid_pending_price, _Digits) : "--", right_x,
-                                 row + 128, ok))
-          ok = false;
-       if(!GuiRenderReadOnlyField("grid.lots", "当前组手数",
-                                 DoubleToString(g_group_total_lots, 2), left_x, row + 128, ok))
-         ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else
@@ -6508,18 +8359,34 @@ bool GuiRenderContent()
       if(!GuiRenderEditableDropdownField("max_reversals", "最大反手次数",
                                          IntegerToString(g_gui_draft_config.max_reversals), left_x, row, ok))
          ok = false;
-      if(!GuiRenderEditableDropdownField("start_time", "开始时间",
+      if(!GuiRenderEditableDropdownField("start_time", "时段1开始时间",
                                          g_gui_draft_config.start_time, right_x, row, ok))
          ok = false;
-      if(!GuiRenderEditableDropdownField("end_time", "结束时间",
+      if(!GuiRenderEditableDropdownField("end_time", "时段1结束时间",
                                          g_gui_draft_config.end_time, left_x, row + row_gap, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("start_time_2", "时段2开始时间",
+                                         g_gui_draft_config.start_time_2, right_x,
+                                         row + row_gap, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("end_time_2", "时段2结束时间",
+                                         g_gui_draft_config.end_time_2, left_x,
+                                         row + row_gap * 2, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("start_time_3", "时段3开始时间",
+                                         g_gui_draft_config.start_time_3, right_x,
+                                         row + row_gap * 2, ok))
+         ok = false;
+      if(!GuiRenderEditableDropdownField("end_time_3", "时段3结束时间",
+                                         g_gui_draft_config.end_time_3, left_x,
+                                         row + row_gap * 3, ok))
          ok = false;
       if(!GuiRenderEditField("magic_number", "订单识别编号",
                              IntegerToString((long)g_gui_draft_config.magic_number),
-                             right_x, row + row_gap, ok))
+                             right_x, row + row_gap * 3, ok))
          ok = false;
       if(!GuiRenderEditField("order_comment", "订单注释",
-                             g_gui_draft_config.order_comment, left_x, row + row_gap * 2, ok))
+                             g_gui_draft_config.order_comment, left_x, row + row_gap * 4, ok))
          ok = false;
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
@@ -6624,6 +8491,8 @@ bool GuiRender()
 
 void GuiRenderIfNeeded()
   {
+   if(v_enable != 1)
+      return;
    if(!g_gui_objects_created)
       return;
    if(g_gui_full_window && g_gui_page != GUI_PAGE_OVERVIEW && !g_gui_dirty)
@@ -6658,8 +8527,12 @@ bool GuiIsEditableFieldKey(const string key)
           || key == "take_profit_distance_points"
           || key == "candle_min_range_points"
           || key == "candle_max_range_points"
+          || key == "bollinger_period"
+          || key == "bollinger_deviation"
           || key == "max_reversals" || key == "magic_number"
           || key == "start_time" || key == "end_time"
+          || key == "start_time_2" || key == "end_time_2"
+          || key == "start_time_3" || key == "end_time_3"
           || key == "order_comment";
   }
 
@@ -6744,6 +8617,7 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
       || key == "take_profit_distance_points"
       || key == "candle_min_range_points"
       || key == "candle_max_range_points"
+      || key == "bollinger_period"
       || key == "grid_count" || key == "max_reversals")
      {
       int parsed = 0;
@@ -6755,7 +8629,8 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
       if((key == "stop_loss_distance_points"
           || key == "take_profit_distance_points"
           || key == "candle_min_range_points"
-          || key == "candle_max_range_points") && parsed <= 0)
+          || key == "candle_max_range_points"
+          || key == "bollinger_period") && parsed <= 0)
         {
          error = "距离和K线高度必须大于 0";
          return false;
@@ -6795,7 +8670,9 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
       normalized = IntegerToString(parsed);
       return true;
      }
-   if(key == "start_time" || key == "end_time")
+   if(key == "start_time" || key == "end_time"
+      || key == "start_time_2" || key == "end_time_2"
+      || key == "start_time_3" || key == "end_time_3")
      {
       string time_value = trimmed;
       if(StringLen(time_value) == 4 && StringGetCharacter(time_value, 1) == 58)
@@ -6935,6 +8812,26 @@ bool GuiSyncEditValue(const string key)
         }
       g_gui_draft_config.candle_max_range_points = parsed_integer;
      }
+   else if(key == "bollinger_period")
+     {
+      if(!GuiTryParseInteger(value, parsed_integer))
+        {
+         g_gui_notice = "布林带周期格式无效";
+         GuiRefreshNoticeObject();
+         return false;
+        }
+      g_gui_draft_config.bollinger_period = parsed_integer;
+     }
+   else if(key == "bollinger_deviation")
+     {
+      if(!GuiTryParseDouble(value, parsed_double))
+        {
+         g_gui_notice = "布林带标准差格式无效";
+         GuiRefreshNoticeObject();
+         return false;
+        }
+      g_gui_draft_config.bollinger_deviation = parsed_double;
+     }
    else if(key == "max_reversals")
      {
       if(!GuiTryParseInteger(value, parsed_integer))
@@ -6959,6 +8856,14 @@ bool GuiSyncEditValue(const string key)
       g_gui_draft_config.start_time = value;
    else if(key == "end_time")
       g_gui_draft_config.end_time = value;
+   else if(key == "start_time_2")
+      g_gui_draft_config.start_time_2 = value;
+   else if(key == "end_time_2")
+      g_gui_draft_config.end_time_2 = value;
+   else if(key == "start_time_3")
+      g_gui_draft_config.start_time_3 = value;
+   else if(key == "end_time_3")
+      g_gui_draft_config.end_time_3 = value;
    else if(key == "order_comment")
       g_gui_draft_config.order_comment = value;
    else
@@ -7223,7 +9128,7 @@ bool GuiHandleChartClick(const int x, const int y)
    const int value_width = GUI_FIELD_WIDTH;
    const int first_y = 60 + 94;
    const int row_gap = 64;
-   string keys[7];
+   string keys[12];
    int field_count = 0;
    if(g_gui_page == GUI_PAGE_OPENING)
      {
@@ -7246,20 +9151,26 @@ bool GuiHandleChartClick(const int x, const int y)
       keys[5] = "take_profit_mode";
       field_count = 6;
      }
-   else if(g_gui_page == GUI_PAGE_GRID)
-     {
-      keys[0] = "grid_count";
-      keys[1] = "grid_lot_multiplier";
-      field_count = 2;
-     }
+    else if(g_gui_page == GUI_PAGE_GRID)
+      {
+       keys[0] = "grid_count";
+       keys[1] = "grid_lot_multiplier";
+       keys[2] = "favorable_grid_enable";
+       keys[3] = "dynamic_stop_loss_enable";
+       field_count = 4;
+      }
    else if(g_gui_page == GUI_PAGE_RISK)
      {
       keys[0] = "max_reversals";
       keys[1] = "start_time";
       keys[2] = "end_time";
-      keys[3] = "magic_number";
-      keys[4] = "order_comment";
-      field_count = 5;
+      keys[3] = "start_time_2";
+      keys[4] = "end_time_2";
+      keys[5] = "start_time_3";
+      keys[6] = "end_time_3";
+      keys[7] = "magic_number";
+      keys[8] = "order_comment";
+      field_count = 9;
      }
 
    if(StringLen(g_gui_dropdown_key) > 0)
@@ -7433,6 +9344,13 @@ bool GuiCreate()
 
 void GuiDestroy()
   {
+   if(!g_gui_objects_created)
+     {
+      g_gui_object_prefix = "";
+      g_gui_dropdown_key = "";
+      g_gui_edit_key = "";
+      return;
+     }
    if(StringLen(g_gui_object_prefix) > 0)
       ObjectsDeleteAll(0, g_gui_object_prefix);
    const string legacy_prefix = GuiLegacyObjectPrefix();
@@ -7465,6 +9383,8 @@ bool GuiShouldSkipChartClick(const long x, const long y)
 void OnChartEvent(const int id, const long &lparam, const double &dparam,
                   const string &sparam)
   {
+   if(v_enable != 1)
+      return;
    if(id == CHARTEVENT_OBJECT_CLICK)
       GuiRememberObjectClick(lparam, (long)dparam);
    if(id == CHARTEVENT_CLICK && GuiShouldSkipChartClick(lparam, (long)dparam))
@@ -7692,8 +9612,11 @@ int OnInit()
       && g_gui_applied_config.candle_enable_multiple == 1)
       MultiLoadGroups();
    g_trade.SetTypeFillingBySymbol(_Symbol);
-   if(!GuiCreate())
-      Print("GUI initialization failed; EA continues without stopping trade management.");
+   if(v_enable == 1)
+     {
+      if(!GuiCreate())
+         Print("GUI initialization failed; EA continues without stopping trade management.");
+     }
    if(!EventSetTimer(1))
       Print("Unable to start the initial pending OCO timer.");
    return INIT_SUCCEEDED;
@@ -7703,12 +9626,24 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
   {
+   if(ConfirmTradeRequestFromTransaction(trans))
+      SaveState();
+   else if(MultiConfirmTradeRequestFromTransaction(trans))
+      for(int index = 0; index < ArraySize(g_multi_groups); index++)
+         if(g_multi_groups[index].active)
+            MultiSaveGroup(g_multi_groups[index]);
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
       ProcessInitialPendingFillEvent();
   }
 
 void OnTimer()
   {
+   if(g_trade_request_in_flight)
+      ConfirmTradeRequestFromVisiblePosition();
+   for(int index = 0; index < ArraySize(g_multi_groups); index++)
+      if(g_multi_groups[index].active && g_multi_groups[index].request_in_flight)
+         MultiConfirmTradeRequestFromVisible(g_multi_groups[index]);
+   EmitStrategyWatchdog();
    ProcessInitialPendingFillEvent();
   }
 
@@ -7716,6 +9651,7 @@ void OnTick()
   {
    if(!AcquireExecutionOwnership())
       return;
+   EmitStrategyWatchdog();
    if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
       && g_gui_applied_config.candle_enable_multiple == 1)
       ManageMultipleCandleGroups();

@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>不管涨跌 EA 软件使用手册</title>
+  <style>
+    :root{--ink:#172033;--muted:#5d6b82;--line:#dce3ee;--bg:#f5f7fb;--card:#fff;--blue:#2563eb;--blue-soft:#eaf1ff;--green:#087f5b;--amber:#a15c00;--red:#b42318}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.75 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif}
+    .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 64px}.hero{padding:34px 38px;border-radius:22px;background:linear-gradient(135deg,#172554,#2563eb);color:#fff;box-shadow:0 14px 34px #1d4ed833}.hero h1{margin:0 0 8px;font-size:34px;letter-spacing:.02em}.hero p{margin:4px 0;color:#dbeafe}.badge{display:inline-block;margin-top:18px;padding:3px 12px;border:1px solid #bfdbfe;border-radius:999px;font-size:13px}
+    h2{margin:34px 0 12px;font-size:24px} h3{margin:22px 0 8px;font-size:18px}.lead{font-size:17px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;box-shadow:0 3px 12px #22304d0a}.card h3{margin-top:0}.ok{border-left:5px solid var(--green)}.warn{border-left:5px solid var(--amber)}.danger{border-left:5px solid var(--red)}
+    table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:10px 0 18px}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#eef3fb;font-weight:650}tr:last-child td{border-bottom:0}code{padding:1px 5px;border-radius:5px;background:#eef2f7;color:#1e3a8a;font-family:Consolas,monospace}.note{padding:13px 16px;border-radius:10px;background:var(--blue-soft);border:1px solid #c8d9ff}.formula{padding:13px 16px;border-left:4px solid var(--blue);background:#f0f6ff;font-family:Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap}.flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin:12px 0}.step{flex:1 1 150px;min-width:140px;padding:13px;border:1px solid #c9d7ef;border-radius:10px;background:#fff;text-align:center}.arrow{align-self:center;color:var(--blue);font-size:22px}.small{color:var(--muted);font-size:13px}.toc a{color:#1d4ed8;text-decoration:none}.toc a:hover{text-decoration:underline}.footer{margin-top:38px;color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:15px}
+    @media(max-width:650px){.wrap{padding:14px 12px 40px}.hero{padding:25px 22px}.hero h1{font-size:27px}h2{font-size:21px}.arrow{display:none}th,td{padding:8px;font-size:14px}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <header class="hero">
+    <h1>不管涨跌 EA 软件使用手册</h1>
+    <p>MT4 / MT5 版本 · 网格加单 · 六阶段循环 · 止损后自动反手</p>
+    <span class="badge">文档版本：2026-09-18</span>
+  </header>
+
+  <section class="card toc" aria-label="目录">
+    <strong>快速导航：</strong>
+    <a href="#overview">运行逻辑</a>　<a href="#params">参数说明</a>　<a href="#examples">计算示例</a>　<a href="#install">安装配置</a>　<a href="#trouble">故障排查</a>　<a href="#risk">风险提示</a>
+  </section>
+
+  <section id="overview">
+    <h2>一、先看懂 EA 怎么运行</h2>
+    <p class="lead">EA 以“订单组”为单位运行。每个订单组从首单开始，按价格移动挂网格单；达到止盈则结束本轮，达到止损则关闭旧组并按六阶段循环开出下一组。</p>
+    <div class="flow">
+      <div class="step">空仓<br><b>开首单</b></div><div class="arrow">→</div>
+      <div class="step">价格移动<br><b>挂网格单</b></div><div class="arrow">→</div>
+      <div class="step">达到止盈<br><b>清理并结束</b></div><div class="arrow">或</div>
+      <div class="step">达到止损<br><b>清旧组、开下一组</b></div>
+    </div>
+    <div class="grid">
+      <article class="card ok"><h3>止损后的核心保证</h3><p>止损位置触发时，如果原来的反向挂单尚未成交，EA 会先删除旧反向单和网格单，确认清理后立即执行下一方向的市价反手；如果反向挂单已经成交，则接管该成交结果，不重复开单。</p></article>
+      <article class="card ok"><h3>保护优先</h3><p>任何反向单或网格单之前，EA 都会核对当前订单组的止损、止盈是否真实存在且价格正确。保护未确认时暂停后续加仓，并在下一次行情更新时重试。</p></article>
+      <article class="card warn"><h3>“网格数量”的实际含义</h3><p>它表示首单到外层止损之间的等分格数，内部可成交网格层为 <code>1</code> 到 <code>网格数量-1</code>。例如设置为 5，单方向最多有 4 个内部网格，不是 5 个。</p></article>
+    </div>
+  </section>
+
+  <section id="params">
+    <h2>二、参数说明（全部按中文页面操作）</h2>
+    <p>MT5 使用 EA 图表上的中文配置界面，修改后点击“应用配置”；MT4 使用平台自带的“输入”参数页。参数名和含义如下。若关闭 <code>v_enable</code>，MT5 不显示自定义界面，但交易管理仍继续运行。</p>
+    <h3>1. 开仓与循环</h3>
+    <table><thead><tr><th>参数</th><th>默认值</th><th>作用</th></tr></thead><tbody>
+      <tr><td>首单方向</td><td>首单做多</td><td>固定距离模式下决定第一组首单方向。</td></tr>
+      <tr><td>首单方向确定方式</td><td>预设方向</td><td>预设方向使用“首单方向”；布林带判断使用当前买卖价中间价与当前K线布林带中轨比较：上方做多、下方做空，贴近中轨时等待下一次价格变化。</td></tr>
+      <tr><td>布林带周期 / 标准差</td><td>20 / 2.0</td><td>首单方向确定方式选择“布林带判断”时使用的标准参数。</td></tr>
+      <tr><td>循环模式</td><td>模式一</td><td>所有订单组共用六阶段方向循环。模式一：多空空多空空；模式二：多空多空多多；模式三：多空多多空多。首单为空时整组方向取反。</td></tr>
+      <tr><td>距离模式</td><td>固定距离</td><td>选择固定点数、上一根已完成K线高度、过去 N 根已完成K线平均高度、长K线市价或布林带区间。布林带区间使用当前上轨与下轨距离的四分之一作为止损距离，止盈使用“固定止盈距离”。</td></tr>
+      <tr><td>开单方式</td><td>正向开单</td><td>只在K线高度模式下生效：向上突破对应多单，向下突破对应空单；逆向开单则反过来。循环方向仍由“循环模式”决定。</td></tr>
+      <tr><td>K线开单模式</td><td>每根K线一次</td><td>只在K线高度模式下生效。每根一次：在上一根K线高低点预埋双向首单，一侧成交后撤销另一侧；每根重复：等待突破后按条件市价开首单。</td></tr>
+      <tr><td>K线多组</td><td>0</td><td>只在K线高度模式下生效。0 为单订单组；1 允许多个K线订单组并行，每组独立管理。</td></tr>
+      <tr><td>止盈移动模式</td><td>网格移动止盈</td><td>网格模式在网格成交后将止盈移到最后成交价外侧；线性模式在价格向当前组不利方向移动时，止盈按相同点数向不利方向移动，反弹时不回退。</td></tr>
+    </tbody></table>
+
+    <h3>2. 手数、网格与动态止损</h3>
+    <table><thead><tr><th>参数</th><th>默认值</th><th>作用</th></tr></thead><tbody>
+      <tr><td>首单手数</td><td>0.01</td><td>新一轮基础订单组的首单手数。</td></tr>
+      <tr><td>首单手数倍数</td><td>1.0</td><td>仅用于“止损首单类型=1”的原有累计逻辑。</td></tr>
+      <tr><td>止损首单类型</td><td>2</td><td>1：原有逻辑，按此前止损订单组总手数累计后乘“首单手数倍数”；2：上一止损订单组的首单手数乘“首单类型2倍数”。</td></tr>
+      <tr><td>首单类型2倍数</td><td>2.0</td><td>只在类型 2 下生效。例如上一组首单 0.01 手，下一组首单为 0.01 × 2.0 = 0.02 手。</td></tr>
+      <tr><td>网格数量</td><td>2</td><td>首单到外层止损的等分数。内部层级为 1 至 N-1；N=5 时每个开启方向最多加 4 次。</td></tr>
+      <tr><td>有利方向加单</td><td>0</td><td>0：只在价格向不利方向加单；1：多单上涨、空单下跌时也按相同网格数量加单。</td></tr>
+      <tr><td>动态止损</td><td>0</td><td>0：止损固定在首单锚定价外侧；1：有利方向网格成交后，止损跟随已成交的最高有利层级移动。只收紧，不因不利方向加单而放宽。</td></tr>
+      <tr><td>v_enable</td><td>0</td><td>0：关闭MT5自定义可视化界面，但不停止交易、定时器、止损恢复或挂单管理；1：开启当前中文可视化界面。修改后重新加载EA生效。MT4保留该参数用于兼容，当前没有同款自定义界面。</td></tr>
+      <tr><td>网格手数倍数</td><td>2.0</td><td>下一订单组的网格手数 = 上一组网格手数 × 此倍数；当前组各网格使用当前组固定网格手数。</td></tr>
+    </tbody></table>
+
+    <h3>3. 距离、身份与时间</h3>
+    <table><thead><tr><th>参数</th><th>默认值</th><th>作用</th></tr></thead><tbody>
+      <tr><td>固定止损距离 / 固定止盈距离</td><td>500 / 500 点</td><td>固定距离模式使用的点数。距离按订单组锁定。</td></tr>
+      <tr><td>K线最小高度</td><td>500 点</td><td>上一根K线允许使用的最小高度，边界包含在有效范围内。</td></tr>
+      <tr><td>K线最大高度</td><td>1000 点</td><td>上一根K线允许使用的最大高度，边界包含在有效范围内。</td></tr>
+      <tr><td>平均K线根数</td><td>20</td><td>平均高度模式使用的已完成K线数量。</td></tr>
+      <tr><td>平均止损倍数 / 平均止盈倍数</td><td>2.0 / 2.0</td><td>平均高度模式：止损 = 平均高度 × 止损倍数；止盈 = 止损距离 × 止盈倍数。</td></tr>
+      <tr><td>最大反手次数</td><td>5</td><td>止损后切换下一订单组的次数。达到上限后清理本 EA 的持仓和挂单，再从基础首单重新开始；设为 0 表示首组止损后直接重启。</td></tr>
+      <tr><td>订单识别编号</td><td>20260830</td><td>本 EA 的唯一识别编号。同一账户、品种、编号不要重复运行不同实例。</td></tr>
+      <tr><td>订单注释</td><td>不管涨跌</td><td>交易平台中的订单备注，网格单会自动追加网格标记；不要在备注中使用系统保留标记。</td></tr>
+      <tr><td>开始时间 / 结束时间（时段1）</td><td>08:00 / 23:00</td><td>与时段2、时段3共同组成三个首单时间窗口。使用平台服务器时间，命中任意启用窗口即可开首单；仅限制空仓且无挂单时的首单，已有持仓和管理中的挂单不受影响。每个窗口支持跨午夜，精确的00:00-00:00表示关闭，非零的相同时间表示全天。</td></tr>
+      <tr><td>时段2开始时间 / 时段2结束时间</td><td>00:00 / 00:00</td><td>第二个首单时间窗口。默认关闭；设置为有效的HH:MM区间后，与时段1或时段3任意一个命中即可开首单。支持跨午夜。</td></tr>
+      <tr><td>时段3开始时间 / 时段3结束时间</td><td>00:00 / 00:00</td><td>第三个首单时间窗口。默认关闭；精确的00:00-00:00表示关闭。支持跨午夜。</td></tr>
+    </tbody></table>
+  </section>
+
+  <section id="examples">
+    <h2>三、关键计算示例</h2>
+    <h3>1. 动态止损</h3>
+    <div class="formula">假设：首单为多单，锚定价 = 2000.00，止损距离 = 500 点，网格数量 = 5
+每格止损距离 = 500 ÷ 5 = 100 点
+基础止损 = 2000.00 - 500 点
+有利网格 1 成交 → 止损 = 基础止损 + 100 点
+有利网格 2 成交 → 止损 = 基础止损 + 200 点
+不利网格成交 → 止损不移动
+空单方向完全对称：价格向下的有利网格成交，止损向下移动。</div>
+    <p class="small">如果跳过了低层、直接成交更高的有利层，止损按已成交的最高层一次性计算，不重复叠加错误次数。</p>
+    <h3>2. 止损后首单手数</h3>
+    <table><thead><tr><th>配置</th><th>上一止损组首单</th><th>下一组首单</th></tr></thead><tbody>
+      <tr><td>类型 2，倍数 2.0</td><td>0.01</td><td>0.01 × 2.0 = 0.02</td></tr>
+      <tr><td>类型 2，倍数 2.0</td><td>0.02</td><td>0.02 × 2.0 = 0.04</td></tr>
+      <tr><td>类型 1，倍数 1.0</td><td>历史累计按订单组总手数</td><td>累计值 × 1.0</td></tr>
+    </tbody></table>
+    <h3>3. 100 手限制</h3>
+    <p>反手计算结果 ≤100 手时开 1 笔；大于 100 且小于 200 手时拆为两笔相等订单，例如 120 手拆成 60 + 60；≥200 手时停止当前订单组，不发送该超大反手单，清理后重新用基础首单手数启动新订单组。</p>
+    <h3>4. 网格数量与加单次数</h3>
+    <p>设置“网格数量=4”时，内部层级是 1、2、3，所以单个方向最多加 3 次；设置为 5 时最多加 4 次。若“有利方向加单=1”，正向和反向两侧分别拥有相同数量的内部层级，但两侧成交仍属于同一个订单组，不推进六阶段循环。</p>
+  </section>
+
+  <section id="install">
+    <h2>四、安装与首次配置</h2>
+    <div class="grid">
+      <article class="card"><h3>MT5</h3><p>将 <code>NoMatterRiseFall_MT5.ex5</code> 放入终端的 <code>MQL5/Experts</code> 目录，在导航器刷新后挂到图表。使用图表上的中文配置界面修改参数并应用。</p></article>
+      <article class="card"><h3>MT4</h3><p>将 <code>NoMatterRiseFall_MT4.ex4</code> 放入终端的 <code>MQL4/Experts</code> 目录，在导航器刷新后挂到图表。参数在平台自带的“输入”页中设置。</p></article>
+    </div>
+    <ol>
+      <li>确认平台允许自动交易，并确认交易品种的最小手数、手数步长、最大手数、止损最小距离和保证金。</li>
+      <li>每个品种和订单识别编号只运行一个实例；不同实例使用不同的订单识别编号。</li>
+      <li>首次建议使用模拟盘，先用固定距离、小首单手数、较低网格倍数观察订单组切换。</li>
+      <li>如启用“有利方向加单”，再按需求启用“动态止损”；动态止损只在有利方向网格实际成交后生效。</li>
+    </ol>
+    <div class="note"><b>配置锁定：</b>MT5 在已有持仓、挂单或正在进行止损切换时，不允许随意改动会改变订单身份或组状态的配置。需要换策略参数时，先等待空仓，或使用清理功能确认清理完成后再应用。</div>
+  </section>
+
+  <section id="trouble">
+    <h2>五、常见问题与排查</h2>
+    <table><thead><tr><th>现象</th><th>检查方向</th></tr></thead><tbody>
+      <tr><td>正向移动没有加单</td><td>确认“有利方向加单=1”；只有该方向的挂单成交后才算加单，价格移动本身不会市价追单。</td></tr>
+      <tr><td>止损后反手还是 0.01</td><td>确认“止损首单类型=2”、上一组首单是否确实大于 0，以及“首单类型2倍数”是否为期望值。参数修改后必须点击 MT5 的“应用配置”。</td></tr>
+      <tr><td>止损后旧反向挂单还在</td><td>EA 会先撤单再市价反手；若服务器暂时拒绝撤单或开单，EA 保留切换状态并在后续 Tick 重试，避免旧挂单和市价单重复成交。多组模式也会按组核对反向挂单的方向、价格和手数。</td></tr>
+      <tr><td>动态止损后不利网格仍在</td><td>新版本会同步更新仍有效网格挂单的保护；已经位于新止损线内或重合的“不利方向”挂单会撤销，避免无效止损价导致拒单。</td></tr>
+      <tr><td>K 线高低点订单同时成交</td><td>EA 会保留先选定的一侧，并等待、关闭另一侧已经成交的初始仓位，随后只为保留的一侧建立订单组。</td></tr>
+      <tr><td>网格多开一单</td><td>检查“网格数量”的定义：N 只产生 N-1 个内部层。EA 会按网格层标记去重；若人工或其他 EA 已造成重复基础持仓，策略会撤销挂单并暂停，需人工处理异常持仓。</td></tr>
+      <tr><td>订单开不出来</td><td>查看日志中的保护未确认、资金不足、交易时段、最小止损距离、最小手数/步长、最大手数和服务器拒绝原因。</td></tr>
+      <tr><td>K 线模式没有首单</td><td>检查上一根已完成 K 线是否存在、K 线高度是否处于最小和最大值之间、当前价格是否已经突破，以及当前时间是否命中三个首单时间窗口之一。</td></tr>
+      <tr><td>重启后行为不连续</td><td>不要删除平台全局变量；EA 会保存循环、手数、网格层、挂单和止损切换阶段。确认重启后仍使用相同品种、订单识别编号和账户。</td></tr>
+    </tbody></table>
+  </section>
+
+  <section id="review">
+    <h2>六、当前版本逻辑审查结论</h2>
+    <div class="grid">
+      <article class="card ok"><h3>已核对的行为</h3><p>MT4 与 MT5 均包含中文参数、六阶段循环、正反向网格、动态止损、止损后反手恢复、保护确认、挂单去重以及 100/200 手边界处理。</p></article>
+      <article class="card ok"><h3>测试与编译</h3><p>Python 逻辑测试已覆盖手数边界、动态止损方向、跳层、固定止损、GUI 参数、挂单清理和状态恢复；当前测试结果为 213 项通过。MT4、MT5 源码均已编译为 0 错误、0 警告。</p></article>
+      <article class="card warn"><h3>必须实盘前验证</h3><p>策略测试器无法完全模拟所有经纪商撤单、拒单、滑点和止损成交时序。请在模拟盘验证真实品种的报价位数、点值、手数步长、止损距离、对冲/净持仓模式和资金条件。</p></article>
+    </div>
+  </section>
+
+  <section id="risk">
+    <h2>七、风险提示</h2>
+    <div class="card danger"><p>这是递增手数和订单组反手策略。连续止损会使手数、保证金和回撤快速增加；“动态止损”不能消除跳空、滑点、流动性不足或服务器拒单风险。≥200 手的反手结果会重启订单组，但这不代表风险自动归零。请先用模拟盘和小规模参数验证，确认能够承受最坏情况下的连续止损。</p></div>
+  </section>
+
+  <p class="footer">对应源码：NoMatterRiseFall_MT4.mq4、NoMatterRiseFall_MT5.mq5。参数页面以终端实际加载的已编译文件为准。</p>
+</main>
+</body>
+</html>

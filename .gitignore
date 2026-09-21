@@ -3,3 +3,9 @@ __pycache__/
 *.py[cod]
 .worktrees/
 .superpowers/
+*_compile.log
+mt5_auto_test_*.ini
+mt5_auto_test_*.set
+mt5_test_*.ini
+mt5_test_*.set
+mt5_isolated_test/
