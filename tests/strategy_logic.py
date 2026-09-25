@@ -502,6 +502,9 @@ class StrategyModel:
             self.grid_lots = lots
         else:
             self.grid_lots = self.previous_grid_lots * self.multiplier
+        if (self.first_order_lot_type == 2
+                and self.first_order_mult == self.multiplier):
+            self.grid_lots = lots
         stop_loss, _ = self._levels(direction, entry, distance_points)
         _, take_profit = self._levels(direction, entry, self.group_take_profit_points)
         self.position = Position(direction, entry, lots, stop_loss, take_profit)
@@ -723,7 +726,7 @@ class StrategyModel:
             bid = entry - 0.0002 if self.position.direction is Direction.BUY else entry
         if ask is None:
             ask = entry if self.position.direction is Direction.BUY else entry + 0.0002
-        if self.take_profit_mode is TakeProfitMode.GRID:
+        if self.take_profit_mode is TakeProfitMode.GRID and not favorable:
             _, moved_take_profit = self._levels(
                 self.position.direction, entry, self.group_take_profit_points,
             )

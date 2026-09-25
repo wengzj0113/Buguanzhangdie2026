@@ -106,6 +106,18 @@ def test_bollinger_distance_mode_uses_upper_lower_width_and_quarter_stop(source_
     assert "GetBollingerDistancePoints" in source
 
 
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_bollinger_distance_sets_equal_stop_and_take_profit(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    body = re.search(
+        r"bool GetBollingerDistancePoints\(.*?\n\s*\}\n",
+        source,
+        flags=re.DOTALL,
+    ).group(0)
+    assert "stop_loss_points = (int)MathRound(width_points / 4.0);" in body
+    assert "take_profit_points = stop_loss_points;" in body
+
+
 @pytest.mark.parametrize(
     ("total_lots", "status", "legs"),
     [
@@ -1063,6 +1075,76 @@ def test_default_first_order_lot_type_uses_previous_group_first_lot():
     assert stop_actions[2]["lots"] == pytest.approx(0.02)
 
 
+@pytest.mark.parametrize("previous_first", [0.16, 0.32])
+def test_type_two_grid_lot_recovers_to_first_lot_after_state_divergence(previous_first):
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, first_order_lot_type=2, first_order_mult=2.0,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    model.group_first_lots = previous_first
+    model.grid_lots = previous_first * 2
+    stop = model.position.stop_loss
+
+    model.on_tick(bid=stop, ask=stop + 0.0002)
+
+    assert model.group_first_lots == pytest.approx(previous_first * 2)
+    assert model.grid_lots == pytest.approx(previous_first * 2)
+    assert model.grid_pendings
+    assert all(pending.lots == pytest.approx(previous_first * 2)
+               for pending in model.grid_pendings.values())
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_type_two_equal_multipliers_synchronize_grid_and_first_lots(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    assert "double GridLotsForNewGroup(" in source
+    assert "double MultiGridLotsForNewGroup(" in source
+    assert "g_grid_lots = GridLotsForNewGroup(" in source
+    assert "group.grid_lots = MultiGridLotsForNewGroup(" in source
+    initial_fill = source.split("g_group_anchor_price = entry;", 1)[1].split(
+        "g_group_total_lots =", 1,
+    )[0]
+    assert "g_group_first_lots = volume;" in initial_fill
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_reverse_pending_fill_cancels_old_grid_pendings_before_promotion(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    single = source.split("if(pending_filled)\n", 1)[1].split(
+        "ClosePreviousGroupAfterReverseFill(position_ticket)", 1,
+    )[0]
+    multi = source.split("MultiHandleReverseFill(", 1)[1].split(
+        "MultiClosePositionsExcept(group.id, filled_ticket)", 1,
+    )[0]
+
+    assert "DeleteAllPending()" in single
+    assert "MultiDeletePending(group.id)" in multi
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_filled_grid_position_prevents_same_level_from_being_recreated(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    single = source.split("bool FindFilledGridOrder(", 1)[1].split(
+        "bool PlaceGridPending(", 1,
+    )[0]
+    multi = source.split("bool MultiFindFilledGridOrder(", 1)[1].split(
+        "bool MultiPlaceGridPending(", 1,
+    )[0]
+    assert "FindFilledGridPosition(" in single
+    assert "MultiFindFilledGridPosition(" in multi
+    single_fill = source.split("bool HandleGridFill(", 1)[1].split(
+        "void EnsureGridPending(", 1,
+    )[0]
+    multi_fill = source.split("void MultiHandleGridFill(", 1)[1].split(
+        "bool MultiHandleReverseFill(", 1,
+    )[0] if source_name.endswith("mq4") else source.split(
+        "bool MultiHandleGridFill(", 1,
+    )[1].split("bool MultiHandleReverseFill(", 1)[0]
+    assert "current_total_lots <= previous_total_lots" not in single_fill
+    assert "current_total <= group.total_lots" not in multi_fill
+
+
 def test_type_two_uses_immediately_previous_group_first_lot_on_consecutive_stops():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
@@ -1479,19 +1561,91 @@ def test_favorable_grid_source_uses_a_chinese_visible_input_label():
     assert "关闭" in mt5_source and "开启" in mt5_source
 
 
-def test_favorable_grid_fill_updates_the_same_group_total_and_tp_flow():
+def test_favorable_grid_fill_keeps_group_take_profit():
     model = StrategyModel(
         Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
         grid_count=4, favorable_grid_enable=1,
     )
 
     model.on_tick(bid=1.1000, ask=1.1002)
+    initial_take_profit = model.position.take_profit
     fill_actions = model.fill_favorable_grid_pending(level=1)
 
     assert fill_actions[0]["kind"] == "favorable_grid"
     assert model.group_total_lots == pytest.approx(0.02)
     assert model.favorable_grid_filled_levels == 1
-    assert model.position.take_profit > model.position.entry
+    assert model.position.take_profit == pytest.approx(initial_take_profit)
+
+
+def test_adverse_grid_fill_moves_take_profit_without_moving_stop():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_stop = model.position.stop_loss
+    initial_take_profit = model.position.take_profit
+
+    model.fill_grid_pending(level=1)
+
+    assert model.position.stop_loss == pytest.approx(initial_stop)
+    assert model.position.take_profit < initial_take_profit
+
+
+def test_adverse_fill_preserves_stop_already_raised_by_favorable_fill():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.0001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+    model.on_tick(bid=1.1000, ask=1.1002)
+    initial_take_profit = model.position.take_profit
+    model.fill_favorable_grid_pending(level=1)
+    raised_stop = model.position.stop_loss
+
+    model.fill_grid_pending(level=1)
+
+    assert model.position.stop_loss == pytest.approx(raised_stop)
+    assert model.position.take_profit < initial_take_profit
+
+
+def test_three_favorable_fills_keep_the_initial_take_profit():
+    model = StrategyModel(
+        Direction.BUY, CycleMode.MODE_1, 0.01, 2.0, 500, 0.00001,
+        grid_count=4, favorable_grid_enable=1, dynamic_stop_loss_enable=1,
+    )
+    model.on_tick(bid=1.02268, ask=1.02270)
+
+    for level in (1, 2, 3):
+        model.fill_favorable_grid_pending(level=level)
+        assert model.position.take_profit == pytest.approx(1.02770)
+
+    assert model.position.stop_loss == pytest.approx(1.02145)
+
+
+@pytest.mark.parametrize("source_name", ["NoMatterRiseFall_MT4.mq4", "NoMatterRiseFall_MT5.mq5"])
+def test_favorable_grid_pending_and_fill_keep_group_take_profit(source_name):
+    source = (Path(__file__).parents[1] / source_name).read_text(encoding="utf-8")
+    single_pending = source.split("bool PlaceGridPending(", 1)[1].split(
+        "bool PrepareGridPendingForCurrentStop(", 1,
+    )[0]
+    single_fill = source.split("bool HandleGridFill(", 1)[1].split(
+        "void EnsureGridPending(", 1,
+    )[0]
+    multi_pending = source.split("bool MultiPlaceGridPending(", 1)[1].split(
+        "MultiHandleGridFill(", 1,
+    )[0]
+    multi_fill = source.split("MultiHandleGridFill(", 1)[1].split(
+        "bool MultiHandleReverseFill(", 1,
+    )[0]
+
+    assert "favorable ? GroupTakeProfitPrice(position_type)" in single_pending
+    marker = ("if(FavorableGridEnable == 1)" if source_name.endswith("mq4")
+              else "if(g_gui_applied_config.favorable_grid_enable == 1)")
+    favorable_pending = multi_pending.split(marker, 1)[1]
+    assert "MultiTakeProfitPrice(group, type)" in favorable_pending
+    for fill in (single_fill, multi_fill):
+        favorable_block = fill.split(marker, 1)[1]
+        assert "latest_entry = fill_price;" not in favorable_block
 
 
 def test_dynamic_stop_moves_buy_stop_only_for_favorable_grid_levels():

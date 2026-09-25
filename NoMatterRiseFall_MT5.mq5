@@ -30,7 +30,7 @@ enum DistanceMode
    DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
    DISTANCE_AVERAGE_CANDLE_RANGE = 2, // 过去N根K线平均高度
    DISTANCE_LONG_CANDLE = 3,   // 长K线方向市价入场，距离使用固定值
-   DISTANCE_BOLLINGER_RANGE = 4 // 当前布林带上下轨距离的四分之一作为止损
+   DISTANCE_BOLLINGER_RANGE = 4 // 当前布林带上下轨距离的四分之一作为止损和止盈
   };
 
 enum OrderTypeMode
@@ -2055,7 +2055,7 @@ bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
       return false;
    const double width_points = (upper[0] - lower[0]) / _Point;
    stop_loss_points = (int)MathRound(width_points / 4.0);
-   take_profit_points = g_gui_applied_config.take_profit_distance_points;
+   take_profit_points = stop_loss_points;
    return stop_loss_points > 0 && take_profit_points > 0;
   }
 
@@ -3441,12 +3441,33 @@ bool NormalizeGridPendingLevel(const long expected_direction, const int expected
    return normalized;
   }
 
+bool FindFilledGridPosition(const long position_type, const int level,
+                            const bool favorable, double &fill_price)
+  {
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong ticket = PositionGetTicket(index);
+      if(!IsOurPosition(ticket) || PositionGetInteger(POSITION_TYPE) != position_type)
+         continue;
+      const string comment = PositionGetString(POSITION_COMMENT);
+      if(!IsGridPendingComment(comment)
+         || GridPendingLevelFromComment(comment) != level
+         || (StringFind(comment, ".Grid.F.") >= 0) != favorable)
+         continue;
+      fill_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      return true;
+     }
+   return false;
+  }
+
 bool FindFilledGridOrder(const long position_type, const int level,
                          const double expected_price, const bool favorable,
                          double &fill_price)
   {
    if(level <= 0 || level >= MAX_GRID_COUNT)
       return false;
+   if(FindFilledGridPosition(position_type, level, favorable, fill_price))
+      return true;
    ulong ticket = favorable ? g_favorable_grid_order_tickets[level]
                             : g_grid_order_tickets[level];
    if(ticket == 0 || !HistoryOrderSelect(ticket))
@@ -3478,9 +3499,10 @@ bool PlaceGridPending(const long position_type, const int level, const bool favo
    const double entry = favorable ? FavorableGridLevelPrice(position_type, level)
                                   : GridLevelPrice(position_type, level);
    double stop_loss = GroupStopPrice(position_type);
-   double take_profit = position_type == POSITION_TYPE_BUY
-                        ? PriceNormalize(entry + g_group_take_profit_points * _Point)
-                        : PriceNormalize(entry - g_group_take_profit_points * _Point);
+   double take_profit = favorable ? GroupTakeProfitPrice(position_type)
+                        : position_type == POSITION_TYPE_BUY
+                          ? PriceNormalize(entry + g_group_take_profit_points * _Point)
+                          : PriceNormalize(entry - g_group_take_profit_points * _Point);
    string reason = "";
    if(!ValidateStops((ENUM_POSITION_TYPE)position_type, entry,
                      stop_loss, take_profit, reason))
@@ -3489,6 +3511,9 @@ bool PlaceGridPending(const long position_type, const int level, const bool favo
                   entry, stop_loss, take_profit, reason);
       return false;
      }
+   if(favorable
+      && MathAbs(take_profit - GroupTakeProfitPrice(position_type)) > _Point * 0.5)
+      return false;
    const double volume = VolumeNormalize(g_grid_lots);
    const long pending_type = PendingTypeForDirection(position_type == POSITION_TYPE_BUY
                                                      ? ORDER_TYPE_BUY : ORDER_TYPE_SELL,
@@ -3814,7 +3839,7 @@ void HandleTradeRequestFailure(const uint retcode, const string description)
 bool PrepareGridPendingForCurrentStop(const long position_type, const double entry,
                                       const bool favorable, ulong &ticket)
   {
-   if(g_gui_applied_config.dynamic_stop_loss_enable != 1 || ticket == 0)
+   if(ticket == 0)
       return true;
    const double stop_loss = GroupStopPrice(position_type);
    const double tolerance = _Point * 0.5;
@@ -3828,8 +3853,14 @@ bool PrepareGridPendingForCurrentStop(const long position_type, const double ent
       ticket = 0;
       return true;
      }
+   const double expected_take_profit = GroupTakeProfitPrice(position_type);
+   const bool wrong_take_profit = favorable
+                                  && MathAbs(OrderGetDouble(ORDER_TP) - expected_take_profit)
+                                     > tolerance;
    if(!adverse_level_invalid
-      && MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      && (g_gui_applied_config.dynamic_stop_loss_enable != 1
+          || MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      && !wrong_take_profit)
       return true;
    if(!DeletePendingTicket(ticket, "Dynamic grid pending cleanup"))
       return false;
@@ -3837,14 +3868,11 @@ bool PrepareGridPendingForCurrentStop(const long position_type, const double ent
    return true;
   }
 
-bool HandleGridFill(const long position_type, const double previous_total_lots)
+bool HandleGridFill(const long position_type)
   {
    if(g_gui_applied_config.grid_count < 2 || g_group_anchor_price <= 0.0)
       return false;
    const double current_total_lots = TotalPositionVolume(position_type);
-   const double volume_tolerance = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5;
-   if(current_total_lots <= previous_total_lots + volume_tolerance)
-      return false;
 
    bool changed = false;
    double latest_entry = 0.0;
@@ -3875,7 +3903,6 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
                                 fill_price))
            {
             g_favorable_grid_filled_mask |= level_bit;
-            latest_entry = fill_price;
             changed = true;
            }
         }
@@ -3896,8 +3923,18 @@ bool HandleGridFill(const long position_type, const double previous_total_lots)
    return true;
   }
 
+double GridLotsForNewGroup(const double first_lots, const double calculated_grid_lots)
+  {
+   if(g_gui_applied_config.first_order_lot_type == 2 && first_lots > 0.0
+      && MathAbs(g_gui_applied_config.first_order_mult
+                 - g_gui_applied_config.grid_lot_multiplier) < 0.00000001)
+      return VolumeNormalize(first_lots);
+   return calculated_grid_lots;
+  }
+
 void EnsureGridPending(const long position_type)
   {
+   g_grid_lots = GridLotsForNewGroup(g_group_first_lots, g_grid_lots);
    if(g_gui_applied_config.grid_count < 2)
      {
       g_grid_pending_level = 0;
@@ -4324,9 +4361,15 @@ void Manage()
                                       || (reverse_pending_status == REVERSE_PENDING_FILLED
                                           && pending_position_found));
        if(!pending_filled)
-          HandleGridFill(position_type, previous_group_total_lots);
+          HandleGridFill(position_type);
        if(pending_filled)
          {
+          if(!DeleteAllPending())
+            {
+             Print("Reverse fill detected, but old grid pending orders remain; retrying.");
+             SaveState();
+             return;
+            }
           if(!ClosePreviousGroupAfterReverseFill(position_ticket))
             {
              Print("Reverse fill detected, but the previous order group is not fully closed; retrying.");
@@ -5051,11 +5094,34 @@ bool MultiNormalizeGridPendingLevel(const MultiGroupState &group,
    return normalized;
   }
 
+bool MultiFindFilledGridPosition(const MultiGroupState &group, const long position_type,
+                                 const int level, const bool favorable,
+                                 double &fill_price)
+  {
+   for(int index = PositionsTotal() - 1; index >= 0; index--)
+     {
+      const ulong ticket = PositionGetTicket(index);
+      if(!MultiIsOurPosition(ticket, group.id)
+         || PositionGetInteger(POSITION_TYPE) != position_type)
+         continue;
+      const string comment = PositionGetString(POSITION_COMMENT);
+      if(!IsGridPendingComment(comment)
+         || GridPendingLevelFromComment(comment) != level
+         || (StringFind(comment, ".Grid.F.") >= 0) != favorable)
+         continue;
+      fill_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      return true;
+     }
+   return false;
+  }
+
 bool MultiFindFilledGridOrder(const MultiGroupState &group, const long position_type,
                               const int level, const double expected_price,
                               const bool favorable,
                               double &fill_price)
   {
+   if(MultiFindFilledGridPosition(group, position_type, level, favorable, fill_price))
+      return true;
    ulong ticket = MultiGridOrderTicket(group.id, level, favorable);
    if(ticket == 0
       && (favorable ? group.favorable_grid_pending_level
@@ -5993,8 +6059,14 @@ bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
                                            const double entry, const bool favorable,
                                            ulong &ticket);
 
+double MultiGridLotsForNewGroup(const MultiGroupState &group)
+  {
+   return GridLotsForNewGroup(group.first_lots, group.grid_lots);
+  }
+
 bool MultiPlaceGridPending(MultiGroupState &group, const long type)
   {
+   group.grid_lots = MultiGridLotsForNewGroup(group);
    if(g_gui_applied_config.grid_count < 2
       || group.grid_lots <= 0.0 || group.anchor_price <= 0.0)
       return false;
@@ -6079,12 +6151,12 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
            {
             const long pending_type = PendingTypeForDirection(type, entry);
             double stop_loss = MultiStopPrice(group, type);
-            double take_profit = type == POSITION_TYPE_BUY
-                                 ? PriceNormalize(entry + group.take_profit_points * _Point)
-                                 : PriceNormalize(entry - group.take_profit_points * _Point);
+            double take_profit = MultiTakeProfitPrice(group, type);
             string stop_reason = "";
             if(!ValidateStops((ENUM_POSITION_TYPE)type, entry, stop_loss,
                               take_profit, stop_reason))
+               continue;
+            if(MathAbs(take_profit - MultiTakeProfitPrice(group, type)) > _Point * 0.5)
                continue;
             const string comment = g_gui_applied_config.order_comment
                                    + MultiGroupTag(group.id) + ".Grid.F."
@@ -6130,7 +6202,7 @@ bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
                                            const double entry, const bool favorable,
                                            ulong &ticket)
   {
-   if(g_gui_applied_config.dynamic_stop_loss_enable != 1 || ticket == 0)
+   if(ticket == 0)
       return true;
    const double stop_loss = MultiStopPrice(group, position_type);
    const double tolerance = _Point * 0.5;
@@ -6144,8 +6216,14 @@ bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
       ticket = 0;
       return true;
      }
+   const double expected_take_profit = MultiTakeProfitPrice(group, position_type);
+   const bool wrong_take_profit = favorable
+                                  && MathAbs(OrderGetDouble(ORDER_TP) - expected_take_profit)
+                                     > tolerance;
    if(!adverse_level_invalid
-      && MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      && (g_gui_applied_config.dynamic_stop_loss_enable != 1
+          || MathAbs(OrderGetDouble(ORDER_SL) - stop_loss) <= tolerance)
+      && !wrong_take_profit)
       return true;
    if(!DeletePendingTicket(ticket, "Dynamic multi grid pending cleanup"))
       return false;
@@ -6156,9 +6234,6 @@ bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
 bool MultiHandleGridFill(MultiGroupState &group, const long type, const double current_total)
   {
    if(g_gui_applied_config.grid_count < 2 || group.anchor_price <= 0.0)
-      return false;
-   if(current_total <= group.total_lots
-      + SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP) * 0.5)
       return false;
    bool changed = false;
    double latest_entry = 0.0;
@@ -6189,7 +6264,6 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
                                      true, fill_price))
            {
             group.favorable_grid_filled_mask |= level_bit;
-            latest_entry = fill_price;
             changed = true;
            }
         }
@@ -6234,6 +6308,8 @@ bool MultiHandleReverseFill(MultiGroupState &group, long &type, double &entry,
        && !FindPositionByTicket(group.pending_ticket, filled_ticket, filled_type,
                                 filled_volume, filled_entry, filled_stop_loss,
                                 filled_take_profit))
+       return true;
+    if(!MultiDeletePending(group.id))
        return true;
     if(!MultiClosePositionsExcept(group.id, filled_ticket))
       {
@@ -7041,8 +7117,7 @@ string GuiDistanceModeText(const DistanceMode value)
 string GuiDistanceSummaryText(const GuiConfig &config)
   {
    if(config.distance_mode == DISTANCE_BOLLINGER_RANGE)
-      return "布林带宽度/4 / "
-             + IntegerToString(config.take_profit_distance_points);
+      return "止损/止盈：布林带宽度/4";
    if(config.distance_mode == DISTANCE_AVERAGE_CANDLE_RANGE)
       return "均高N=" + IntegerToString(config.average_candle_count)
              + " ×止损" + DoubleToString(config.average_stop_multiplier, 2)
