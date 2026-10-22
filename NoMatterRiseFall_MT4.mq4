@@ -28,8 +28,14 @@ enum DistanceMode
    DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
    DISTANCE_AVERAGE_CANDLE_RANGE = 2, // 过去N根K线平均高度
    DISTANCE_LONG_CANDLE = 3,   // 长K线方向市价入场，距离使用固定值
-   DISTANCE_BOLLINGER_RANGE = 4 // 当前布林带上下轨距离的四分之一作为止损和止盈
+   DISTANCE_BOLLINGER_RANGE = 4, // 当前布林带上下轨宽度按百分比计算止损和止盈
+   DISTANCE_ZIGZAG_RANGE = 5, // 已确认 ZigZag 波段高度
+   DISTANCE_BOX_RANGE = 6, // M1时间箱体高度
+   DISTANCE_BOX_BREAKOUT = 7 // 已确认箱体突破
+
   };
+
+enum BoxRangeTimeMode { BOX_RANGE_ROLLING = 0, BOX_RANGE_DAILY_SESSION = 1 };
 
 enum OrderTypeMode
   {
@@ -64,76 +70,130 @@ enum TransitionPhase
    TRANSITION_COMPLETE = 2
   };
 
+// ===== 策略与首单 =====
 // 首单方向：做多或做空
-input FirstDirection 首单方向 = FIRST_BUY;
+input FirstDirection 首单方向 = FIRST_BUY; // [方向]首单做多或做空
 // 首单方向确定方式：预设方向或按当前价格相对布林带中轨判断
-input FirstDirectionMode 首单方向确定方式 = FIRST_DIRECTION_PRESET;
-// 首单方向判断使用的布林带周期（标准值为20）
-input int            布林带周期 = 20;
-// 首单方向判断使用的布林带标准差倍数（标准值为2.0）
-input double         布林带标准差 = 2.0;
+input FirstDirectionMode 首单方向确定方式 = FIRST_DIRECTION_PRESET; // [方向]预设方向或按布林中轨判断
 // 固定距离、平均K线高度和长K线模式均使用用户选择的循环模式
-input CycleMode      循环模式 = CYCLE_MODE_1;
+input CycleMode      循环模式 = CYCLE_MODE_1; // [策略]订单组循环方向序列
+
+// ===== 入场信号 =====
 // 入场/止盈止损距离模式：固定距离、K线高度、平均K线高度、长K线市价或布林带区间
-input DistanceMode   距离模式 = DISTANCE_FIXED;
-// K线高度模式下的正向或逆向开单方式
-input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
+input DistanceMode   距离模式 = DISTANCE_FIXED; // [策略]止损和止盈距离来源
+// 开单方向映射：K线高度模式和布林带触轨模式共用
+input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD; // [开单]信号方向正向或反向
 // K线高度模式下同一根当前K线的首单触发次数
-input CandleOrderMode K线开单模式 = KORDER_ONCE_PER_BAR;
+input CandleOrderMode K线开单模式 = KORDER_ONCE_PER_BAR; // [开单]每根K线触发一次或重复触发
 // K线高度模式是否允许多个订单组并行：0=单组，1=多组
-input int            K线多组 = 0;
-// 止盈移动方式：网格成交后移动或按价格线性移动
-input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID;
+input int            K线多组 = 0; // [开单]0=单组，1=允许多组
+input int            篮子数量 = 1; // [开单]1=单篮子，2=反向双篮子，3=止损续配双篮子
+// 首单方向判断使用的布林带周期（标准值为20）
+input int            布林带周期 = 20; // [布林带]计算周期（K线根数）
+// 首单方向判断使用的布林带标准差倍数（标准值为2.0）
+input double         布林带标准差 = 2.0; // [布林带]上下轨标准差倍数
+
+// ===== 时间箱体 =====
+input BoxRangeTimeMode 箱体时间模式 = BOX_RANGE_ROLLING;  // [箱体]滚动回看或每日固定时段
+input int            箱体回看小时数 = 12;  // [箱体]滚动模式回看小时数
+input string         箱体开始时间 = "01:00";  // [箱体]固定时段起始时间（服务器时间）
+input string         箱体结束时间 = "12:00";  // [箱体]固定时段结束时间（服务器时间）
+input int            箱体最小高度 = 500;  // [箱体]允许的最小高度（点）
+input int            箱体最大高度 = 1000;  // [箱体]允许的最大高度（点）
+
+// ===== 箱体确认突破 =====
+input ENUM_TIMEFRAMES 箱体识别周期 = PERIOD_CURRENT; // [箱体突破]识别周期；当前图表周期
+input int            箱体观察窗口K线数 = 60; // [箱体突破]已收盘K线窗口
+input int            箱体ATR周期 = 14; // [箱体突破]ATR计算周期
+input double         箱体触碰ATR倍数 = 0.2; // [箱体突破]边沿触碰容差
+input int            箱体上沿最少触碰 = 2; // [箱体突破]上沿最少触碰数
+input int            箱体下沿最少触碰 = 2; // [箱体突破]下沿最少触碰数
+input int            箱体最少完整往返 = 2; // [箱体突破]最少完整往返数
+input int            箱体同侧触碰间隔 = 3; // [箱体突破]同侧事件最少间隔K线
+input int            箱体突破最小宽度 = 500; // [箱体突破]最小宽度（点）
+input int            箱体突破最大宽度 = 1000; // [箱体突破]最大宽度（点）
+input double         箱体突破缓冲ATR倍数 = 0.2; // [箱体突破]突破确认缓冲
+
+
+// ===== 手数与风险 =====
 // 首单手数
-input double         首单手数 = 0.01;
+input double         首单手数 = 0.01; // [手数]首轮首单交易手数
 // 首单手数倍数；订单组止损后下一组首单手数乘此倍数
-input double         首单手数倍数 = 1.0;
+input double         首单手数倍数 = 1.0; // [手数]类型1止损后首单手数倍数
 // 止损后首单手数计算类型：1=累计订单组总手数，2=上一组首单手数
-input int            止损首单类型 = 2;
+input int            止损首单类型 = 2; // [手数]止损后算法：1累计组手数，2首单倍数，3固定手数
 // 首单手数类型2的倍数
-input double         首单类型2倍数 = 2.0;
+input double         首单类型2倍数 = 2.0; // [手数]类型2使用的上一组首单倍数
+// 止损首单类型3使用的固定手数
+input double         止损首单固定手数 = 0.01; // [手数]类型3止损后使用的固定手数
 // 止损后最多切换到下一订单组的次数；达到后清理并重新开始
-input int            最大反手次数 = 5;
+input int            最大反手次数 = 5; // [风险]止损后最多更换订单组次数
+// 首单允许的最大点差，单位为 points；0 表示不限制
+input int            最大首单点差 = 0; // [风险]首单最大点差（点）；0=不限
+
+// ===== 网格与止盈 =====
+// 止盈移动方式：网格成交后移动或按价格线性移动
+input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID; // [止盈]网格移动或线性移动
 // 止损区间分成的格数；内部格数为总格数减一
-input int            网格数量 = 2;
+input int            网格数量 = 2; // [网格]止损区间等分格数
 // 价格向有利方向移动时是否网格加单：0=关闭，1=开启
-input int            有利方向加单 = 0;
+input int            有利方向加单 = 0; // [网格]0=关闭，1=有利方向加单
 // 有利方向网格成交后是否同步移动止损：0=关闭，1=开启
-input int            动态止损 = 0;
-// 可视化界面开关：0=关闭，1=开启
-input int            v_enable = 0;
+input int            动态止损 = 0; // [网格]0=关闭，1=随有利网格移动止损
 // 下一订单组网格手数相对上一组的倍数
-input double         网格手数倍数 = 2.0;
+input double         网格手数倍数 = 2.0; // [网格]下一订单组网格手数倍数
+// 可视化界面开关：0=关闭，1=开启
+input int            v_enable = 0; // [界面]0=关闭，1=显示参数面板
+
+// ===== 止盈止损距离 =====
 // 固定距离模式下的止损点数
-input int            固定止损距离 = 500;
+input int            固定止损距离 = 500; // [距离]固定模式止损距离（点）
 // 固定距离模式下的止盈点数
-input int            固定止盈距离 = 500;
+input int            固定止盈距离 = 500; // [距离]固定模式止盈距离（点）
+// 布林带区间模式下，带宽乘以下述百分比得到止损点数
+input double         布林带止损百分比 = 25.0; // [距离]布林带宽度对应的止损百分比
+// 布林带模式下，止盈点数与止损点数的比值
+input double         布林带盈亏比 = 1.0; // [距离]止盈距离÷止损距离
+// 布林带区间模式下，止损点数的允许范围（含边界）
+input int            布林带最小止损距离 = 200; // [距离]止损最小点数
+input int            布林带最大止损距离 = 1000; // [距离]止损最大点数
 // 上一根K线允许使用的最小高度点数
-input int            K线最小高度 = 500;
+input int            K线最小高度 = 500; // [距离]上一根K线最小高度（点）
 // 上一根K线允许使用的最大高度点数
-input int            K线最大高度 = 1000;
+input int            K线最大高度 = 1000; // [距离]上一根K线最大高度（点）
 // 平均K线模式使用的已完成K线根数
-input int            平均K线根数 = 20;
+input int            平均K线根数 = 20; // [距离]计算平均高度的已完成K线数
 // 平均K线高度计算的止损倍数
-input double         平均止损倍数 = 2.0;
+input double         平均止损倍数 = 2.0; // [距离]平均K线高度止损倍数
 // 平均K线模式中止盈距离相对止损距离的倍数
-input double         平均止盈倍数 = 2.0;
+input double         平均止盈倍数 = 2.0; // [距离]止盈距离相对止损距离倍数
+input int            ZigZag深度 = 12; // [距离]确认波段转折的深度
+input int            ZigZag偏差 = 5; // [距离]波段转折的最小偏差
+input int            ZigZag回退 = 3; // [距离]转折点间最小K线数
+input int            ZigZag距离最小值 = 100; // [距离]波段最小距离（点）
+input int            ZigZag距离最大值 = 10000; // [距离]波段最大距离（点）
+input double         ZigZag止损百分比 = 100.0; // [距离]波段高度对应的止损百分比
+input double         ZigZag止盈倍数 = 1.0; // [距离]止盈距离相对止损距离倍数
+
+// ===== 订单识别 =====
 // 用于识别本EA订单的唯一编号
-input int            订单识别编号 = 20260830;
+input int            订单识别编号 = 20260830; // [订单]识别本EA订单的编号
 // 订单注释；网格单会自动追加网格标记
-input string         订单注释 = "不管涨跌";
+input string         订单注释 = "不管涨跌"; // [订单]发送到平台的订单备注
+
+// ===== 交易时段 =====
 // 允许开首单的开始时间，使用平台服务器时间，格式为 时:分
-input string         开始时间 = "08:00";
+input string         开始时间 = "08:00"; // [时段]时段1开始（服务器时间）
 // 允许开首单的结束时间，使用平台服务器时间，格式为 时:分
-input string         结束时间 = "23:00";
+input string         结束时间 = "23:00"; // [时段]时段1结束（服务器时间）
 // 时段2允许开首单的开始时间；00:00-00:00表示关闭
-input string         时段2开始时间 = "00:00";
+input string         时段2开始时间 = "00:00"; // [时段]时段2开始；00:00-00:00关闭
 // 时段2允许开首单的结束时间；支持跨午夜
-input string         时段2结束时间 = "00:00";
+input string         时段2结束时间 = "00:00"; // [时段]时段2结束；支持跨午夜
 // 时段3允许开首单的开始时间；00:00-00:00表示关闭
-input string         时段3开始时间 = "00:00";
+input string         时段3开始时间 = "00:00"; // [时段]时段3开始；00:00-00:00关闭
 // 时段3允许开首单的结束时间；支持跨午夜
-input string         时段3结束时间 = "00:00";
+input string         时段3结束时间 = "00:00"; // [时段]时段3结束；支持跨午夜
 
 // 内部兼容映射：以下名称不显示在参数设置中，仅用于保持既有逻辑代码兼容。
 #define InpFirstDirection 首单方向
@@ -146,6 +206,7 @@ input string         时段3结束时间 = "00:00";
 #define kline_enable_multiple K线多组
 #define FirstOrderLotType 止损首单类型
 #define FirstOrderMult 首单类型2倍数
+#define FirstOrderFixedLots 止损首单固定手数
 #define InpGridCount 网格数量
 #define FavorableGridEnable 有利方向加单
 #define DynamicStopLossEnable 动态止损
@@ -202,6 +263,25 @@ int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
 int    g_group_stop_points = 0;
 int    g_group_take_profit_points = 0;
+struct BoxBreakoutState
+  {
+   bool valid;
+   double upper;
+   double lower;
+   int width_points;
+   double atr;
+   double breakout_buffer;
+   datetime confirmation_time;
+   datetime last_processed_time;
+   int upper_breakout_count;
+   int lower_breakout_count;
+   int age_bars;
+   bool signal_pending;
+   long signal_id;
+   datetime signal_bar_time;
+   int signal_direction;
+  };
+BoxBreakoutState g_box_state;
 double g_cumulative_loss_lots = 0.0;
 double g_group_first_lots = 0.0;
 double g_previous_grid_lots = 0.0;
@@ -557,6 +637,66 @@ int ParseTimeMinutes(const string value)
    return hour * 60 + minute;
   }
 
+bool GetBoxRangePoints(int &range_points)
+  {
+   range_points = 0;
+   if(箱体最小高度 <= 0 || 箱体最大高度 < 箱体最小高度
+      || Point <= 0.0)
+      return false;
+   const datetime now = TimeCurrent();
+   datetime start_time = 0;
+   datetime end_time = now - (now % 60) + 60;
+   if(箱体时间模式 == BOX_RANGE_ROLLING)
+     {
+      if(箱体回看小时数 <= 0 || 箱体回看小时数 > 720)
+         return false;
+      start_time = now - 箱体回看小时数 * 3600;
+      start_time -= start_time % 60;
+     }
+   else if(箱体时间模式 == BOX_RANGE_DAILY_SESSION)
+     {
+      const int start_minutes = ParseTimeMinutes(箱体开始时间);
+      const int end_minutes = ParseTimeMinutes(箱体结束时间);
+      if(start_minutes < 0 || end_minutes < 0 || start_minutes == end_minutes)
+         return false;
+      string day_text = TimeToString(now, TIME_DATE);
+      datetime day_start = StrToTime(day_text);
+      datetime session_start = day_start + start_minutes * 60;
+      datetime session_end = day_start + end_minutes * 60;
+      if(end_minutes <= start_minutes) session_end += 86400;
+      if(now < session_end)
+        {
+         session_start -= 86400;
+         session_end -= 86400;
+        }
+      start_time = session_start;
+      end_time = session_end;
+     }
+   else return false;
+   const int first_shift = iBarShift(Symbol(), PERIOD_M1, start_time, false);
+   const int end_shift = iBarShift(Symbol(), PERIOD_M1, end_time - 1, false);
+   if(first_shift < 0 || end_shift < 0 || first_shift < end_shift)
+      return false;
+   if(iTime(Symbol(), PERIOD_M1, first_shift) > start_time
+      || iTime(Symbol(), PERIOD_M1, end_shift) >= end_time
+      || iTime(Symbol(), PERIOD_M1, end_shift) + 60 < end_time)
+      return false;
+   double highest = -DBL_MAX;
+   double lowest = DBL_MAX;
+   for(int shift = first_shift; shift >= end_shift; shift--)
+     {
+      const datetime bar_time = iTime(Symbol(), PERIOD_M1, shift);
+      if(bar_time < start_time || bar_time >= end_time)
+         continue;
+      highest = MathMax(highest, iHigh(Symbol(), PERIOD_M1, shift));
+      lowest = MathMin(lowest, iLow(Symbol(), PERIOD_M1, shift));
+     }
+   if(highest <= lowest || lowest == DBL_MAX)
+      return false;
+   range_points = (int)MathRound((highest - lowest) / Point);
+   return range_points >= 箱体最小高度 && range_points <= 箱体最大高度;
+  }
+
 bool IsOperationWindowActive(const int current_minutes, const int start_minutes,
                              const int end_minutes)
   {
@@ -580,6 +720,20 @@ bool IsInitialEntryAllowed()
          return true;
      }
    return false;
+  }
+
+bool IsInitialSpreadAllowed()
+  {
+   if(最大首单点差 < 0)
+      return false;
+   if(最大首单点差 == 0)
+      return true;
+   RefreshRates();
+   if(Point <= 0.0 || Bid <= 0.0 || Ask < Bid)
+      return false;
+   const double spread_points = MathCeil((Ask - Bid) / Point);
+   return MathIsValidNumber(spread_points)
+          && spread_points <= (double)最大首单点差;
   }
 
 int CycleLength(const int cycle_mode)
@@ -725,9 +879,51 @@ bool GetBollingerFirstDirection(int &first_direction)
    return true;
   }
 
+bool GetBollingerTouchDirection(int &first_direction)
+  {
+   if(布林带周期 <= 0 || 布林带标准差 <= 0.0
+      || iBars(Symbol(), Period()) < 布林带周期)
+      return false;
+   RefreshRates();
+   const double upper = iBands(Symbol(), Period(), 布林带周期,
+                               布林带标准差, 0, PRICE_CLOSE,
+                               MODE_UPPER, 0);
+   const double lower = iBands(Symbol(), Period(), 布林带周期,
+                               布林带标准差, 0, PRICE_CLOSE,
+                               MODE_LOWER, 0);
+   if(!MathIsValidNumber(upper) || !MathIsValidNumber(lower)
+      || upper == EMPTY_VALUE || lower == EMPTY_VALUE || upper <= lower
+      || Bid <= 0.0 || Point <= 0.0)
+      return false;
+   const double tolerance = Point * 0.5;
+   if(Bid >= upper - tolerance)
+     {
+      if(开单方式 == ORDERTYPE_FORWARD)
+         first_direction = OP_BUY;
+      else if(开单方式 == ORDERTYPE_REVERSE)
+         first_direction = OP_SELL;
+      else
+         return false;
+     }
+   else if(Bid <= lower + tolerance)
+     {
+      if(开单方式 == ORDERTYPE_FORWARD)
+         first_direction = OP_SELL;
+      else if(开单方式 == ORDERTYPE_REVERSE)
+         first_direction = OP_BUY;
+      else
+         return false;
+     }
+   else
+      return false;
+   return true;
+  }
+
 bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
-   if(布林带周期 <= 0 || 布林带标准差 <= 0.0)
+   if(布林带周期 <= 0 || 布林带标准差 <= 0.0
+      || !MathIsValidNumber(布林带止损百分比) || 布林带止损百分比 <= 0.0
+      || !MathIsValidNumber(布林带盈亏比) || 布林带盈亏比 <= 0.0)
       return false;
    RefreshRates();
    const double upper = iBands(Symbol(), Period(), 布林带周期,
@@ -739,13 +935,113 @@ bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
    if(upper == EMPTY_VALUE || lower == EMPTY_VALUE || upper <= lower)
       return false;
    const double width_points = (upper - lower) / Point;
-   stop_loss_points = (int)MathRound(width_points / 4.0);
-   take_profit_points = stop_loss_points;
+   const double distance = width_points * 布林带止损百分比 / 100.0;
+   if(!MathIsValidNumber(distance) || distance > 2147483647.0)
+      return false;
+   stop_loss_points = (int)MathRound(distance);
+   const double take_profit = stop_loss_points * 布林带盈亏比;
+   if(!MathIsValidNumber(take_profit) || take_profit > 2147483647.0)
+      return false;
+   take_profit_points = (int)MathRound(take_profit);
+   return stop_loss_points >= 布林带最小止损距离
+          && stop_loss_points <= 布林带最大止损距离;
+  }
+
+bool GetZigZagDistancePoints(int &stop_loss_points, int &take_profit_points,
+                            double &breakout_high, double &breakout_low)
+  {
+   // 标准 ZigZag 会回算最近三个极值，只使用第 4、5 个极值构成的波段。
+   int found = 0;
+   double first = 0.0;
+   double second = 0.0;
+   int first_kind = 0;
+   int second_kind = 0;
+   const int bars = MathMin(iBars(Symbol(), Period()), 2000);
+   for(int shift = 1; shift < bars && found < 5; shift++)
+     {
+      const double price = iCustom(Symbol(), Period(), "ZigZag",
+                                   ZigZag深度, ZigZag偏差, ZigZag回退, 0, shift);
+      if(!MathIsValidNumber(price) || price == EMPTY_VALUE || price <= 0.0)
+         continue;
+      const double high = iHigh(Symbol(), Period(), shift);
+      const double low = iLow(Symbol(), Period(), shift);
+      const int kind = MathAbs(price - high) <= Point * 0.5 ? 1
+                       : (MathAbs(price - low) <= Point * 0.5 ? -1 : 0);
+      if(kind == 0)
+         return false;
+      found++;
+      if(found == 4) { first = price; first_kind = kind; }
+      if(found == 5) { second = price; second_kind = kind; }
+     }
+   if(found < 5 || first_kind == second_kind
+      || (first_kind == 1 && first <= second)
+      || (first_kind == -1 && first >= second))
+      return false;
+   const double raw = MathAbs(first - second) / Point;
+   if(!MathIsValidNumber(raw) || raw > 2147483647.0)
+      return false;
+   const int raw_points = (int)MathRound(raw);
+   if(raw_points < ZigZag距离最小值 || raw_points > ZigZag距离最大值)
+      return false;
+   breakout_high = MathMax(first, second) + raw_points * Point;
+   breakout_low = MathMin(first, second) - raw_points * Point;
+   const double stop = raw_points * ZigZag止损百分比 / 100.0;
+   if(!MathIsValidNumber(stop) || stop > 2147483647.0)
+      return false;
+   stop_loss_points = (int)MathRound(stop);
+   const double take_profit = stop_loss_points * ZigZag止盈倍数;
+   if(!MathIsValidNumber(take_profit) || take_profit > 2147483647.0)
+      return false;
+   take_profit_points = (int)MathRound(take_profit);
    return stop_loss_points > 0 && take_profit_points > 0;
+  }
+
+bool GetZigZagBreakoutDirection(const double breakout_high,
+                                const double breakout_low,
+                                int &first_direction)
+  {
+   RefreshRates();
+   if(Bid <= 0.0 || Ask <= Bid || Point <= 0.0
+      || breakout_high <= breakout_low)
+      return false;
+   const double tolerance = Point * 0.5;
+   if(Bid >= breakout_high - tolerance)
+     {
+      first_direction = ordertype == ORDERTYPE_FORWARD ? OP_BUY : OP_SELL;
+      return true;
+     }
+   if(Ask <= breakout_low + tolerance)
+     {
+      first_direction = ordertype == ORDERTYPE_FORWARD ? OP_SELL : OP_BUY;
+      return true;
+     }
+   return false;
+  }
+
+bool ZigZagBrokerDistanceValid(const int stop_points, const int take_profit_points)
+  {
+   RefreshRates();
+   if(Bid <= 0.0 || Ask <= Bid || Point <= 0.0)
+      return false;
+   const int spread_points = (int)MathCeil((Ask - Bid) / Point);
+   const int minimum_points = (int)MarketInfo(Symbol(), MODE_STOPLEVEL);
+   const int required_points = spread_points + minimum_points + 2;
+   return stop_points >= required_points && take_profit_points >= required_points;
   }
 
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
+   if(InpDistanceMode == DISTANCE_BOX_BREAKOUT)
+      return false;
+
+   if(InpDistanceMode == DISTANCE_BOX_RANGE)
+     {
+      int box_points = 0;
+      if(!GetBoxRangePoints(box_points)) return false;
+      stop_loss_points = box_points;
+      take_profit_points = box_points;
+      return true;
+     }
    if(InpDistanceMode == DISTANCE_FIXED)
      {
       stop_loss_points = InpStopLossDistancePoints;
@@ -777,6 +1073,14 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
    if(InpDistanceMode == DISTANCE_BOLLINGER_RANGE)
       return GetBollingerDistancePoints(stop_loss_points, take_profit_points);
 
+   if(InpDistanceMode == DISTANCE_ZIGZAG_RANGE)
+     {
+      double breakout_high = 0.0;
+      double breakout_low = 0.0;
+      return GetZigZagDistancePoints(stop_loss_points, take_profit_points,
+                                     breakout_high, breakout_low);
+     }
+
    double previous_high = 0.0;
    double previous_low = 0.0;
    int range_points = 0;
@@ -786,6 +1090,297 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
    stop_loss_points = range_points;
    take_profit_points = range_points;
    return true;
+  }
+
+int BoxRecognitionPeriod()
+  {
+   return 箱体识别周期 == PERIOD_CURRENT ? Period() : (int)箱体识别周期;
+  }
+
+double BoxConfigFingerprint()
+  {
+   const string config = IntegerToString(BoxRecognitionPeriod()) + "|"
+      + IntegerToString(箱体观察窗口K线数) + "|" + IntegerToString(箱体ATR周期) + "|"
+      + DoubleToString(箱体触碰ATR倍数, 12) + "|"
+      + IntegerToString(箱体上沿最少触碰) + "|" + IntegerToString(箱体下沿最少触碰) + "|"
+      + IntegerToString(箱体最少完整往返) + "|" + IntegerToString(箱体同侧触碰间隔) + "|"
+      + IntegerToString(箱体突破最小宽度) + "|" + IntegerToString(箱体突破最大宽度) + "|"
+      + DoubleToString(箱体突破缓冲ATR倍数, 12) + "|" + IntegerToString((int)开单方式);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(config); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(config, index), 1000000007.0);
+   return hash;
+  }
+
+string BoxStatePrefix()
+  {
+   return StatePrefix() + ".box";
+  }
+
+void ClearBoxState()
+  {
+   ZeroMemory(g_box_state);
+   const string prefix = BoxStatePrefix();
+   GlobalVariableDel(prefix + ".active");
+   GlobalVariableDel(prefix + ".upper");
+   GlobalVariableDel(prefix + ".lower");
+   GlobalVariableDel(prefix + ".width");
+   GlobalVariableDel(prefix + ".atr");
+   GlobalVariableDel(prefix + ".buffer");
+   GlobalVariableDel(prefix + ".confirm");
+   GlobalVariableDel(prefix + ".last");
+   GlobalVariableDel(prefix + ".upcount");
+   GlobalVariableDel(prefix + ".downcount");
+   GlobalVariableDel(prefix + ".age");
+   GlobalVariableDel(prefix + ".signal");
+   GlobalVariableDel(prefix + ".signalbar");
+   GlobalVariableDel(prefix + ".direction");
+   GlobalVariableDel(prefix + ".fingerprint");
+  }
+
+bool SaveBoxState()
+  {
+   if(!g_box_state.valid)
+     {
+      ClearBoxState();
+      return true;
+     }
+   const string prefix = BoxStatePrefix();
+   GlobalVariableSet(prefix + ".active", 0.0);
+   if(!GlobalVariableSet(prefix + ".upper", g_box_state.upper)
+      || !GlobalVariableSet(prefix + ".lower", g_box_state.lower)
+      || !GlobalVariableSet(prefix + ".width", g_box_state.width_points)
+      || !GlobalVariableSet(prefix + ".atr", g_box_state.atr)
+      || !GlobalVariableSet(prefix + ".buffer", g_box_state.breakout_buffer)
+      || !GlobalVariableSet(prefix + ".confirm", (double)g_box_state.confirmation_time)
+      || !GlobalVariableSet(prefix + ".last", (double)g_box_state.last_processed_time)
+      || !GlobalVariableSet(prefix + ".upcount", g_box_state.upper_breakout_count)
+      || !GlobalVariableSet(prefix + ".downcount", g_box_state.lower_breakout_count)
+      || !GlobalVariableSet(prefix + ".age", g_box_state.age_bars)
+      || !GlobalVariableSet(prefix + ".signal", (double)g_box_state.signal_id)
+      || !GlobalVariableSet(prefix + ".signalbar", (double)g_box_state.signal_bar_time)
+      || !GlobalVariableSet(prefix + ".direction", g_box_state.signal_direction)
+      || !GlobalVariableSet(prefix + ".fingerprint", BoxConfigFingerprint()))
+      return false;
+   return GlobalVariableSet(prefix + ".active", 1.0) != 0;
+  }
+
+bool LoadBoxState()
+  {
+   const string prefix = BoxStatePrefix();
+   if(!GlobalVariableCheck(prefix + ".active")
+      || GlobalVariableGet(prefix + ".active") < 0.5)
+      return false;
+   if(!GlobalVariableCheck(prefix + ".fingerprint")
+      || MathAbs(GlobalVariableGet(prefix + ".fingerprint")
+                 - BoxConfigFingerprint()) > 0.5)
+     {
+      ClearBoxState();
+      return false;
+     }
+   string keys[13] = {"upper", "lower", "width", "atr", "buffer", "confirm",
+                      "last", "upcount", "downcount", "age", "signal",
+                      "signalbar", "direction"};
+   for(int index = 0; index < ArraySize(keys); index++)
+      if(!GlobalVariableCheck(prefix + "." + keys[index]))
+        {
+         ClearBoxState();
+         return false;
+        }
+   g_box_state.upper = GlobalVariableGet(prefix + ".upper");
+   g_box_state.lower = GlobalVariableGet(prefix + ".lower");
+   g_box_state.width_points = (int)MathRound(GlobalVariableGet(prefix + ".width"));
+   g_box_state.atr = GlobalVariableGet(prefix + ".atr");
+   g_box_state.breakout_buffer = GlobalVariableGet(prefix + ".buffer");
+   g_box_state.confirmation_time = (datetime)MathRound(GlobalVariableGet(prefix + ".confirm"));
+   g_box_state.last_processed_time = (datetime)MathRound(GlobalVariableGet(prefix + ".last"));
+   g_box_state.upper_breakout_count = (int)MathRound(GlobalVariableGet(prefix + ".upcount"));
+   g_box_state.lower_breakout_count = (int)MathRound(GlobalVariableGet(prefix + ".downcount"));
+   g_box_state.age_bars = (int)MathRound(GlobalVariableGet(prefix + ".age"));
+   g_box_state.signal_id = (long)MathRound(GlobalVariableGet(prefix + ".signal"));
+   g_box_state.signal_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".signalbar"));
+   g_box_state.signal_direction = (int)MathRound(GlobalVariableGet(prefix + ".direction"));
+   g_box_state.valid = g_box_state.upper > g_box_state.lower
+                       && g_box_state.width_points > 0 && g_box_state.atr > 0.0
+                       && g_box_state.breakout_buffer > 0.0
+                       && g_box_state.confirmation_time > 0
+                       && g_box_state.last_processed_time > 0
+                       && g_box_state.age_bars >= 0;
+   if(!g_box_state.valid)
+      ClearBoxState();
+   return g_box_state.valid;
+  }
+
+bool FindConfirmedBox()
+  {
+   const int timeframe = BoxRecognitionPeriod();
+   const int count = 箱体观察窗口K线数;
+   if(count <= 0 || iBars(Symbol(), timeframe) < count + 箱体ATR周期)
+      return false;
+   double upper = -DBL_MAX;
+   double lower = DBL_MAX;
+   for(int shift = 1; shift <= count; shift++)
+     {
+      const double high = iHigh(Symbol(), timeframe, shift);
+      const double low = iLow(Symbol(), timeframe, shift);
+      if(!MathIsValidNumber(high) || !MathIsValidNumber(low) || high <= low)
+         return false;
+      upper = MathMax(upper, high);
+      lower = MathMin(lower, low);
+     }
+   const int width_points = (int)MathRound((upper - lower) / Point);
+   if(width_points < 箱体突破最小宽度 || width_points > 箱体突破最大宽度)
+      return false;
+
+   int events[];
+   int last_upper_index = -1000000;
+   int last_lower_index = -1000000;
+   int upper_touches = 0;
+   int lower_touches = 0;
+   for(int index = 0; index < count; index++)
+     {
+      const int shift = count - index;
+      const double atr = iATR(Symbol(), timeframe, 箱体ATR周期, shift);
+      const double high = iHigh(Symbol(), timeframe, shift);
+      const double low = iLow(Symbol(), timeframe, shift);
+      if(!MathIsValidNumber(atr) || atr <= 0.0)
+         continue;
+      const double tolerance = atr * 箱体触碰ATR倍数;
+      const bool upper_hit = upper - high <= tolerance;
+      const bool lower_hit = low - lower <= tolerance;
+      if(upper_hit && lower_hit)
+         continue;
+      int side = upper_hit ? 1 : lower_hit ? -1 : 0;
+      if(side == 0)
+         continue;
+      if(side == 1)
+        {
+         if(index - last_upper_index < 箱体同侧触碰间隔)
+            continue;
+         last_upper_index = index;
+         upper_touches++;
+        }
+      else
+        {
+         if(index - last_lower_index < 箱体同侧触碰间隔)
+            continue;
+         last_lower_index = index;
+         lower_touches++;
+        }
+      const int size = ArraySize(events);
+      if(ArrayResize(events, size + 1) != size + 1)
+         return false;
+      events[size] = side;
+     }
+   int round_trips = 0;
+   for(int event = 2; event < ArraySize(events); )
+     {
+      if(events[event] == events[event - 2] && events[event] != events[event - 1])
+        {
+         round_trips++;
+         event += 2;
+        }
+      else
+         event++;
+     }
+   if(upper_touches < 箱体上沿最少触碰
+      || lower_touches < 箱体下沿最少触碰
+      || round_trips < 箱体最少完整往返)
+      return false;
+   const double confirmation_atr = iATR(Symbol(), timeframe, 箱体ATR周期, 1);
+   const datetime confirmation_time = iTime(Symbol(), timeframe, 1);
+   if(!MathIsValidNumber(confirmation_atr) || confirmation_atr <= 0.0
+      || confirmation_time <= 0)
+      return false;
+   ZeroMemory(g_box_state);
+   g_box_state.valid = true;
+   g_box_state.upper = upper;
+   g_box_state.lower = lower;
+   g_box_state.width_points = width_points;
+   g_box_state.atr = confirmation_atr;
+   g_box_state.breakout_buffer = confirmation_atr * 箱体突破缓冲ATR倍数;
+   g_box_state.confirmation_time = confirmation_time;
+   g_box_state.last_processed_time = confirmation_time;
+   return SaveBoxState();
+  }
+
+bool AdvanceBoxBreakout(int &direction, datetime &signal_time, long &signal_id)
+  {
+   direction = -1;
+   signal_time = 0;
+   signal_id = 0;
+   if(!g_box_state.valid && !LoadBoxState() && !FindConfirmedBox())
+      return false;
+   const int timeframe = BoxRecognitionPeriod();
+   const int last_shift = iBarShift(Symbol(), timeframe,
+                                    g_box_state.last_processed_time, true);
+   if(last_shift < 1 || iTime(Symbol(), timeframe, last_shift)
+                        != g_box_state.last_processed_time)
+     {
+      ClearBoxState();
+      return false;
+     }
+   if(g_box_state.age_bars + last_shift - 1 > 箱体观察窗口K线数)
+     {
+      ClearBoxState();
+      return false;
+     }
+   if(g_box_state.signal_id != 0)
+     {
+      direction = g_box_state.signal_direction;
+      signal_time = g_box_state.signal_bar_time;
+      signal_id = g_box_state.signal_id;
+      return true;
+     }
+   for(int shift = last_shift - 1; shift >= 1; shift--)
+     {
+      const datetime bar_time = iTime(Symbol(), timeframe, shift);
+      const double close = iClose(Symbol(), timeframe, shift);
+      if(bar_time <= 0 || !MathIsValidNumber(close) || close <= 0.0)
+         return false;
+      g_box_state.age_bars++;
+      if(close > g_box_state.upper + g_box_state.breakout_buffer)
+        {
+         g_box_state.upper_breakout_count++;
+         g_box_state.lower_breakout_count = 0;
+        }
+      else if(close < g_box_state.lower - g_box_state.breakout_buffer)
+        {
+         g_box_state.lower_breakout_count++;
+         g_box_state.upper_breakout_count = 0;
+        }
+      else
+        {
+         g_box_state.upper_breakout_count = 0;
+         g_box_state.lower_breakout_count = 0;
+        }
+      g_box_state.last_processed_time = bar_time;
+      if(g_box_state.upper_breakout_count >= 2
+         || g_box_state.lower_breakout_count >= 2)
+        {
+         const bool upper_break = g_box_state.upper_breakout_count >= 2;
+         direction = upper_break
+                     ? (开单方式 == ORDERTYPE_FORWARD ? OP_BUY : OP_SELL)
+                     : (开单方式 == ORDERTYPE_FORWARD ? OP_SELL : OP_BUY);
+         signal_time = bar_time;
+         signal_id = ((long)signal_time * 1000)
+                     + (long)timeframe * 10
+                     + (direction == OP_BUY ? 1 : 2);
+         g_box_state.signal_id = signal_id;
+         g_box_state.signal_bar_time = signal_time;
+         g_box_state.signal_direction = direction;
+         if(!SaveBoxState())
+            return false;
+         return true;
+        }
+      if(g_box_state.age_bars >= 箱体观察窗口K线数)
+        {
+         ClearBoxState();
+         return false;
+        }
+     }
+   SaveBoxState();
+   return false;
   }
 
 bool GetBreakoutDirection(const double previous_high, const double previous_low,
@@ -814,6 +1409,10 @@ bool GetActiveDistancePoints(const double stop_loss, const double take_profit,
       take_profit_points = g_group_take_profit_points;
       return true;
      }
+   if(InpDistanceMode == DISTANCE_ZIGZAG_RANGE)
+      return false;
+   if(InpDistanceMode == DISTANCE_BOX_RANGE)
+      return false;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && stop_loss > 0.0 && take_profit > 0.0)
      {
       const int active_range_points = (int)MathRound(MathAbs(take_profit - stop_loss)
@@ -1256,8 +1855,9 @@ bool HasOurPending()
 
 void BeginFullReset(const string reason)
   {
+   const bool renewal_cleanup=BasketRenewalResetRequiresDeferral();
    Print(reason);
-   MultiClearAll();
+   if(renewal_cleanup) BasketRenewalDeferReset(); else MultiClearAll();
    g_reset_pending = true;
    g_had_position = false;
    g_last_position_type = OP_BUY;
@@ -1285,7 +1885,7 @@ void BeginFullReset(const string reason)
    g_favorable_grid_pending_price = 0.0;
    SaveState();
    DeleteAllPending();
-   if(CloseAllOurPositions() && !HasOurPending())
+   if(CloseAllOurPositions() && !HasOurPending() && !renewal_cleanup && BasketRenewalResetReady())
       ClearState();
   }
 
@@ -1304,6 +1904,7 @@ bool ProcessReset()
    DeleteAllPending();
    if(!CloseAllOurPositions() || HasOurPosition() || HasOurPending())
       return false;
+   if(!BasketRenewalResetReady()) return false;
    ClearState();
    return true;
   }
@@ -1464,6 +2065,7 @@ bool SendMarketLeg(const int type, const double requested_volume)
    if(ticket < 0)
      {
       const int error = GetLastError();
+      g_multi_last_send_error=error;
       Print("Market order failed, error=", error);
       if(error == ERR_NOT_ENOUGH_MONEY)
          BeginResetAfterNoMoney();
@@ -1510,6 +2112,8 @@ bool OpenMarket(const int type, const double requested_volume)
 
 double NextGroupLotsRaw(const double fallback_volume)
    {
+    if(FirstOrderLotType == 3)
+       return FirstOrderFixedLots;
     if(FirstOrderLotType == 2)
       {
        const double base = g_group_first_lots > 0.0
@@ -1531,6 +2135,8 @@ double NextGroupLots(const double fallback_volume)
 
 double NextGroupLotsAfterStopRaw(const double fallback_volume)
    {
+    if(FirstOrderLotType == 3)
+       return FirstOrderFixedLots;
     if(FirstOrderLotType == 2)
       {
        const double base = g_group_first_lots > 0.0
@@ -1552,6 +2158,8 @@ bool PlaceInitialPendingOrder(const int direction, const double entry,
                               const string comment, int &ticket)
   {
    ticket = -1;
+   if(!IsInitialSpreadAllowed())
+      return false;
    const int pending_type = PendingTypeForDirection(direction, entry);
    const double normalized_entry = PriceNormalize(entry);
    const double distance = distance_points * Point;
@@ -1572,7 +2180,8 @@ bool PlaceInitialPendingOrder(const int direction, const double entry,
                       stop_loss, take_profit, comment, InpMagicNumber, 0, clrOrange);
    if(ticket < 0)
      {
-      Print("Initial pending failed, error=", GetLastError());
+      g_multi_last_send_error=GetLastError();
+      Print("Initial pending failed, error=", g_multi_last_send_error);
       return false;
      }
    return true;
@@ -1582,7 +2191,7 @@ bool PlaceInitialPendingPair(const double previous_high, const double previous_l
                              const int range_points, const double volume)
   {
    if(g_initial_high_ticket >= 0 || g_initial_low_ticket >= 0
-      || range_points <= 0 || volume <= 0.0)
+      || range_points <= 0 || volume <= 0.0 || !IsInitialSpreadAllowed())
       return false;
    const int high_direction = ordertype == ORDERTYPE_FORWARD ? OP_BUY : OP_SELL;
    const int low_direction = ordertype == ORDERTYPE_FORWARD ? OP_SELL : OP_BUY;
@@ -1633,6 +2242,27 @@ int InitialPendingStatus(const int ticket)
          return REVERSE_PENDING_CANCELED;
      }
    return REVERSE_PENDING_UNKNOWN;
+  }
+
+bool CancelInitialPendingPairIfSpreadTooHigh()
+  {
+   if(IsInitialSpreadAllowed())
+      return false;
+   bool deletion_failed = false;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurPendingOrder()
+         || !IsInitialPendingComment())
+         continue;
+      const int candidate = OrderTicket();
+      if(!OrderDelete(candidate, clrRed))
+        {
+         Print("Wide-spread initial pending cancellation failed, ticket=", candidate,
+               ", error=", GetLastError());
+         deletion_failed = true;
+        }
+     }
+   return deletion_failed;
   }
 
 bool HandleInitialPendingFill()
@@ -2447,6 +3077,72 @@ void MarkCandleEntryBarProcessed(const datetime current_bar_time)
    GlobalVariableSet(StatePrefix() + ".candleentrybar", (double)g_last_candle_entry_bar_time);
   }
 
+void StartResolvedMultiPair(const int first_type, const int stop_points,
+                            const int take_profit_points, const double lots,
+                            const datetime signal_bar_time = 0,
+                            const long signal_id = 0);
+bool MultiHasActiveGroups();
+
+bool ManageBoxBreakoutEntry()
+  {
+   int direction = OP_BUY;
+   datetime signal_time = 0;
+   long signal_id = 0;
+   if(!AdvanceBoxBreakout(direction, signal_time, signal_id))
+      return true;
+   if(!IsInitialEntryAllowed() || !IsInitialSpreadAllowed())
+      return true;
+   if(HasOurPosition() || HasOurPending())
+      return true;
+
+   g_active_first_direction = direction == OP_BUY ? FIRST_BUY : FIRST_SELL;
+   g_active_cycle_mode = InpCycleMode;
+   g_group_stop_points = g_box_state.width_points;
+   g_group_take_profit_points = g_box_state.width_points;
+   g_had_position = false;
+   g_cycle_index = 0;
+   g_pending_index = -1;
+   const double initial_lots = g_cumulative_loss_lots > 0.0
+                               ? (FirstOrderLotType == 1
+                                  ? VolumeNormalize(g_cumulative_loss_lots)
+                                  : NextGroupLotsAfterStop(g_group_first_lots))
+                               : VolumeNormalize(InpInitialLots);
+   if(!SaveBoxState())
+      return true;
+   SaveState();
+   if(IsPairedBasketMode())
+     {
+      StartResolvedMultiPair(direction, g_box_state.width_points,
+                             g_box_state.width_points, initial_lots,
+                             signal_time, signal_id);
+      if(MultiHasActiveGroups() || BasketRenewalHasWork())
+         ClearBoxState();
+      return true;
+     }
+   if(!OpenMarket(direction, initial_lots))
+      return true;
+   int ticket = -1;
+   int type = OP_BUY;
+   double volume = 0.0;
+   double entry = 0.0;
+   double stop_loss = 0.0;
+   double take_profit = 0.0;
+   if(FindPosition(ticket, type, volume, entry, stop_loss, take_profit))
+     {
+      g_group_anchor_price = entry;
+      g_group_last_entry = entry;
+      g_group_linear_extreme = entry;
+      g_group_first_lots = volume;
+      g_group_total_lots = TotalPositionLots(type);
+      g_grid_lots = g_previous_grid_lots > 0.0
+                    ? VolumeNormalize(g_previous_grid_lots * InpGridLotMultiplier)
+                    : g_group_total_lots;
+      SaveState();
+      ClearBoxState();
+     }
+   return true;
+  }
+
 void Manage()
   {
    if(g_reset_pending)
@@ -2484,6 +3180,8 @@ void Manage()
       && !PrepareCandleOnceEntry(current_bar_time))
       return;
 
+   if(CancelInitialPendingPairIfSpreadTooHigh())
+      return;
    if(HandleInitialPendingFill())
       return;
 
@@ -2505,6 +3203,9 @@ void Manage()
                                              entry, stop_loss, take_profit);
    if(has_position)
      {
+      if(InpDistanceMode == DISTANCE_BOX_BREAKOUT && g_group_stop_points > 0
+         && g_group_take_profit_points > 0)
+         ClearBoxState();
       const double previous_group_total_lots = g_group_total_lots;
       const double previous_grid_lots = g_grid_lots;
       int state_pending_ticket = -1;
@@ -2708,7 +3409,14 @@ void Manage()
       ReconcileOrphanSingleGroupPending();
       return;
      }
+   if(InpDistanceMode == DISTANCE_BOX_BREAKOUT)
+     {
+      ManageBoxBreakoutEntry();
+      return;
+     }
    if(!IsInitialEntryAllowed())
+      return;
+   if(!IsInitialSpreadAllowed())
       return;
    if(candle_once_mode)
      {
@@ -2724,10 +3432,15 @@ void Manage()
          return;
         }
        const double initial_lots = g_cumulative_loss_lots > 0.0
-                                   ? (FirstOrderLotType == 2
-                                      ? NextGroupLotsAfterStop(g_group_first_lots)
-                                      : VolumeNormalize(g_cumulative_loss_lots))
+                                   ? (FirstOrderLotType == 1
+                                      ? VolumeNormalize(g_cumulative_loss_lots)
+                                      : NextGroupLotsAfterStop(g_group_first_lots))
                                    : VolumeNormalize(InpInitialLots);
+      if(IsPairedBasketMode())
+        {
+         StartInitialMultiOco(previous_high,previous_low,range_points,initial_lots);
+         return;
+        }
       if(PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots))
          MarkCandleEntryBarProcessed(current_bar_time);
       return;
@@ -2759,26 +3472,54 @@ void Manage()
      }
    else
      {
-      if(首单方向确定方式 == FIRST_DIRECTION_BOLLINGER
-         && !GetBollingerFirstDirection(first_direction))
-         return;
-      if(首单方向确定方式 == FIRST_DIRECTION_PRESET)
-         first_direction = InpFirstDirection == FIRST_SELL ? OP_SELL : OP_BUY;
+      if(InpDistanceMode == DISTANCE_ZIGZAG_RANGE)
+        {
+         double breakout_high = 0.0;
+         double breakout_low = 0.0;
+         if(!GetZigZagDistancePoints(initial_stop_points, initial_take_profit_points,
+                                     breakout_high, breakout_low)
+            || !GetZigZagBreakoutDirection(breakout_high, breakout_low,
+                                           first_direction))
+            return;
+        }
+      else if(InpDistanceMode == DISTANCE_BOLLINGER_RANGE)
+        {
+         if(!GetBollingerTouchDirection(first_direction))
+            return;
+        }
+      else
+        {
+         if(首单方向确定方式 == FIRST_DIRECTION_BOLLINGER
+            && !GetBollingerFirstDirection(first_direction))
+            return;
+         if(首单方向确定方式 == FIRST_DIRECTION_PRESET)
+            first_direction = InpFirstDirection == FIRST_SELL ? OP_SELL : OP_BUY;
+        }
       g_active_first_direction = first_direction == OP_BUY ? FIRST_BUY : FIRST_SELL;
       g_active_cycle_mode = InpCycleMode;
-      if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
+      if(InpDistanceMode != DISTANCE_ZIGZAG_RANGE
+         && !GetDistancePoints(initial_stop_points, initial_take_profit_points))
          return;
      }
+   if(InpDistanceMode == DISTANCE_ZIGZAG_RANGE
+      && !ZigZagBrokerDistanceValid(initial_stop_points, initial_take_profit_points))
+      return;
    g_had_position = false;
    g_cycle_index = 0;
    g_pending_index = -1;
    g_group_stop_points = initial_stop_points;
    g_group_take_profit_points = initial_take_profit_points;
     const double initial_lots = g_cumulative_loss_lots > 0.0
-                                ? (FirstOrderLotType == 2
-                                   ? NextGroupLotsAfterStop(g_group_first_lots)
-                                   : VolumeNormalize(g_cumulative_loss_lots))
+                                ? (FirstOrderLotType == 1
+                                   ? VolumeNormalize(g_cumulative_loss_lots)
+                                   : NextGroupLotsAfterStop(g_group_first_lots))
                                 : VolumeNormalize(InpInitialLots);
+   if(IsPairedBasketMode())
+     {
+      StartResolvedMultiPair(first_direction, initial_stop_points,
+                             initial_take_profit_points, initial_lots);
+      return;
+     }
    if(OpenMarket(first_direction, initial_lots))
      {
       if(InpDistanceMode == DISTANCE_CANDLE_RANGE && Korder_type == KORDER_ONCE_PER_BAR)
@@ -2815,6 +3556,13 @@ void Manage()
 
 struct MultiGroupState
   {
+   int      basket_mode_at_start;
+   int      basket_family_id;
+   int      stop_event_sequence;
+   int      renewal_request_state;
+   ulong    renewal_deal_cursor;
+   int      renewal_request_direction;
+   double   renewal_request_volume_before;
    int      id;
    bool     active;
    bool     dirty;
@@ -2824,6 +3572,19 @@ struct MultiGroupState
    int      pending_index;
    int      reversal_count;
    int      pending_ticket;
+   int      pair_parent_id;
+   int      pair_peer_id;
+   bool     launch_confirmed;
+   bool     launch_attempted;
+   bool     launch_failed;
+   int      launch_error;
+   datetime launch_retry_after;
+   datetime launch_log_time;
+   int      launch_event_id;
+   datetime box_signal_bar_time;
+   long     box_signal_id;
+
+   int      launch_attempt_count;
    int      initial_high_ticket;
    int      initial_low_ticket;
    double   initial_high_price;
@@ -2856,8 +3617,12 @@ struct MultiGroupState
 MultiGroupState g_multi_groups[];
 datetime g_multi_last_trigger_bar = 0;
 int g_multi_next_id = 1;
+int g_multi_last_send_error = 0;
 int g_multi_grid_order_tickets[];
 int g_multi_favorable_grid_order_tickets[];
+
+
+#include "NoMatterRiseFall_BasketRenewal.mqh"
 
 int MultiGridTicketCacheIndex(const int group_id, const int level)
   {
@@ -2916,23 +3681,37 @@ string MultiGroupTag(const int group_id)
 
 string MultiGroupComment(const int group_id, const bool grid)
   {
-   return InpOrderComment + MultiGroupTag(group_id) + (grid ? ".Grid" : "");
+   return MultiGroupTag(group_id) + InpOrderComment + (grid ? ".Grid" : "");
   }
 
 string MultiInitialPendingComment(const int group_id, const bool high)
   {
-   return InpOrderComment + MultiGroupTag(group_id)
+   return MultiGroupTag(group_id) + InpOrderComment
           + (high ? ".InitialHigh" : ".InitialLow");
   }
 
 string MultiStatePrefix(const int group_id)
   {
+   const string compact=R3GroupPrefix(group_id);
+   if(GlobalVariableCheck(compact+".bmode") && GlobalVariableGet(compact+".bmode")==3) return compact;
+   const int renewal_index=R3GroupIndex(group_id);
+   if(renewal_index>=0 && g_multi_groups[renewal_index].basket_mode_at_start==3) return compact;
+
    return StatePrefix() + ".multi." + IntegerToString(group_id);
   }
 
 void MultiDeleteState(const int group_id)
   {
    const string prefix = MultiStatePrefix(group_id);
+   GlobalVariableDel(prefix + ".bmode");
+   GlobalVariableDel(prefix + ".bfam");
+   GlobalVariableDel(prefix + ".stopseq");
+   GlobalVariableDel(prefix + ".rrs");
+   GlobalVariableDel(prefix + ".rhi");
+   GlobalVariableDel(prefix + ".rlo");
+   GlobalVariableDel(prefix + ".rrd");
+   GlobalVariableDel(prefix + ".rrv");
+   GlobalVariableDel(prefix + ".rrcommit");
    GlobalVariableDel(prefix + ".active");
    GlobalVariableDel(prefix + ".first");
    GlobalVariableDel(prefix + ".mode");
@@ -2940,6 +3719,16 @@ void MultiDeleteState(const int group_id)
    GlobalVariableDel(prefix + ".pendingindex");
    GlobalVariableDel(prefix + ".reversals");
    GlobalVariableDel(prefix + ".pendingticket");
+   GlobalVariableDel(prefix + ".pairparent");
+   GlobalVariableDel(prefix + ".pairpeer");
+   GlobalVariableDel(prefix + ".launchconfirmed");
+   GlobalVariableDel(prefix + ".launchattempted");
+   GlobalVariableDel(prefix + ".launchfailed");
+   GlobalVariableDel(prefix + ".launcherror");
+   GlobalVariableDel(prefix + ".launchretry");
+   GlobalVariableDel(prefix + ".launchlogtime");
+   GlobalVariableDel(prefix + ".launchevent");
+   GlobalVariableDel(prefix + ".launchcount");
    GlobalVariableDel(prefix + ".initial_high_ticket");
    GlobalVariableDel(prefix + ".initial_low_ticket");
    GlobalVariableDel(prefix + ".initial_high_price");
@@ -2987,13 +3776,15 @@ bool MultiIsGridSelectedOrder()
 
 void MultiClearAll()
   {
+   if(BasketRenewalDeferReset()) return;
+   BasketRenewalCancelAll();
    for(int id = 1; id < g_multi_next_id; id++)
       MultiDeleteState(id);
    ArrayResize(g_multi_groups, 0);
    ArrayResize(g_multi_grid_order_tickets, 0);
    ArrayResize(g_multi_favorable_grid_order_tickets, 0);
    g_multi_last_trigger_bar = 0;
-   g_multi_next_id = 1;
+   g_multi_next_id = g_basket_next_id_floor;
    GlobalVariableDel(StatePrefix() + ".multi.nextid");
    GlobalVariableDel(StatePrefix() + ".multi.lasttriggerbar");
   }
@@ -3001,6 +3792,8 @@ void MultiClearAll()
 void MultiRemoveGroup(const int index)
   {
    if(index < 0 || index >= ArraySize(g_multi_groups))
+      return;
+   if(!BasketRenewalRecordFinished(g_multi_groups[index]))
       return;
    MultiDeleteState(g_multi_groups[index].id);
    const int last = ArraySize(g_multi_groups) - 1;
@@ -3012,6 +3805,13 @@ void MultiRemoveGroup(const int index)
 void MultiResetState(MultiGroupState &group, const int group_id)
   {
    group.id = group_id;
+   group.basket_mode_at_start = 0;
+   group.basket_family_id = 0;
+   group.stop_event_sequence = 0;
+   group.renewal_request_state = 0;
+   group.renewal_deal_cursor = 0;
+   group.renewal_request_direction = -1;
+   group.renewal_request_volume_before = 0;
    group.active = true;
    group.dirty = true;
    group.first_direction = FIRST_BUY;
@@ -3020,6 +3820,19 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.pending_index = -1;
    group.reversal_count = 0;
    group.pending_ticket = -1;
+   group.pair_parent_id = 0;
+   group.pair_peer_id = 0;
+   group.launch_confirmed = false;
+   group.launch_attempted = false;
+   group.launch_failed = false;
+   group.launch_error = 0;
+   group.launch_retry_after = 0;
+   group.launch_log_time = 0;
+   group.launch_event_id = group_id;
+   group.box_signal_bar_time = 0;
+   group.box_signal_id = 0;
+
+   group.launch_attempt_count = 0;
    group.initial_high_ticket = -1;
    group.initial_low_ticket = -1;
    group.initial_high_price = 0.0;
@@ -3211,13 +4024,33 @@ int MultiGridFilledLevelCountForMask(const long mask)
 bool MultiStateChanged(const MultiGroupState &before,
                        const MultiGroupState &after)
   {
-   return before.active != after.active
+   return before.basket_mode_at_start != after.basket_mode_at_start
+          || before.basket_family_id != after.basket_family_id
+          || before.stop_event_sequence != after.stop_event_sequence
+          || before.renewal_request_state != after.renewal_request_state
+          || before.renewal_deal_cursor != after.renewal_deal_cursor
+          || before.renewal_request_direction != after.renewal_request_direction
+          || before.renewal_request_volume_before != after.renewal_request_volume_before
+          || before.active != after.active
           || before.first_direction != after.first_direction
           || before.cycle_mode != after.cycle_mode
           || before.cycle_index != after.cycle_index
           || before.pending_index != after.pending_index
           || before.reversal_count != after.reversal_count
           || before.pending_ticket != after.pending_ticket
+          || before.pair_parent_id != after.pair_parent_id
+          || before.pair_peer_id != after.pair_peer_id
+          || before.launch_confirmed != after.launch_confirmed
+          || before.launch_attempted != after.launch_attempted
+          || before.launch_failed != after.launch_failed
+          || before.launch_error != after.launch_error
+          || before.launch_retry_after != after.launch_retry_after
+          || before.launch_log_time != after.launch_log_time
+          || before.launch_event_id != after.launch_event_id
+          || before.box_signal_bar_time != after.box_signal_bar_time
+          || before.box_signal_id != after.box_signal_id
+
+          || before.launch_attempt_count != after.launch_attempt_count
           || before.initial_high_ticket != after.initial_high_ticket
           || before.initial_low_ticket != after.initial_low_ticket
           || before.initial_high_price != after.initial_high_price
@@ -3252,6 +4085,15 @@ void MultiSaveGroup(MultiGroupState &group)
    if(!group.dirty)
       return;
    const string prefix = MultiStatePrefix(group.id);
+   if(group.basket_mode_at_start==3) R3Put(R3Prefix()+".next",g_multi_next_id);
+   GlobalVariableSet(prefix + ".bmode", group.basket_mode_at_start);
+   GlobalVariableSet(prefix + ".bfam", group.basket_family_id);
+   GlobalVariableSet(prefix + ".stopseq", group.stop_event_sequence);
+   GlobalVariableSet(prefix + ".rrs", group.renewal_request_state);
+   GlobalVariableSet(prefix + ".rhi", (double)(group.renewal_deal_cursor >> 32));
+   GlobalVariableSet(prefix + ".rlo", (double)(group.renewal_deal_cursor & (ulong)0xFFFFFFFF));
+   GlobalVariableSet(prefix + ".rrd", group.renewal_request_direction);
+   GlobalVariableSet(prefix + ".rrv", group.renewal_request_volume_before);
    GlobalVariableSet(prefix + ".active", group.active ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".first", group.first_direction);
    GlobalVariableSet(prefix + ".mode", group.cycle_mode);
@@ -3259,6 +4101,19 @@ void MultiSaveGroup(MultiGroupState &group)
    GlobalVariableSet(prefix + ".pendingindex", group.pending_index);
    GlobalVariableSet(prefix + ".reversals", group.reversal_count);
    GlobalVariableSet(prefix + ".pendingticket", group.pending_ticket);
+   GlobalVariableSet(prefix + ".pairparent", group.pair_parent_id);
+   GlobalVariableSet(prefix + ".pairpeer", group.pair_peer_id);
+   GlobalVariableSet(prefix + ".launchconfirmed", group.launch_confirmed ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".launchattempted", group.launch_attempted ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".launchfailed", group.launch_failed ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".launcherror", group.launch_error);
+   GlobalVariableSet(prefix + ".launchretry", (double)group.launch_retry_after);
+   GlobalVariableSet(prefix + ".launchlogtime", (double)group.launch_log_time);
+   GlobalVariableSet(prefix + ".launchevent", group.launch_event_id);
+   GlobalVariableSet(prefix + ".boxbar", (double)group.box_signal_bar_time);
+   GlobalVariableSet(prefix + ".boxsignal", (double)group.box_signal_id);
+
+   GlobalVariableSet(prefix + ".launchcount", group.launch_attempt_count);
    GlobalVariableSet(prefix + ".initial_high_ticket", group.initial_high_ticket);
    GlobalVariableSet(prefix + ".initial_low_ticket", group.initial_low_ticket);
    GlobalVariableSet(prefix + ".initial_high_price", group.initial_high_price);
@@ -3290,14 +4145,129 @@ void MultiSaveGroup(MultiGroupState &group)
    group.dirty = false;
   }
 
+void MultiEnsureRecoveredOpposite(const int source_id)
+  {
+   int source_index=-1;
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+      if(g_multi_groups[i].id==source_id) { source_index=i; break; }
+   if(source_index<0) return;
+   const int opposite_id=g_multi_groups[source_index].initial_low_direction;
+   if(opposite_id<=source_id) return;
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+      if(g_multi_groups[i].id==opposite_id)
+        {
+         g_multi_groups[source_index].initial_low_direction=-1;
+         g_multi_groups[source_index].dirty=true;
+         MultiSaveGroup(g_multi_groups[source_index]);
+         return;
+        }
+   // The source marker is written before this record. If MT4 stopped between
+   // those writes, reconstruct the missing opposite group from the source.
+   MultiGroupState opposite;
+   MultiResetState(opposite,opposite_id);
+   opposite.first_direction=g_multi_groups[source_index].first_direction==FIRST_BUY
+                             ? FIRST_SELL : FIRST_BUY;
+   opposite.pair_parent_id=source_id;
+   opposite.cycle_mode=g_multi_groups[source_index].cycle_mode;
+   opposite.stop_points=g_multi_groups[source_index].stop_points;
+   opposite.take_profit_points=g_multi_groups[source_index].take_profit_points;
+   opposite.transition_target_lots=VolumeNormalize(g_multi_groups[source_index].first_lots);
+   if(opposite.transition_target_lots<=0.0)
+      opposite.transition_target_lots=VolumeNormalize(首单手数);
+   const int new_index=ArraySize(g_multi_groups);
+   if(ArrayResize(g_multi_groups,new_index+1)!=new_index+1) return;
+   g_multi_groups[new_index]=opposite;
+   MultiSaveGroup(g_multi_groups[new_index]);
+   // The reconstructed ID is now durable, so the marker can be retired.
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+      if(g_multi_groups[i].id==source_id)
+        {
+         g_multi_groups[i].initial_low_direction=-1;
+         g_multi_groups[i].dirty=true;
+         MultiSaveGroup(g_multi_groups[i]);
+         break;
+        }
+  }
+
+bool MultiLaunchErrorIsAmbiguous(const int error)
+  {
+   return error==ERR_NO_RESULT || error==ERR_NO_CONNECTION
+          || error==ERR_TRADE_TIMEOUT;
+  }
+
+bool MultiLaunchErrorIsRetryable(const int error)
+  {
+   return error==ERR_SERVER_BUSY || error==ERR_TOO_FREQUENT_REQUESTS
+          || error==ERR_TRADE_CONTEXT_BUSY || error==ERR_BROKER_BUSY
+          || error==ERR_OFF_QUOTES || error==ERR_REQUOTE
+          || error==ERR_PRICE_CHANGED || error==ERR_INVALID_PRICE
+          || error==ERR_MARKET_CLOSED || error==ERR_TRADE_MODIFY_DENIED;
+  }
+
+void MultiRecordLaunchFailure(MultiGroupState &group,const int error)
+  {
+   group.launch_error=error;
+   group.launch_attempt_count++;
+   if(MultiLaunchErrorIsAmbiguous(error))
+     {
+      // Keep the durable in-flight marker; reconcile by group comment before
+      // considering another send after restart.
+      group.launch_attempted=true;
+      group.launch_retry_after=0;
+     }
+   else
+     {
+      group.launch_attempted=false;
+      if(MultiLaunchErrorIsRetryable(error))
+        {
+         int delay=5*(int)MathMin(12,MathMax(1,group.launch_attempt_count));
+         group.launch_retry_after=TimeCurrent()+delay;
+        }
+      else
+        {
+         group.launch_failed=true;
+         group.launch_retry_after=0;
+        }
+     }
+   const datetime now=TimeCurrent();
+   if(group.launch_log_time==0 || now-group.launch_log_time>=60)
+     {
+      const int event_id=group.launch_event_id>0 ? group.launch_event_id : group.id;
+      Print("Multi pair launch ",group.launch_failed ? "permanent failure" :
+            (MultiLaunchErrorIsAmbiguous(error) ? "ambiguous" : "retryable"),
+            ", group=",group.id,", event=",event_id,", error=",error,
+            ", attempts=",group.launch_attempt_count);
+      group.launch_log_time=now;
+     }
+   group.dirty=true;
+   MultiSaveGroup(group);
+  }
+
+void MultiCreateOppositeAfterInitialFill(const int source_id)
+  {
+   int source_index=-1;
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+      if(g_multi_groups[i].id==source_id) { source_index=i; break; }
+   if(source_index<0) return;
+   if(g_multi_groups[source_index].initial_low_direction<=source_id)
+     {
+      const int opposite_id=g_multi_next_id++;
+      g_multi_groups[source_index].initial_low_direction=opposite_id;
+      g_multi_groups[source_index].dirty=true;
+      GlobalVariableSet(StatePrefix()+".multi.nextid",g_multi_next_id);
+      MultiSaveGroup(g_multi_groups[source_index]);
+     }
+   MultiEnsureRecoveredOpposite(source_id);
+  }
+
 void MultiLoadGroups()
   {
    const string next_key = StatePrefix() + ".multi.nextid";
    const string last_trigger_key = StatePrefix() + ".multi.lasttriggerbar";
    if(GlobalVariableCheck(last_trigger_key))
       g_multi_last_trigger_bar = (datetime)MathRound(GlobalVariableGet(last_trigger_key));
-   if(!GlobalVariableCheck(next_key)) return;
-   g_multi_next_id = MathMax(1, (int)MathRound(GlobalVariableGet(next_key)));
+   if(!GlobalVariableCheck(next_key) && !GlobalVariableCheck(R3Prefix()+".next")) return;
+   g_multi_next_id=(int)MathMax(1, MathMax(GlobalVariableGet(next_key),GlobalVariableGet(R3Prefix()+".next")));
    for(int id = 1; id < g_multi_next_id; id++)
      {
       const string prefix = MultiStatePrefix(id);
@@ -3308,12 +4278,43 @@ void MultiLoadGroups()
       if(ArrayResize(g_multi_groups, index + 1) != index + 1) break;
       MultiGroupState state;
       MultiResetState(state, id);
+      if(GlobalVariableCheck(prefix + ".bmode"))
+         state.basket_mode_at_start = (int)GlobalVariableGet(prefix + ".bmode");
+      if(GlobalVariableCheck(prefix + ".bfam"))
+         state.basket_family_id = (int)GlobalVariableGet(prefix + ".bfam");
+      if(GlobalVariableCheck(prefix + ".stopseq"))
+         state.stop_event_sequence = (int)GlobalVariableGet(prefix + ".stopseq");
       state.first_direction = (int)MathRound(GlobalVariableGet(prefix + ".first"));
       state.cycle_mode = (int)MathRound(GlobalVariableGet(prefix + ".mode"));
       state.cycle_index = (int)MathRound(GlobalVariableGet(prefix + ".index"));
       state.pending_index = (int)MathRound(GlobalVariableGet(prefix + ".pendingindex"));
       state.reversal_count = (int)MathRound(GlobalVariableGet(prefix + ".reversals"));
       state.pending_ticket = (int)MathRound(GlobalVariableGet(prefix + ".pendingticket"));
+      if(GlobalVariableCheck(prefix + ".pairparent"))
+         state.pair_parent_id=(int)MathRound(GlobalVariableGet(prefix + ".pairparent"));
+      if(GlobalVariableCheck(prefix + ".pairpeer"))
+         state.pair_peer_id=(int)MathRound(GlobalVariableGet(prefix + ".pairpeer"));
+      if(GlobalVariableCheck(prefix + ".launchconfirmed"))
+         state.launch_confirmed=GlobalVariableGet(prefix + ".launchconfirmed")>0.5;
+      if(GlobalVariableCheck(prefix + ".launchattempted"))
+         state.launch_attempted=GlobalVariableGet(prefix + ".launchattempted")>0.5;
+      if(GlobalVariableCheck(prefix + ".launchfailed"))
+         state.launch_failed=GlobalVariableGet(prefix + ".launchfailed")>0.5;
+      if(GlobalVariableCheck(prefix + ".launcherror"))
+         state.launch_error=(int)MathRound(GlobalVariableGet(prefix + ".launcherror"));
+      if(GlobalVariableCheck(prefix + ".launchretry"))
+         state.launch_retry_after=(datetime)MathRound(GlobalVariableGet(prefix + ".launchretry"));
+      if(GlobalVariableCheck(prefix + ".launchlogtime"))
+         state.launch_log_time=(datetime)MathRound(GlobalVariableGet(prefix + ".launchlogtime"));
+      if(GlobalVariableCheck(prefix + ".launchevent"))
+         state.launch_event_id=(int)MathRound(GlobalVariableGet(prefix + ".launchevent"));
+         if(GlobalVariableCheck(prefix + ".boxbar"))
+            state.box_signal_bar_time=(datetime)MathRound(GlobalVariableGet(prefix + ".boxbar"));
+         if(GlobalVariableCheck(prefix + ".boxsignal"))
+            state.box_signal_id=(long)MathRound(GlobalVariableGet(prefix + ".boxsignal"));
+
+      if(GlobalVariableCheck(prefix + ".launchcount"))
+         state.launch_attempt_count=(int)MathRound(GlobalVariableGet(prefix + ".launchcount"));
       if(GlobalVariableCheck(prefix + ".initial_high_ticket"))
          state.initial_high_ticket = (int)MathRound(GlobalVariableGet(prefix + ".initial_high_ticket"));
       if(GlobalVariableCheck(prefix + ".initial_low_ticket"))
@@ -3363,6 +4364,17 @@ void MultiLoadGroups()
          state.favorable_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridpendinglevel"));
       if(GlobalVariableCheck(prefix + ".favorablegridpendingprice"))
          state.favorable_grid_pending_price = GlobalVariableGet(prefix + ".favorablegridpendingprice");
+      if(GlobalVariableCheck(prefix + ".rrs"))
+         state.renewal_request_state=(int)GlobalVariableGet(prefix + ".rrs");
+      if(GlobalVariableCheck(prefix + ".rhi") && GlobalVariableCheck(prefix + ".rlo"))
+         state.renewal_deal_cursor=((ulong)GlobalVariableGet(prefix + ".rhi") << 32)
+                                  | (ulong)GlobalVariableGet(prefix + ".rlo");
+      if(GlobalVariableCheck(prefix + ".rrd"))
+         state.renewal_request_direction=(int)GlobalVariableGet(prefix + ".rrd");
+      if(GlobalVariableCheck(prefix + ".rrv"))
+         state.renewal_request_volume_before=GlobalVariableGet(prefix + ".rrv");
+      if(GlobalVariableCheck(prefix + ".rrcommit") && GlobalVariableGet(prefix + ".rrcommit")==0)
+         R3ClearRequest(state); // prepared metadata never reached the send boundary
       state.dirty = false;
       g_multi_groups[index] = state;
      }
@@ -3584,6 +4596,7 @@ bool MultiSendMarketLeg(MultiGroupState &group, const int type, const double req
    const double volume = VolumeNormalize(requested_volume);
    if(volume <= 0.0)
       return false;
+   if(!BasketRenewalBeforeLeg(group,(int)type)) return false;
    const double price = type == OP_BUY ? Ask : Bid;
    const int ticket = OrderSend(Symbol(), type, volume, price, 0, 0.0, 0.0,
                                 MultiGroupComment(group.id, false), InpMagicNumber,
@@ -3591,11 +4604,14 @@ bool MultiSendMarketLeg(MultiGroupState &group, const int type, const double req
    if(ticket < 0)
      {
       const int error = GetLastError();
+      BasketRenewalAfterLeg(group,false,error);
+      g_multi_last_send_error=error;
       Print("Multi market order failed, group=", group.id, ", error=", error);
       if(error == ERR_NOT_ENOUGH_MONEY)
          BeginResetAfterNoMoney();
       return false;
      }
+   BasketRenewalAfterLeg(group,true,0);
    return true;
   }
 
@@ -3625,6 +4641,8 @@ bool MultiOpenMarket(MultiGroupState &group, const int type, const double reques
 
 double MultiNextGroupLotsRaw(const MultiGroupState &group, const double fallback)
    {
+    if(FirstOrderLotType == 3)
+       return FirstOrderFixedLots;
     if(FirstOrderLotType == 2)
       {
        const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
@@ -3645,6 +4663,8 @@ double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
 
 double MultiNextGroupLotsAfterStopRaw(const MultiGroupState &group, const double fallback)
    {
+    if(FirstOrderLotType == 3)
+       return FirstOrderFixedLots;
     if(FirstOrderLotType == 2)
       {
        const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
@@ -3686,6 +4706,8 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
                                   const double previous_low, const int range_points,
                                   const double volume)
   {
+   if(!IsInitialSpreadAllowed())
+      return false;
    if(group.initial_high_ticket >= 0 || group.initial_low_ticket >= 0)
       return true;
    const int high_direction = ordertype == ORDERTYPE_FORWARD ? OP_BUY : OP_SELL;
@@ -3717,10 +4739,170 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
    return true;
   }
 
+bool MultiHandlePairedInitialPendingFill(MultiGroupState &group)
+  {
+   int ticket=group.initial_high_ticket>0 ? group.initial_high_ticket
+                                           : group.initial_low_ticket;
+   if(ticket<=0)
+     {
+      for(int i=OrdersTotal()-1;i>=0;i--)
+         if(OrderSelect(i,SELECT_BY_POS,MODE_TRADES) && IsOurPendingOrder()
+            && MultiCommentMatches(OrderComment(),group.id)
+            && MultiIsInitialPendingComment())
+           {ticket=OrderTicket();break;}
+      if(ticket<=0)
+         for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+            if(OrderSelect(i,SELECT_BY_POS,MODE_HISTORY) && IsOurMarketOrder()
+               && MultiCommentMatches(OrderComment(),group.id)
+               && MultiIsInitialPendingComment())
+              {ticket=OrderTicket();break;}
+      if(ticket>0)
+        {
+         if(StringFind(OrderComment(),".InitialHigh",0)>=0)
+            group.initial_high_ticket=ticket;
+         else group.initial_low_ticket=ticket;
+         group.dirty=true;
+         MultiSaveGroup(group);
+        }
+     }
+   if(ticket<=0 && group.first_lots>0.0
+      && (group.initial_high_price>0.0 || group.initial_low_price>0.0))
+     {
+      if(group.launch_attempted) return true;
+      const bool high_leg=group.initial_high_price>0.0;
+      int reopened=-1;
+      const double price=high_leg ? group.initial_high_price : group.initial_low_price;
+      group.launch_attempted=true;group.dirty=true;MultiSaveGroup(group);
+      g_multi_last_send_error=0;
+      if(!PlaceInitialPendingOrder(group.first_direction==FIRST_BUY ? OP_BUY : OP_SELL,
+                                   price,group.stop_points,group.first_lots,
+                                   MultiInitialPendingComment(group.id,high_leg),reopened))
+        {
+         if(g_multi_last_send_error!=128) group.launch_attempted=false;
+         group.dirty=true;MultiSaveGroup(group);return true;
+        }
+      if(high_leg) group.initial_high_ticket=reopened;
+      else group.initial_low_ticket=reopened;
+      group.launch_attempted=false;group.dirty=true;MultiSaveGroup(group);
+      return true;
+     }
+   if(ticket<=0) return false;
+   const int status=MultiInitialPendingStatus(ticket,group.id);
+   if(status==REVERSE_PENDING_ACTIVE || status==REVERSE_PENDING_UNKNOWN)
+      return true;
+   if(status!=REVERSE_PENDING_FILLED)
+     {group.active=false;group.dirty=true;return false;}
+   int pos_ticket=-1,type=OP_BUY;double lots=0.0,entry=0.0,sl=0.0,tp=0.0;
+   if(!FindPositionByTicket(ticket,pos_ticket,type,lots,entry,sl,tp))
+      return true;
+   int peer_index=-1;
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+      if(group.pair_peer_id>0 && g_multi_groups[i].id==group.pair_peer_id)
+        {peer_index=i;break;}
+   if(peer_index>=0 && g_multi_groups[peer_index].launch_attempted
+      && g_multi_groups[peer_index].initial_high_ticket<0
+      && g_multi_groups[peer_index].initial_low_ticket<0)
+     {
+      int recovered=-1;bool recovered_high=false;
+      for(int i=OrdersTotal()-1;i>=0;i--)
+         if(OrderSelect(i,SELECT_BY_POS,MODE_TRADES) && IsOurPendingOrder()
+            && MultiCommentMatches(OrderComment(),group.pair_peer_id)
+            && MultiIsInitialPendingComment())
+           {recovered=OrderTicket();recovered_high=StringFind(OrderComment(),".InitialHigh",0)>=0;break;}
+      if(recovered<=0)
+         for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+            if(OrderSelect(i,SELECT_BY_POS,MODE_HISTORY) && IsOurMarketOrder()
+               && MultiCommentMatches(OrderComment(),group.pair_peer_id)
+               && MultiIsInitialPendingComment())
+              {recovered=OrderTicket();recovered_high=StringFind(OrderComment(),".InitialHigh",0)>=0;break;}
+      if(recovered<=0) return true;
+      if(recovered_high) g_multi_groups[peer_index].initial_high_ticket=recovered;
+      else g_multi_groups[peer_index].initial_low_ticket=recovered;
+      g_multi_groups[peer_index].launch_attempted=false;
+      g_multi_groups[peer_index].dirty=true;MultiSaveGroup(g_multi_groups[peer_index]);
+     }
+   int peer_ticket=peer_index<0 ? -1
+                   : (g_multi_groups[peer_index].initial_high_ticket>0
+                      ? g_multi_groups[peer_index].initial_high_ticket
+                      : g_multi_groups[peer_index].initial_low_ticket);
+   int pt=-1,ptype=OP_BUY;double pl=0.0,pe=0.0,ps=0.0,ptp=0.0;
+   bool peer_filled=peer_index>=0
+      && MultiFindPosition(group.pair_peer_id,pt,ptype,pl,pe,ps,ptp);
+   if(!peer_filled && peer_ticket>0)
+     {
+      const int peer_status=MultiInitialPendingStatus(peer_ticket,group.pair_peer_id);
+      if(peer_status==REVERSE_PENDING_ACTIVE)
+        {
+         if(!OrderDelete(peer_ticket,clrRed)) return true;
+         const int after_delete=MultiInitialPendingStatus(peer_ticket,group.pair_peer_id);
+         if(after_delete==REVERSE_PENDING_UNKNOWN || after_delete==REVERSE_PENDING_ACTIVE)
+            return true;
+         if(after_delete==REVERSE_PENDING_FILLED)
+           {
+            if(!MultiFindPosition(group.pair_peer_id,pt,ptype,pl,pe,ps,ptp))
+               return true;
+            peer_filled=true;
+           }
+        }
+      else if(peer_status==REVERSE_PENDING_UNKNOWN)
+         return true;
+      else if(peer_status==REVERSE_PENDING_FILLED)
+        {
+         if(!MultiFindPosition(group.pair_peer_id,pt,ptype,pl,pe,ps,ptp))
+            return true;
+         peer_filled=true;
+        }
+     }
+   group.first_direction=type==OP_BUY ? FIRST_BUY : FIRST_SELL;
+   group.pair_peer_id=0;
+   group.launch_confirmed=true;
+   group.anchor_price=entry;group.last_entry=entry;group.linear_extreme=entry;
+   group.first_lots=lots;group.total_lots=MultiTotalLots(group.id,type);
+   group.grid_lots=group.total_lots;group.initial_high_ticket=-1;
+   group.initial_low_ticket=-1;group.initial_high_price=0.0;group.initial_low_price=0.0;
+   if(!MultiSetStops(group,type) || !MultiStopsVerified(group,type))
+      {Print("Multi OCO fill protection is not verified; follow-up orders are paused.");
+       if(!peer_filled) MultiCreateOppositeAfterInitialFill(group.id);
+       return true;}
+   MultiPlaceReversePending(group,type);MultiPlaceGridPending(group,type);
+   if(!peer_filled) MultiCreateOppositeAfterInitialFill(group.id);
+   return true;
+  }
+
 bool MultiHandleInitialPendingFill(MultiGroupState &group)
   {
+   // The high_filled && low_filled race is represented by two peer-tagged
+   // groups; both live positions are adopted and no third opposite is launched.
+   if(group.pair_peer_id!=0)
+      return MultiHandlePairedInitialPendingFill(group);
    if(group.initial_high_ticket < 0 && group.initial_low_ticket < 0)
       return false;
+   if(!IsInitialSpreadAllowed())
+     {
+      const int high_active_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
+      const int low_active_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+      if(high_active_status != REVERSE_PENDING_FILLED
+         && low_active_status != REVERSE_PENDING_FILLED)
+        {
+         bool deletion_failed = false;
+         for(int index = OrdersTotal() - 1; index >= 0; index--)
+           {
+            if(!OrderSelect(index, SELECT_BY_POS, MODE_TRADES) || !IsOurPendingOrder()
+               || !MultiIsInitialPendingComment()
+               || !MultiCommentMatches(OrderComment(), group.id))
+               continue;
+            const int candidate = OrderTicket();
+            if(!OrderDelete(candidate, clrRed))
+              {
+               Print("Wide-spread multi initial pending cancellation failed, group=",
+                     group.id, ", ticket=", candidate, ", error=", GetLastError());
+               deletion_failed = true;
+              }
+           }
+         if(deletion_failed)
+            return true;
+        }
+     }
    const int high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
    const int low_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
    const bool high_filled = high_status == REVERSE_PENDING_FILLED;
@@ -3793,6 +4975,26 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
    if(MultiInitialPendingStatus(group.initial_high_ticket, group.id) != REVERSE_PENDING_ACTIVE
       && MultiInitialPendingStatus(group.initial_low_ticket, group.id) != REVERSE_PENDING_ACTIVE)
      {
+      const double previous_high = group.initial_high_price;
+      const double previous_low = group.initial_low_price;
+      const datetime current_bar = iTime(Symbol(), Period(), 0);
+      if(g_multi_last_trigger_bar > 0 && g_multi_last_trigger_bar == current_bar
+         && previous_high > 0.0 && previous_low > 0.0
+         && IsInitialEntryAllowed())
+        {
+         if(!IsInitialSpreadAllowed())
+            return true;
+         const int canceled_high_ticket = group.initial_high_ticket;
+         const int canceled_low_ticket = group.initial_low_ticket;
+         group.initial_high_ticket = -1;
+         group.initial_low_ticket = -1;
+         if(MultiPlaceInitialPendingPair(group, previous_high, previous_low,
+                                         group.stop_points, 首单手数))
+            return true;
+         group.initial_high_ticket = canceled_high_ticket;
+         group.initial_low_ticket = canceled_low_ticket;
+         return true;
+        }
       group.initial_high_ticket = -1;
       group.initial_low_ticket = -1;
       group.initial_high_price = 0.0;
@@ -4146,6 +5348,8 @@ bool MultiHandleReverseFill(MultiGroupState &group, int &type, double &entry,
       BeginResetAfterMaxReversals();
       return true;
      }
+   BasketRenewalPrepareStop(group, group.pending_index,
+                            (int)promoted_type, promoted_total, (ulong)filled_ticket);
    group.cumulative_loss_lots += group.total_lots;
    group.previous_grid_lots = group.grid_lots;
    group.reversal_count++;
@@ -4170,7 +5374,9 @@ bool MultiHandleReverseFill(MultiGroupState &group, int &type, double &entry,
    group.grid_lots = group.previous_grid_lots > 0.0
                      ? VolumeNormalize(group.previous_grid_lots * 网格手数倍数)
                       : promoted_total;
+    BasketRenewalSaveTransition(group);
     MultiSetStops(group, promoted_type);
+    if(!BasketRenewalConfirmFirstOrder(group, (int)promoted_type, promoted_total)) return true;
    return true;
   }
 
@@ -4202,6 +5408,12 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
         || (current_type == OP_SELL && Ask >= stop_loss)))
       return false;
 
+   if(group.reversal_count >= 最大反手次数)
+     {
+      BeginResetAfterMaxReversals();
+      return true;
+     }
+
    const double stopped_group_volume = group.total_lots > 0.0
                                       ? group.total_lots : group.first_lots;
    const double next_group_lots = MultiNextGroupLotsAfterStopRaw(
@@ -4221,6 +5433,10 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
      }
    if(!MultiDeletePending(group.id))
       return true;
+   BasketRenewalPrepareStop(group,
+      (group.cycle_index+1)%CycleLength(group.cycle_mode),
+      (int)MultiSequenceDirection(group,(group.cycle_index+1)%CycleLength(group.cycle_mode)),
+      next_group_lots);
    group.cumulative_loss_lots += stopped_group_volume;
    group.previous_grid_lots = group.grid_lots;
    const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
@@ -4230,7 +5446,8 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
    group.pending_index = -1;
    group.pending_ticket = -1;
    group.transition_target_lots = next_group_lots;
-   if(!MultiOpenMarket(group, next_type, next_group_lots))
+   BasketRenewalSaveTransition(group);
+   if(!BasketRenewalOpenMarket(group, next_type, next_group_lots))
       return true;
 
    int ticket = -1;
@@ -4263,13 +5480,113 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
                      : total;
    if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
       return true;
+   if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
    MultiPlaceReversePending(group, type);
    MultiPlaceGridPending(group, type);
    return true;
   }
 
+int MultiInitialMarketStatus(const int group_id)
+  {
+   for(int i=OrdersTotal()-1;i>=0;i--)
+      if(OrderSelect(i,SELECT_BY_POS,MODE_TRADES)
+         && OrderSymbol()==Symbol() && OrderMagicNumber()==InpMagicNumber
+         && IsOurMarketOrder() && MultiCommentMatches(OrderComment(),group_id))
+         return 1;
+   for(int i=OrdersHistoryTotal()-1;i>=0;i--)
+      if(OrderSelect(i,SELECT_BY_POS,MODE_HISTORY)
+         && OrderSymbol()==Symbol() && OrderMagicNumber()==InpMagicNumber
+         && IsOurMarketOrder() && MultiCommentMatches(OrderComment(),group_id))
+         return 2;
+   return 0;
+  }
+
+bool BasketRenewalAdoptInitialMT4(MultiGroupState &group)
+  {
+   if(group.basket_mode_at_start!=3 || group.pair_parent_id<=0)return false;
+   // A confirmed stop stage is already independent of its initial parent.
+   if(group.reversal_count>0 || group.cycle_index>0)
+     {group.pair_parent_id=0;group.dirty=true;MultiSaveGroup(group);return false;}
+   const int parent=R3GroupIndex(group.pair_parent_id);
+   const bool parent_ended=parent<0 || !g_multi_groups[parent].active;
+   BasketRenewalReconcileRequest(group);
+   int ticket=-1,type=OP_BUY;double volume=0,entry=0,sl=0,tp=0;
+   const bool live=R3Position(group.id,ticket,type,volume,entry,sl,tp);
+   int pt=-1,pd=OP_BUY;double pv=0,pe=0,psl=0,ptp=0;
+   const bool parent_ready=!parent_ended
+      && R3Position(group.pair_parent_id,pt,pd,pv,pe,psl,ptp)
+      && MultiStopsVerified(g_multi_groups[parent],pd);
+   if(!live)
+     {
+      if(R3RequestUnknown(group) || R3HasPending(group.id))return true;
+      if(!parent_ended)return !parent_ready;
+      BasketFamilyState first;ZeroMemory(first);first.source_id=group.id;
+      first.direction=group.first_direction==FIRST_BUY?OP_BUY:OP_SELL;
+      volume=R3FirstLotsSince(first,entry);
+      if(volume<0)return true;
+      if(volume<=R3Tolerance())
+        {group.active=false;group.transition_target_lots=0;
+         group.dirty=true;MultiSaveGroup(group);return true;}
+      type=first.direction;
+     }
+   const double target=group.transition_target_lots;
+   if(group.first_lots<=0 || target>0)R3InitializeChild(group,type,volume,entry);
+   if(live && (!MultiSetStops(group,type) || !MultiStopsVerified(group,type)))
+     {MultiSaveGroup(group);return true;}
+   if(group.renewal_request_state!=1)group.launch_attempted=false;
+   if(R3RequestUnknown(group)) {group.dirty=true;MultiSaveGroup(group);return true;}
+   // The old manager can complete an initial split while its parent is live.
+   // A late partial after that parent ended is adopted without another send.
+   if(live && !parent_ended && volume+R3Tolerance()<target)
+     {group.dirty=true;MultiSaveGroup(group);return !parent_ready;}
+   group.pair_parent_id=0;group.transition_target_lots=0;
+   group.launch_confirmed=true;group.dirty=true;MultiSaveGroup(group);
+   return true;
+  }
+void BasketRenewalProtectInitialMT4()
+  {
+   if(g_reset_pending)return;
+   for(int i=0;i<ArraySize(g_multi_groups);i++)
+     {
+      if(!g_multi_groups[i].active || g_multi_groups[i].basket_mode_at_start!=3
+         || g_multi_groups[i].pair_parent_id<=0)continue;
+      MultiGroupState group=g_multi_groups[i];
+      BasketRenewalAdoptInitialMT4(group);g_multi_groups[i]=group;
+     }
+  }
+
 bool MultiManageGroup(MultiGroupState &group)
   {
+   if(!group.active && group.basket_mode_at_start==3) return false;
+
+   BasketRenewalReconcileRequest(group);
+   if(BasketRenewalProtectOnly(group)) return true;
+   if(BasketRenewalManagesChild(group)) return true;
+   if(!BasketRenewalResumeStop(group)) return true;
+   if(BasketRenewalAdoptInitialMT4(group))return true;
+   if(group.initial_low_direction>group.id && group.initial_high_ticket<0
+      && group.initial_low_ticket<0)
+      MultiEnsureRecoveredOpposite(group.id);
+   if(group.pair_parent_id>0 && group.basket_mode_at_start!=3)
+     {
+      int parent_index=-1;
+      for(int i=0;i<ArraySize(g_multi_groups);i++)
+         if(g_multi_groups[i].id==group.pair_parent_id) { parent_index=i; break; }
+      if(parent_index<0 || !g_multi_groups[parent_index].active)
+        {group.active=false;group.dirty=true;return false;}
+      int pt=-1,ptype=OP_BUY;double pl=0.0,pe=0.0,ps=0.0,ptp=0.0;
+      if(!MultiFindPosition(group.pair_parent_id,pt,ptype,pl,pe,ps,ptp))
+        {
+         const int parent_status=MultiInitialMarketStatus(group.pair_parent_id);
+          if(parent_status==2)
+
+           {group.active=false;group.dirty=true;return false;}
+         if(parent_status==1)
+           {g_multi_groups[parent_index].launch_confirmed=true;
+            g_multi_groups[parent_index].dirty=true;}
+         return true;
+        }
+     }
    if(MultiHandleInitialPendingFill(group))
       return true;
    int ticket = -1;
@@ -4280,15 +5597,50 @@ bool MultiManageGroup(MultiGroupState &group)
    double take_profit = 0.0;
    bool has_position = MultiFindPosition(group.id, ticket, type, total, entry,
                                          stop_loss, take_profit);
+   if(has_position && group.launch_attempted)
+     {group.launch_attempted=false;group.launch_confirmed=true;
+      group.dirty=true;MultiSaveGroup(group);}
    // A failed market reversal must remain recoverable. The old reverse
    // pending order is not a substitute for the required market order.
    if(!has_position && group.transition_target_lots > 0.0)
      {
+      int initial_status=0;
+      if(!group.launch_confirmed)
+         initial_status=MultiInitialMarketStatus(group.id);
+      if(!group.launch_confirmed && initial_status==1)
+        {
+         group.launch_confirmed=true;
+         group.dirty=true;
+         return true;
+        }
+      if(!group.launch_confirmed && initial_status==2)
+        {
+         group.launch_confirmed=true;
+         group.active=false;
+         group.dirty=true;
+         return false;
+        }
+      if(group.launch_failed) return true;
+      if(group.launch_retry_after>TimeCurrent()) return true;
+      if(group.launch_attempted)
+         return true;
       if(!MultiDeletePending(group.id))
          return true;
       const int expected_type = MultiSequenceDirection(group, group.cycle_index);
-      if(!MultiOpenMarket(group, expected_type, group.transition_target_lots))
+      g_multi_last_send_error=0;
+      group.launch_attempted=true;
+      group.dirty=true;
+      MultiSaveGroup(group);
+      if(!BasketRenewalOpenMarket(group, expected_type, group.transition_target_lots))
+        {
+         MultiRecordLaunchFailure(group,g_multi_last_send_error);
          return true;
+        }
+      group.launch_confirmed=true;
+      group.launch_attempted=false;
+      group.launch_failed=false;group.launch_error=0;
+      group.launch_retry_after=0;group.launch_attempt_count=0;
+      group.dirty=true;
       has_position = MultiFindPosition(group.id, ticket, type, total, entry,
                                        stop_loss, take_profit);
       if(!has_position)
@@ -4298,6 +5650,11 @@ bool MultiManageGroup(MultiGroupState &group)
      {
       if(MultiRecoverFlatGroupAfterBrokerStop(group))
          return true;
+      if(group.basket_mode_at_start==3 && BasketRenewalFlatTakeProfit(group))
+        {
+         if(!MultiDeletePending(group.id)) return true;
+         group.active=false; return false;
+        }
       const int status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(status == REVERSE_PENDING_ACTIVE || status == REVERSE_PENDING_FILLED)
          return true;
@@ -4309,13 +5666,29 @@ bool MultiManageGroup(MultiGroupState &group)
      }
    if(group.transition_target_lots > 0.0)
      {
+      group.launch_confirmed=true;
+      if(group.launch_failed)
+         group.transition_target_lots=total;
       const double tolerance = MarketInfo(Symbol(), MODE_LOTSTEP) * 0.5;
       if(type != MultiSequenceDirection(group, group.cycle_index))
          return true;
       if(total + tolerance < group.transition_target_lots)
         {
-         if(!MultiOpenMarket(group, type, group.transition_target_lots))
+         if(group.launch_attempted)
             return true;
+         if(group.launch_retry_after>TimeCurrent())
+            return true;
+         g_multi_last_send_error=0;
+         group.launch_attempted=true;
+         group.dirty=true;MultiSaveGroup(group);
+         if(!BasketRenewalOpenMarket(group, type, group.transition_target_lots))
+           {
+            MultiRecordLaunchFailure(group,g_multi_last_send_error);
+            return true;
+           }
+         group.launch_attempted=false;
+         group.launch_failed=false;group.launch_error=0;
+         group.launch_retry_after=0;group.launch_attempt_count=0;
          if(!MultiFindPosition(group.id, ticket, type, total, entry,
                                stop_loss, take_profit))
             return true;
@@ -4323,6 +5696,8 @@ bool MultiManageGroup(MultiGroupState &group)
       if(total > group.transition_target_lots + tolerance)
          return true;
       group.transition_target_lots = 0.0;
+      group.launch_confirmed=true;
+      group.launch_attempted=false;
       group.anchor_price = entry;
       group.last_entry = entry;
       group.linear_extreme = entry;
@@ -4352,6 +5727,7 @@ bool MultiManageGroup(MultiGroupState &group)
          Print("Multi reverse fill protection is not verified; follow-up orders are paused.");
          return true;
         }
+      if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
       return true;
@@ -4421,9 +5797,15 @@ bool MultiManageGroup(MultiGroupState &group)
         }
       if(!MultiDeletePending(group.id))
          return true;
+   BasketRenewalPrepareStop(group,
+      (group.cycle_index+1)%CycleLength(group.cycle_mode),
+      (int)MultiSequenceDirection(group,(group.cycle_index+1)%CycleLength(group.cycle_mode)),
+      next_group_lots);
+      if(group.basket_mode_at_start!=3)
       group.cumulative_loss_lots += group.total_lots;
       group.previous_grid_lots = group.grid_lots;
       if(!MultiClosePositions(group.id)) return false;
+      if(group.basket_mode_at_start==3) group.cumulative_loss_lots += group.total_lots;
       const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
       const int next_type = MultiSequenceDirection(group, next_index);
       group.reversal_count++;
@@ -4431,7 +5813,8 @@ bool MultiManageGroup(MultiGroupState &group)
       group.pending_index = -1;
       group.pending_ticket = -1;
       group.transition_target_lots = next_group_lots;
-      if(!MultiOpenMarket(group, next_type, next_group_lots))
+   BasketRenewalSaveTransition(group);
+      if(!BasketRenewalOpenMarket(group, next_type, next_group_lots))
          return false;
       if(!MultiFindPosition(group.id, ticket, type, total, entry, stop_loss, take_profit))
          return false;
@@ -4454,6 +5837,7 @@ bool MultiManageGroup(MultiGroupState &group)
          Print("Multi transition protection is not verified; follow-up orders are paused.");
          return true;
         }
+      if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
       return true;
@@ -4471,6 +5855,7 @@ bool MultiManageGroup(MultiGroupState &group)
       Print("Multi grid-fill protection is not verified; follow-up orders are paused.");
       return true;
      }
+   if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
    MultiPlaceReversePending(group, type);
    MultiPlaceGridPending(group, type);
    return true;
@@ -4480,7 +5865,8 @@ void ProcessInitialPendingFillEvent()
   {
    if(g_reset_pending)
       return;
-   if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
+   if(InpDistanceMode == DISTANCE_CANDLE_RANGE
+      && (kline_enable_multiple == 1 || IsPairedBasketMode()))
      {
       for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
         {
@@ -4495,12 +5881,16 @@ void ProcessInitialPendingFillEvent()
         }
       return;
      }
+   if(CancelInitialPendingPairIfSpreadTooHigh())
+      return;
    HandleInitialPendingFill();
   }
 
 bool MultiTryOpenCandleGroup()
   {
+   if(IsPairedBasketMode() && (MultiHasActiveGroups() || BasketRenewalHasWork())) return false;
    if(!IsInitialEntryAllowed()) return false;
+   if(!IsInitialSpreadAllowed()) return false;
    double previous_high = 0.0;
    double previous_low = 0.0;
    int range_points = 0;
@@ -4523,6 +5913,11 @@ bool MultiTryOpenCandleGroup()
    state.take_profit_points = range_points;
    if(Korder_type == KORDER_ONCE_PER_BAR)
      {
+      if(IsPairedBasketMode())
+        {
+         MultiRemoveGroup(new_index);
+         return StartInitialMultiOco(previous_high,previous_low,range_points,首单手数);
+        }
       if(!MultiPlaceInitialPendingPair(state, previous_high, previous_low,
                                        range_points, 首单手数))
         {
@@ -4539,6 +5934,14 @@ bool MultiTryOpenCandleGroup()
      {
       MultiRemoveGroup(new_index);
       return false;
+     }
+   if(IsPairedBasketMode())
+     {
+      MultiRemoveGroup(new_index);
+      StartResolvedMultiPair(first_direction, range_points, range_points, 首单手数);
+      if(Korder_type == KORDER_ONCE_PER_BAR && current_bar > 0)
+         MarkMultiCandleTriggerBar();
+      return true;
      }
    state.first_direction = first_direction == OP_BUY ? FIRST_BUY : FIRST_SELL;
    if(!MultiOpenMarket(state, first_direction, 首单手数))
@@ -4596,15 +5999,25 @@ void ManageMultipleCandleGroups()
       ProcessReset();
       return;
      }
+   BasketRenewalBeginBatch();
    bool closed_group = false;
    for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
      {
       const bool was_active = g_multi_groups[index].active;
       MultiGroupState before = g_multi_groups[index];
       MultiManageGroup(g_multi_groups[index]);
+      if(g_reset_pending)
+        {
+         ProcessReset();
+         return;
+        }
+      if(index < 0 || index >= ArraySize(g_multi_groups))
+         return;
+      if(g_multi_groups[index].id != before.id)
+         return;
       if(MultiStateChanged(before, g_multi_groups[index]))
          g_multi_groups[index].dirty = true;
-      if(was_active && !g_multi_groups[index].active)
+      if(!g_multi_groups[index].active && (was_active || g_multi_groups[index].basket_mode_at_start==3))
         {
          MultiRemoveGroup(index);
          closed_group = true;
@@ -4613,8 +6026,191 @@ void ManageMultipleCandleGroups()
          MultiSaveGroup(g_multi_groups[index]);
       if(g_reset_pending) return;
      }
+   BasketRenewalProcess();
    if(closed_group) return;
    MultiTryOpenCandleGroup();
+  }
+
+bool MultiHasActiveGroups()
+  {
+   for(int index=0; index<ArraySize(g_multi_groups); index++)
+      if(g_multi_groups[index].active)
+         return true;
+   return false;
+  }
+
+void StartResolvedMultiPair(const int first_type, const int stop_points,
+                            const int take_profit_points, const double lots,
+                            const datetime signal_bar_time,
+                            const long signal_id)
+
+  {
+   if(first_type != OP_BUY && first_type != OP_SELL)
+      return;
+   if(stop_points <= 0 || take_profit_points <= 0 || lots <= 0.0
+      || !IsInitialSpreadAllowed())
+      return;
+   const int original_index=ArraySize(g_multi_groups);
+   if(ArrayResize(g_multi_groups,original_index+2)!=original_index+2)
+      return;
+   const int original_id=g_multi_next_id++;
+   const int opposite_id=g_multi_next_id++;
+   MultiGroupState original;
+   MultiGroupState opposite;
+   MultiResetState(original,original_id);
+   MultiResetState(opposite,opposite_id);
+   original.first_direction=first_type==OP_BUY ? FIRST_BUY : FIRST_SELL;
+   opposite.first_direction=first_type==OP_BUY ? FIRST_SELL : FIRST_BUY;
+   opposite.pair_parent_id=original_id;
+   original.launch_event_id=signal_id > 0 ? (int)(signal_id % 2147483000) : original_id;
+   opposite.launch_event_id=original.launch_event_id;
+   original.box_signal_bar_time=signal_bar_time;
+   opposite.box_signal_bar_time=signal_bar_time;
+   original.box_signal_id=signal_id;
+   opposite.box_signal_id=signal_id;
+
+   original.cycle_mode=InpCycleMode;
+   opposite.cycle_mode=InpCycleMode;
+   original.stop_points=stop_points;
+   opposite.stop_points=stop_points;
+   original.take_profit_points=take_profit_points;
+   opposite.take_profit_points=take_profit_points;
+   original.transition_target_lots=VolumeNormalize(lots);
+   opposite.transition_target_lots=VolumeNormalize(lots);
+   // Persist both identities and their intended first-order size before either send.
+   g_multi_groups[original_index]=original;
+   g_multi_groups[original_index+1]=opposite;
+   if(!BasketRenewalRegisterPair(篮子数量, original_id, original_id, opposite_id))
+     { g_multi_groups[original_index].active=false;
+       g_multi_groups[original_index+1].active=false; return; }
+   MultiSaveGroup(g_multi_groups[original_index]);
+   MultiSaveGroup(g_multi_groups[original_index+1]);
+   MultiManageGroup(g_multi_groups[original_index]);
+   if(g_multi_groups[original_index].dirty)
+      MultiSaveGroup(g_multi_groups[original_index]);
+   if(!g_reset_pending)
+     {
+      MultiManageGroup(g_multi_groups[original_index+1]);
+      if(g_multi_groups[original_index+1].dirty)
+         MultiSaveGroup(g_multi_groups[original_index+1]);
+     }
+  }
+
+bool StartInitialMultiOco(const double previous_high, const double previous_low,
+                          const int range_points, const double lots)
+  {
+   const int index=ArraySize(g_multi_groups);
+   if(ArrayResize(g_multi_groups,index+2)!=index+2) return false;
+   const int high_id=g_multi_next_id++;
+   const int low_id=g_multi_next_id++;
+   MultiGroupState high_group,low_group;
+   MultiResetState(high_group,high_id);
+   MultiResetState(low_group,low_id);
+   high_group.first_direction=ordertype==ORDERTYPE_FORWARD ? FIRST_BUY : FIRST_SELL;
+   low_group.first_direction=ordertype==ORDERTYPE_FORWARD ? FIRST_SELL : FIRST_BUY;
+   high_group.cycle_mode=InpCycleMode; low_group.cycle_mode=InpCycleMode;
+   high_group.stop_points=range_points; low_group.stop_points=range_points;
+   high_group.take_profit_points=range_points; low_group.take_profit_points=range_points;
+   high_group.first_lots=VolumeNormalize(lots);low_group.first_lots=VolumeNormalize(lots);
+   high_group.pair_peer_id=low_id; low_group.pair_peer_id=high_id;
+   high_group.launch_event_id=high_id; low_group.launch_event_id=high_id;
+   high_group.initial_high_price=PriceNormalize(previous_high);
+   low_group.initial_low_price=PriceNormalize(previous_low);
+   g_multi_groups[index]=high_group; g_multi_groups[index+1]=low_group;
+   MultiSaveGroup(g_multi_groups[index]); MultiSaveGroup(g_multi_groups[index+1]);
+   if(!BasketRenewalRegisterPair(篮子数量, high_id, high_id, low_id)) return false;
+   int high_ticket=-1,low_ticket=-1;
+   const int high_type=ordertype==ORDERTYPE_FORWARD ? OP_BUY : OP_SELL;
+   const int low_type=ordertype==ORDERTYPE_FORWARD ? OP_SELL : OP_BUY;
+   g_multi_groups[index].launch_attempted=true;
+   g_multi_groups[index].dirty=true;MultiSaveGroup(g_multi_groups[index]);
+   g_multi_last_send_error=0;
+   if(!PlaceInitialPendingOrder(high_type,previous_high,range_points,lots,
+                                MultiInitialPendingComment(high_id,true),high_ticket))
+     {
+      if(g_multi_last_send_error==128)
+        {MarkMultiCandleTriggerBar();return true;}
+      if(g_multi_groups[index].basket_mode_at_start==3)
+        {R3ClearRequest(g_multi_groups[index]);R3ClearRequest(g_multi_groups[index+1]);
+         MultiSaveGroup(g_multi_groups[index]);MultiSaveGroup(g_multi_groups[index+1]);
+         BasketRenewalInitialFailure(high_id,low_id);}
+      MultiRemoveGroup(index+1);MultiRemoveGroup(index);return false;
+     }
+   g_multi_groups[index+1].launch_attempted=true;
+   g_multi_groups[index+1].dirty=true;MultiSaveGroup(g_multi_groups[index+1]);
+   g_multi_last_send_error=0;
+   if(!PlaceInitialPendingOrder(low_type,previous_low,range_points,lots,
+                                MultiInitialPendingComment(low_id,false),low_ticket))
+     {
+      if(g_multi_last_send_error==128)
+        {g_multi_groups[index].initial_high_ticket=high_ticket;
+         g_multi_groups[index].launch_attempted=false;
+         g_multi_groups[index].dirty=true;MultiSaveGroup(g_multi_groups[index]);
+         g_multi_groups[index+1].launch_attempted=true;
+         g_multi_groups[index+1].dirty=true;MultiSaveGroup(g_multi_groups[index+1]);
+         MarkMultiCandleTriggerBar();return true;}
+      ResetLastError();
+      if(high_ticket>0 && !OrderDelete(high_ticket,clrRed))
+        {
+         const int rollback_error=GetLastError();
+         const int rejected_leg_error=g_multi_last_send_error;
+         g_multi_groups[index].initial_high_ticket=high_ticket;
+         g_multi_groups[index].pair_peer_id=-1;
+         g_multi_groups[index].launch_attempted=false;
+         g_multi_groups[index].launch_failed=true;
+         g_multi_groups[index].launch_error=rejected_leg_error;
+         g_multi_groups[index].launch_event_id=high_id;
+         g_multi_groups[index].launch_log_time=TimeCurrent();
+         g_multi_groups[index].dirty=true;MultiSaveGroup(g_multi_groups[index]);
+         Print("Multi OCO partial pair failure, group=",high_id,
+               ", event=",high_id,", missing_group=",low_id,
+               ", send_error=",rejected_leg_error,
+               ", rollback_error=",rollback_error,
+               ", surviving_ticket=",high_ticket);
+         if(g_multi_groups[index+1].basket_mode_at_start==3)
+           {R3ClearRequest(g_multi_groups[index+1]);MultiSaveGroup(g_multi_groups[index+1]);}
+         MultiRemoveGroup(index+1);
+         MarkMultiCandleTriggerBar();
+         return true;
+        }
+      if(g_multi_groups[index].basket_mode_at_start==3)
+        {R3ClearRequest(g_multi_groups[index]);R3ClearRequest(g_multi_groups[index+1]);
+         MultiSaveGroup(g_multi_groups[index]);MultiSaveGroup(g_multi_groups[index+1]);
+         BasketRenewalInitialFailure(high_id,low_id);}
+      MultiRemoveGroup(index+1);MultiRemoveGroup(index);return false;
+     }
+   g_multi_groups[index].initial_high_ticket=high_ticket;
+   g_multi_groups[index].launch_attempted=false;
+   g_multi_groups[index].dirty=true; MultiSaveGroup(g_multi_groups[index]);
+   g_multi_groups[index+1].initial_low_ticket=low_ticket;
+   g_multi_groups[index+1].launch_attempted=false;
+   g_multi_groups[index+1].dirty=true; MultiSaveGroup(g_multi_groups[index+1]);
+   MarkMultiCandleTriggerBar();
+   return true;
+  }
+
+void ManageAllMultiGroups()
+  {
+   BasketRenewalBeginBatch();
+   for(int index=ArraySize(g_multi_groups)-1; index>=0; index--)
+     {
+      if(!g_multi_groups[index].active)
+        {
+         MultiRemoveGroup(index);
+         continue;
+        }
+      MultiGroupState before=g_multi_groups[index];
+      MultiManageGroup(g_multi_groups[index]);
+      if(MultiStateChanged(before,g_multi_groups[index]))
+         g_multi_groups[index].dirty=true;
+      if(!g_multi_groups[index].active)
+         MultiRemoveGroup(index);
+      else if(g_multi_groups[index].dirty)
+         MultiSaveGroup(g_multi_groups[index]);
+      if(g_reset_pending)
+         return;
+     }
+     BasketRenewalProcess();
   }
 
 int OnInit()
@@ -4625,24 +6221,62 @@ int OnInit()
    g_end_operation_minutes[1] = ParseTimeMinutes(时段2结束时间);
    g_start_operation_minutes[2] = ParseTimeMinutes(时段3开始时间);
    g_end_operation_minutes[2] = ParseTimeMinutes(时段3结束时间);
+   const double fixed_lot_step = MarketInfo(Symbol(), MODE_LOTSTEP);
+   const double fixed_lot_min = MarketInfo(Symbol(), MODE_MINLOT);
+   const double fixed_lot_max = MarketInfo(Symbol(), MODE_MAXLOT);
+   if(!MathIsValidNumber(FirstOrderFixedLots) || fixed_lot_step <= 0.0
+      || FirstOrderFixedLots < fixed_lot_min || FirstOrderFixedLots > fixed_lot_max
+      || MathAbs(FirstOrderFixedLots / fixed_lot_step
+                 - MathRound(FirstOrderFixedLots / fixed_lot_step)) > 0.000001)
+     {
+      Print("止损首单固定手数不符合当前品种交易量要求。");
+      return INIT_PARAMETERS_INCORRECT;
+     }
    if(DynamicStopLossEnable != 0 && DynamicStopLossEnable != 1)
      {
       Print("动态止损必须为0或1。");
       return INIT_PARAMETERS_INCORRECT;
      }
-   if(InpInitialLots <= 0.0 || 首单手数倍数 <= 0.0
-       || (FirstOrderLotType != 1 && FirstOrderLotType != 2)
+   if(最大首单点差 < 0
+       || InpInitialLots <= 0.0 || 首单手数倍数 <= 0.0
+       || (FirstOrderLotType != 1 && FirstOrderLotType != 2 && FirstOrderLotType != 3)
        || (FavorableGridEnable != 0 && FavorableGridEnable != 1)
        || (DynamicStopLossEnable != 0 && DynamicStopLossEnable != 1)
         || !MathIsValidNumber(FirstOrderMult) || FirstOrderMult <= 0.0
+        || !MathIsValidNumber(FirstOrderFixedLots) || FirstOrderFixedLots <= 0.0
        || InpGridCount < 0 || InpGridCount > MAX_GRID_COUNT
       || InpGridLotMultiplier <= 0.0
       || InpStopLossDistancePoints <= 0 || InpTakeProfitDistancePoints <= 0
-      || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
+       || InpCandleMinRangePoints <= 0 || InpCandleMaxRangePoints < InpCandleMinRangePoints
+       || 箱体回看小时数 <= 0 || 箱体回看小时数 > 720
+       || 箱体最小高度 <= 0 || 箱体最大高度 < 箱体最小高度
+       || (箱体时间模式 != BOX_RANGE_ROLLING && 箱体时间模式 != BOX_RANGE_DAILY_SESSION)
+       || ParseTimeMinutes(箱体开始时间) < 0 || ParseTimeMinutes(箱体结束时间) < 0
+       || ParseTimeMinutes(箱体开始时间) == ParseTimeMinutes(箱体结束时间)
+       || (InpDistanceMode == DISTANCE_BOX_BREAKOUT
+           && (PeriodSeconds((ENUM_TIMEFRAMES)BoxRecognitionPeriod()) <= 0
+               || 箱体观察窗口K线数 < 箱体最少完整往返 * 2 + 1
+               || 箱体ATR周期 <= 0 || !MathIsValidNumber(箱体触碰ATR倍数)
+               || 箱体触碰ATR倍数 <= 0.0 || 箱体上沿最少触碰 <= 0
+               || 箱体下沿最少触碰 <= 0 || 箱体最少完整往返 <= 0
+               || 箱体同侧触碰间隔 <= 0 || 箱体突破最小宽度 <= 0
+               || 箱体突破最大宽度 < 箱体突破最小宽度
+               || !MathIsValidNumber(箱体突破缓冲ATR倍数)
+               || 箱体突破缓冲ATR倍数 <= 0.0))
+
+       || !MathIsValidNumber(布林带止损百分比) || 布林带止损百分比 <= 0.0
+       || !MathIsValidNumber(布林带盈亏比) || 布林带盈亏比 <= 0.0
+       || 布林带最小止损距离 <= 0 || 布林带最大止损距离 < 布林带最小止损距离
        || InpAverageCandleCount <= 0 || InpAverageStopMultiplier <= 0.0
        || InpAverageTakeProfitMultiplier <= 0.0
+       || ZigZag深度 <= 0 || ZigZag偏差 <= 0
+       || ZigZag回退 <= 0 || ZigZag回退 >= ZigZag深度
+       || ZigZag距离最小值 <= 0 || ZigZag距离最大值 < ZigZag距离最小值
+       || !MathIsValidNumber(ZigZag止损百分比) || ZigZag止损百分比 <= 0.0
+       || !MathIsValidNumber(ZigZag止盈倍数) || ZigZag止盈倍数 <= 0.0
        || 最大反手次数 < 0
        || (kline_enable_multiple != 0 && kline_enable_multiple != 1)
+       || (篮子数量 != 1 && 篮子数量 != 2 && 篮子数量 != 3)
        || (Korder_type != KORDER_ONCE_PER_BAR && Korder_type != KORDER_REPEAT_PER_BAR)
       || g_start_operation_minutes[0] < 0 || g_end_operation_minutes[0] < 0
       || g_start_operation_minutes[1] < 0 || g_end_operation_minutes[1] < 0
@@ -4653,8 +6287,10 @@ int OnInit()
    g_active_first_direction = InpFirstDirection;
    g_active_cycle_mode = InpCycleMode;
    LoadState();
-   if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
-      MultiLoadGroups();
+   MultiLoadGroups();
+   BasketRenewalLoad();
+   LoadBoxState();
+
    if(!EventSetTimer(1))
       Print("Unable to start the initial pending OCO timer.");
    return INIT_SUCCEEDED;
@@ -4662,7 +6298,10 @@ int OnInit()
 
 void OnTimer()
   {
+   if(g_reset_pending && BasketRenewalResetIsPending()) {ProcessReset();return;}
    ProcessInitialPendingFillEvent();
+     BasketRenewalProtectInitialMT4();
+     BasketRenewalProtectVisible();
   }
 
 void OnTick()
@@ -4671,6 +6310,13 @@ void OnTick()
       return;
    if(InpDistanceMode == DISTANCE_CANDLE_RANGE && kline_enable_multiple == 1)
       ManageMultipleCandleGroups();
+   else if(IsPairedBasketMode() || MultiHasActiveGroups() || BasketRenewalHasWork())
+     {
+      if(MultiHasActiveGroups() || BasketRenewalHasWork())
+         ManageAllMultiGroups();
+      else
+         Manage();
+     }
    else
       Manage();
   }

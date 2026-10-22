@@ -9,3 +9,5 @@ mt5_auto_test_*.set
 mt5_test_*.ini
 mt5_test_*.set
 mt5_isolated_test/
+mt4_basket_mode3_test/
+/dist/

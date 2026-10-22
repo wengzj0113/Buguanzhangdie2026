@@ -30,8 +30,14 @@ enum DistanceMode
    DISTANCE_CANDLE_RANGE = 1,  // 上一根K线高度
    DISTANCE_AVERAGE_CANDLE_RANGE = 2, // 过去N根K线平均高度
    DISTANCE_LONG_CANDLE = 3,   // 长K线方向市价入场，距离使用固定值
-   DISTANCE_BOLLINGER_RANGE = 4 // 当前布林带上下轨距离的四分之一作为止损和止盈
+   DISTANCE_BOLLINGER_RANGE = 4, // 当前布林带上下轨宽度按百分比计算止损和止盈
+   DISTANCE_ZIGZAG_RANGE = 5, // 已确认 ZigZag 波段高度
+   DISTANCE_BOX_RANGE = 6, // M1时间箱体高度
+   DISTANCE_BOX_BREAKOUT = 7 // 已确认箱体突破
+
   };
+
+enum BoxRangeTimeMode { BOX_RANGE_ROLLING = 0, BOX_RANGE_DAILY_SESSION = 1 };
 
 enum OrderTypeMode
   {
@@ -78,76 +84,130 @@ enum StrategyState
    STATE_FATAL = 7
   };
 
+input group ">>>> 策略与首单";
 // 首单方向：做多或做空
-input FirstDirection 首单方向 = FIRST_BUY;
+input FirstDirection 首单方向 = FIRST_BUY; // [方向]首单做多或做空
 // 首单方向确定方式：预设方向或按当前价格相对布林带中轨判断
-input FirstDirectionMode 首单方向确定方式 = FIRST_DIRECTION_PRESET;
-// 首单方向判断使用的布林带周期（标准值为20）
-input int            布林带周期 = 20;
-// 首单方向判断使用的布林带标准差倍数（标准值为2.0）
-input double         布林带标准差 = 2.0;
+input FirstDirectionMode 首单方向确定方式 = FIRST_DIRECTION_PRESET; // [方向]预设方向或按布林中轨判断
 // 固定距离、平均K线高度和长K线模式均使用用户选择的循环模式
-input CycleMode      循环模式 = CYCLE_MODE_1;
+input CycleMode      循环模式 = CYCLE_MODE_1; // [策略]订单组循环方向序列
+
+input group ">>>> 入场信号";
 // 入场/止盈止损距离模式：固定距离、K线高度、平均K线高度、长K线市价或布林带区间
-input DistanceMode   距离模式 = DISTANCE_FIXED;
-// K线高度模式下的正向或逆向开单方式
-input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD;
+input DistanceMode   距离模式 = DISTANCE_FIXED; // [策略]止损和止盈距离来源
+// 开单方向映射：K线高度模式和布林带触轨模式共用
+input OrderTypeMode  开单方式 = ORDERTYPE_FORWARD; // [开单]信号方向正向或反向
 // K线高度模式下同一根当前K线的首单触发次数
-input CandleOrderMode K线开单模式 = KORDER_ONCE_PER_BAR;
+input CandleOrderMode K线开单模式 = KORDER_ONCE_PER_BAR; // [开单]每根K线触发一次或重复触发
 // K线高度模式是否允许多个订单组并行：0=单组，1=多组
-input int            K线多组 = 0;
-// 止盈移动方式：网格成交后移动或按价格线性移动
-input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID;
+input int            K线多组 = 0; // [开单]0=单组，1=允许多组
+input int            篮子数量 = 1; // [开单]1=单篮子，2=反向双篮子，3=止损续配双篮子
+// 首单方向判断使用的布林带周期（标准值为20）
+input int            布林带周期 = 20; // [布林带]计算周期（K线根数）
+// 首单方向判断使用的布林带标准差倍数（标准值为2.0）
+input double         布林带标准差 = 2.0; // [布林带]上下轨标准差倍数
+
+input group ">>>> 时间箱体";
+input BoxRangeTimeMode 箱体时间模式 = BOX_RANGE_ROLLING;  // [箱体]滚动回看或每日固定时段
+input int            箱体回看小时数 = 12;  // [箱体]滚动模式回看小时数
+input string         箱体开始时间 = "01:00";  // [箱体]固定时段起始时间（服务器时间）
+input string         箱体结束时间 = "12:00";  // [箱体]固定时段结束时间（服务器时间）
+input int            箱体最小高度 = 500;  // [箱体]允许的最小高度（点）
+input int            箱体最大高度 = 1000;  // [箱体]允许的最大高度（点）
+
+input group ">>>> 箱体确认突破";
+input ENUM_TIMEFRAMES 箱体识别周期 = PERIOD_CURRENT; // [箱体突破]识别周期；当前图表周期
+input int            箱体观察窗口K线数 = 60; // [箱体突破]已收盘K线窗口
+input int            箱体ATR周期 = 14; // [箱体突破]ATR计算周期
+input double         箱体触碰ATR倍数 = 0.2; // [箱体突破]边沿触碰容差
+input int            箱体上沿最少触碰 = 2; // [箱体突破]上沿最少触碰数
+input int            箱体下沿最少触碰 = 2; // [箱体突破]下沿最少触碰数
+input int            箱体最少完整往返 = 2; // [箱体突破]最少完整往返数
+input int            箱体同侧触碰间隔 = 3; // [箱体突破]同侧事件最少间隔K线
+input int            箱体突破最小宽度 = 500; // [箱体突破]最小宽度（点）
+input int            箱体突破最大宽度 = 1000; // [箱体突破]最大宽度（点）
+input double         箱体突破缓冲ATR倍数 = 0.2; // [箱体突破]突破确认缓冲
+
+
+input group ">>>> 手数与风险";
 // 首单手数
-input double         首单手数 = 0.01;
+input double         首单手数 = 0.01; // [手数]首轮首单交易手数
 // 首单手数倍数；订单组止损后下一组首单手数乘此倍数
-input double         首单手数倍数 = 1.0;
+input double         首单手数倍数 = 1.0; // [手数]类型1止损后首单手数倍数
 // 止损后首单手数计算类型：1=累计订单组总手数，2=上一组首单手数
-input int            止损首单类型 = 2;
+input int            止损首单类型 = 2; // [手数]止损后算法：1累计组手数，2首单倍数，3固定手数
 // 首单手数类型2的倍数
-input double         首单类型2倍数 = 2.0;
+input double         首单类型2倍数 = 2.0; // [手数]类型2使用的上一组首单倍数
+// 止损首单类型3使用的固定手数
+input double         止损首单固定手数 = 0.01; // [手数]类型3止损后使用的固定手数
 // 止损后最多切换到下一订单组的次数；达到后清理并重新开始
-input int            最大反手次数 = 5;
+input int            最大反手次数 = 5; // [风险]止损后最多更换订单组次数
+// 首单允许的最大点差，单位为 points；0 表示不限制
+input int            最大首单点差 = 0; // [风险]首单最大点差（点）；0=不限
+
+input group ">>>> 网格与止盈";
+// 止盈移动方式：网格成交后移动或按价格线性移动
+input TakeProfitMode  止盈移动模式 = TAKE_PROFIT_GRID; // [止盈]网格移动或线性移动
 // 止损区间分成的格数；内部格数为总格数减一
-input int            网格数量 = 2;
+input int            网格数量 = 2; // [网格]止损区间等分格数
 // 价格向有利方向移动时是否网格加单：0=关闭，1=开启
-input int            有利方向加单 = 0;
+input int            有利方向加单 = 0; // [网格]0=关闭，1=有利方向加单
 // 有利方向网格成交后是否同步移动止损：0=关闭，1=开启
-input int            动态止损 = 0;
-// 可视化界面开关：0=关闭，1=开启
-input int            v_enable = 0;
+input int            动态止损 = 0; // [网格]0=关闭，1=随有利网格移动止损
 // 下一订单组网格手数相对上一组的倍数
-input double         网格手数倍数 = 2.0;
+input double         网格手数倍数 = 2.0; // [网格]下一订单组网格手数倍数
+// 可视化界面开关：0=关闭，1=开启
+input int            v_enable = 0; // [界面]0=关闭，1=显示参数面板
+
+input group ">>>> 止盈止损距离";
 // 固定距离模式下的止损点数
-input int            固定止损距离 = 500;
+input int            固定止损距离 = 500; // [距离]固定模式止损距离（点）
 // 固定距离模式下的止盈点数
-input int            固定止盈距离 = 500;
+input int            固定止盈距离 = 500; // [距离]固定模式止盈距离（点）
+// 布林带区间模式下，带宽乘以下述百分比得到止损点数
+input double         布林带止损百分比 = 25.0; // [距离]布林带宽度对应的止损百分比
+// 布林带模式下，止盈点数与止损点数的比值
+input double         布林带盈亏比 = 1.0; // [距离]止盈距离÷止损距离
+// 布林带区间模式下，止损点数的允许范围（含边界）
+input int            布林带最小止损距离 = 200; // [距离]止损最小点数
+input int            布林带最大止损距离 = 1000; // [距离]止损最大点数
 // 上一根K线允许使用的最小高度点数
-input int            K线最小高度 = 500;
+input int            K线最小高度 = 500; // [距离]上一根K线最小高度（点）
 // 上一根K线允许使用的最大高度点数
-input int            K线最大高度 = 1000;
+input int            K线最大高度 = 1000; // [距离]上一根K线最大高度（点）
 // 平均K线模式使用的已完成K线根数
-input int            平均K线根数 = 20;
+input int            平均K线根数 = 20; // [距离]计算平均高度的已完成K线数
 // 平均K线高度计算的止损倍数
-input double         平均止损倍数 = 2.0;
+input double         平均止损倍数 = 2.0; // [距离]平均K线高度止损倍数
 // 平均K线模式中止盈距离相对止损距离的倍数
-input double         平均止盈倍数 = 2.0;
+input double         平均止盈倍数 = 2.0; // [距离]止盈距离相对止损距离倍数
+input int            ZigZag深度 = 12; // [距离]确认波段转折的深度
+input int            ZigZag偏差 = 5; // [距离]波段转折的最小偏差
+input int            ZigZag回退 = 3; // [距离]转折点间最小K线数
+input int            ZigZag距离最小值 = 100; // [距离]波段最小距离（点）
+input int            ZigZag距离最大值 = 10000; // [距离]波段最大距离（点）
+input double         ZigZag止损百分比 = 100.0; // [距离]波段高度对应的止损百分比
+input double         ZigZag止盈倍数 = 1.0; // [距离]止盈距离相对止损距离倍数
+
+input group ">>>> 订单识别";
 // 用于识别本EA订单的唯一编号
-input ulong          订单识别编号 = 20260830;
+input ulong          订单识别编号 = 20260830; // [订单]识别本EA订单的编号
 // 订单注释；网格单会自动追加网格标记
-input string         订单注释 = "不管涨跌";
+input string         订单注释 = "不管涨跌"; // [订单]发送到平台的订单备注
+
+input group ">>>> 交易时段";
 // 允许开首单的开始时间，使用平台服务器时间，格式为 时:分
-input string         开始时间 = "08:00";
+input string         开始时间 = "08:00"; // [时段]时段1开始（服务器时间）
 // 允许开首单的结束时间，使用平台服务器时间，格式为 时:分
-input string         结束时间 = "23:00";
+input string         结束时间 = "23:00"; // [时段]时段1结束（服务器时间）
 // 时段2允许开首单的开始时间；00:00-00:00表示关闭
-input string         时段2开始时间 = "00:00";
+input string         时段2开始时间 = "00:00"; // [时段]时段2开始；00:00-00:00关闭
 // 时段2允许开首单的结束时间；支持跨午夜
-input string         时段2结束时间 = "00:00";
+input string         时段2结束时间 = "00:00"; // [时段]时段2结束；支持跨午夜
 // 时段3允许开首单的开始时间；00:00-00:00表示关闭
-input string         时段3开始时间 = "00:00";
+input string         时段3开始时间 = "00:00"; // [时段]时段3开始；00:00-00:00关闭
 // 时段3允许开首单的结束时间；支持跨午夜
-input string         时段3结束时间 = "00:00";
+input string         时段3结束时间 = "00:00"; // [时段]时段3结束；支持跨午夜
 
 // 内部兼容映射：以下名称不显示在参数设置中，仅用于保持既有逻辑代码兼容。
 #define InpFirstDirection 首单方向
@@ -244,7 +304,11 @@ struct GuiConfig
    FirstDirection first_direction;
    FirstDirectionMode first_direction_mode;
    int bollinger_period;
-   double bollinger_deviation;
+    double bollinger_deviation;
+    double bollinger_stop_percent;
+    double bollinger_reward_risk_ratio;
+    int bollinger_min_stop_points;
+    int bollinger_max_stop_points;
    CycleMode cycle_mode;
    DistanceMode distance_mode;
    OrderTypeMode order_type;
@@ -255,6 +319,7 @@ struct GuiConfig
    double initial_lots_multiplier;
    int    first_order_lot_type;
    double first_order_mult;
+   double stop_first_order_lots;
    int    favorable_grid_enable;
    int    dynamic_stop_loss_enable;
    int max_reversals;
@@ -267,6 +332,31 @@ struct GuiConfig
    int average_candle_count;
    double average_stop_multiplier;
    double average_take_profit_multiplier;
+   int zigzag_depth;
+   BoxRangeTimeMode box_range_time_mode;
+   int box_range_lookback_hours;
+   string box_range_start_time;
+   string box_range_end_time;
+   int box_range_min_points;
+   int box_range_max_points;
+   ENUM_TIMEFRAMES box_breakout_timeframe;
+   int box_breakout_lookback_bars;
+   int box_breakout_atr_period;
+   double box_breakout_touch_atr_multiplier;
+   int box_breakout_min_upper_touches;
+   int box_breakout_min_lower_touches;
+   int box_breakout_min_round_trips;
+   int box_breakout_min_touch_spacing_bars;
+   int box_breakout_min_width_points;
+   int box_breakout_max_width_points;
+   double box_breakout_buffer_atr_multiplier;
+
+   int zigzag_deviation;
+   int zigzag_backstep;
+   int zigzag_min_points;
+   int zigzag_max_points;
+   double zigzag_stop_percent;
+   double zigzag_take_profit_multiplier;
    ulong magic_number;
    string order_comment;
    string start_time;
@@ -278,6 +368,14 @@ struct GuiConfig
   };
 
 GuiConfig       g_gui_applied_config;
+int             g_zigzag_handle = INVALID_HANDLE;
+int             g_zigzag_handle_depth = 0;
+int             g_zigzag_handle_deviation = 0;
+int             g_zigzag_handle_backstep = 0;
+int             g_box_atr_handle = INVALID_HANDLE;
+ENUM_TIMEFRAMES g_box_atr_timeframe = PERIOD_CURRENT;
+int             g_box_atr_period = 0;
+
 GuiConfig       g_gui_draft_config;
 GuiPage         g_gui_page = GUI_PAGE_OVERVIEW;
 GuiDisplayMode  g_gui_display_mode = GUI_MODE_EXPERT;
@@ -313,6 +411,8 @@ int    g_reversal_count = 0;
 ulong  g_pending_ticket = 0;
 ulong  g_initial_high_ticket = 0;
 ulong  g_initial_low_ticket = 0;
+bool   g_initial_pair_incomplete = false;
+double g_initial_pair_volume = 0.0;
 double g_initial_high_price = 0.0;
 double g_initial_low_price = 0.0;
 long   g_initial_high_direction = ORDER_TYPE_BUY;
@@ -350,6 +450,24 @@ int    g_active_first_direction = FIRST_BUY;
 int    g_active_cycle_mode = CYCLE_MODE_1;
 int    g_group_stop_points = 0;
 int    g_group_take_profit_points = 0;
+struct BoxBreakoutState
+  {
+   bool valid;
+   double upper;
+   double lower;
+   int width_points;
+   double atr;
+   double breakout_buffer;
+   datetime confirmation_time;
+   datetime last_processed_time;
+   int upper_breakout_count;
+   int lower_breakout_count;
+   int age_bars;
+   long signal_id;
+   datetime signal_bar_time;
+   long signal_direction;
+  };
+BoxBreakoutState g_box_state;
 double g_cumulative_loss_lots = 0.0;
 double g_group_first_lots = 0.0;
 double g_previous_grid_lots = 0.0;
@@ -414,6 +532,9 @@ int GuiAnyDropdownOptionCount(const string key);
 string GuiAnyDropdownOptionText(const string key, const int index);
 int GuiAnyDropdownValueIndex(const string key);
 bool GuiSetAnyDropdownValue(const string key, const int index);
+string GuiConfigBeforeBoxRangeFingerprintText(const GuiConfig &config);
+string GuiConfigBeforeBoxBreakoutFingerprintText(const GuiConfig &config);
+
 int GuiDropdownOptionColumns(const string key);
 void GuiDropdownOptionGeometry(const string key, const int field_x, const int field_y,
                                const int index, int &option_x, int &option_y,
@@ -546,6 +667,7 @@ string GuiConfigFingerprintText(const GuiConfig &config)
            + DoubleToString(config.initial_lots_multiplier, 16) + "|"
            + IntegerToString(config.first_order_lot_type) + "|"
            + DoubleToString(config.first_order_mult, 16) + "|"
+           + DoubleToString(config.stop_first_order_lots, 16) + "|"
            + IntegerToString(config.favorable_grid_enable) + "|"
            + IntegerToString(config.dynamic_stop_loss_enable) + "|"
            + IntegerToString(config.max_reversals) + "|"
@@ -562,10 +684,146 @@ string GuiConfigFingerprintText(const GuiConfig &config)
           + config.order_comment + "|" + config.start_time + "|" + config.end_time
           + "|" + config.start_time_2 + "|" + config.end_time_2
           + "|" + config.start_time_3 + "|" + config.end_time_3
-          + "|" + IntegerToString((int)config.first_direction_mode)
-          + "|" + IntegerToString(config.bollinger_period)
-          + "|" + DoubleToString(config.bollinger_deviation, 16);
+           + "|" + IntegerToString((int)config.first_direction_mode)
+           + "|" + IntegerToString(config.bollinger_period)
+           + "|" + DoubleToString(config.bollinger_deviation, 16)
+           + "|" + IntegerToString(config.bollinger_min_stop_points)
+           + "|" + IntegerToString(config.bollinger_max_stop_points)
+           + "|" + IntegerToString(config.zigzag_depth)
+           + "|" + IntegerToString(config.zigzag_deviation)
+           + "|" + IntegerToString(config.zigzag_backstep)
+           + "|" + IntegerToString(config.zigzag_min_points)
+           + "|" + IntegerToString(config.zigzag_max_points)
+           + "|" + DoubleToString(config.zigzag_stop_percent, 16)
+           + "|" + DoubleToString(config.zigzag_take_profit_multiplier, 16)
+           + "|" + DoubleToString(config.bollinger_stop_percent, 16)
+           + "|" + DoubleToString(config.bollinger_reward_risk_ratio, 16)
+           + "|" + IntegerToString((int)config.box_range_time_mode)
+           + "|" + IntegerToString(config.box_range_lookback_hours)
+           + "|" + config.box_range_start_time + "|" + config.box_range_end_time
+           + "|" + IntegerToString(config.box_range_min_points)
+          + "|" + IntegerToString(config.box_range_max_points)
+          + "|" + IntegerToString((int)config.box_breakout_timeframe)
+          + "|" + IntegerToString(config.box_breakout_lookback_bars)
+          + "|" + IntegerToString(config.box_breakout_atr_period)
+          + "|" + DoubleToString(config.box_breakout_touch_atr_multiplier, 16)
+          + "|" + IntegerToString(config.box_breakout_min_upper_touches)
+          + "|" + IntegerToString(config.box_breakout_min_lower_touches)
+          + "|" + IntegerToString(config.box_breakout_min_round_trips)
+          + "|" + IntegerToString(config.box_breakout_min_touch_spacing_bars)
+          + "|" + IntegerToString(config.box_breakout_min_width_points)
+          + "|" + IntegerToString(config.box_breakout_max_width_points)
+          + "|" + DoubleToString(config.box_breakout_buffer_atr_multiplier, 16);
+
+   }
+
+string GuiConfigBeforeBollingerRatioFingerprintText(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBoxRangeFingerprintText(config);
+   const string suffix = "|" + DoubleToString(config.bollinger_reward_risk_ratio, 16);
+   return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
   }
+
+double GuiConfigBeforeBollingerRatioFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerRatioFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeBollingerRatioFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerRatioFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+   return hash;
+  }
+
+string GuiConfigBeforeBollingerPercentFingerprintText(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerRatioFingerprintText(config);
+   const string suffix = "|" + DoubleToString(config.bollinger_stop_percent, 16);
+   return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+  }
+
+double GuiConfigBeforeBollingerPercentFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerPercentFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeBollingerPercentFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBollingerPercentFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+   return hash;
+  }
+
+string GuiConfigBeforeZigZagFingerprintText(const GuiConfig &config)
+  {
+   string text = GuiConfigBeforeBollingerPercentFingerprintText(config);
+   const string suffix = "|" + IntegerToString(config.zigzag_depth)
+                         + "|" + IntegerToString(config.zigzag_deviation)
+                         + "|" + IntegerToString(config.zigzag_backstep)
+                         + "|" + IntegerToString(config.zigzag_min_points)
+                         + "|" + IntegerToString(config.zigzag_max_points)
+                         + "|" + DoubleToString(config.zigzag_stop_percent, 16)
+                         + "|" + DoubleToString(config.zigzag_take_profit_multiplier, 16);
+   return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+  }
+
+
+double GuiConfigBeforeZigZagFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeZigZagFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeZigZagFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeZigZagFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+   return hash;
+  }
+
+string GuiConfigBeforeBollingerLimitsFingerprintText(const GuiConfig &config)
+   {
+    string text = GuiConfigBeforeZigZagFingerprintText(config);
+    const string suffix = "|" + IntegerToString(config.bollinger_min_stop_points)
+                          + "|" + IntegerToString(config.bollinger_max_stop_points);
+    return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+   }
+
+double GuiConfigBeforeBollingerLimitsFingerprint(const GuiConfig &config)
+   {
+    const string text = GuiConfigBeforeBollingerLimitsFingerprintText(config);
+    double hash = 1000003.0;
+    for(int index = 0; index < StringLen(text); index++)
+       hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+    return hash;
+   }
+
+double GuiConfigBeforeBollingerLimitsFingerprint2(const GuiConfig &config)
+   {
+    const string text = GuiConfigBeforeBollingerLimitsFingerprintText(config);
+    double hash = 1000033.0;
+    for(int index = 0; index < StringLen(text); index++)
+       hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+    return hash;
+   }
 
 double GuiConfigFingerprint(const GuiConfig &config)
   {
@@ -587,9 +845,74 @@ double GuiConfigFingerprint2(const GuiConfig &config)
    return hash;
   }
 
-string GuiConfigBeforeBollingerFingerprintText(const GuiConfig &config)
+string GuiConfigBeforeBoxRangeFingerprintText(const GuiConfig &config)
   {
    string text = GuiConfigFingerprintText(config);
+   const string suffix = "|" + IntegerToString((int)config.box_range_time_mode)
+                        + "|" + IntegerToString(config.box_range_lookback_hours)
+                        + "|" + config.box_range_start_time + "|" + config.box_range_end_time
+                        + "|" + IntegerToString(config.box_range_min_points)
+                        + "|" + IntegerToString(config.box_range_max_points);
+   return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+  }
+
+double GuiConfigBeforeBoxRangeFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBoxRangeFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeBoxRangeFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBoxRangeFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+   return hash;
+  }
+
+string GuiConfigBeforeBoxBreakoutFingerprintText(const GuiConfig &config)
+  {
+   string text = GuiConfigFingerprintText(config);
+   const string suffix = "|" + IntegerToString((int)config.box_breakout_timeframe)
+      + "|" + IntegerToString(config.box_breakout_lookback_bars)
+      + "|" + IntegerToString(config.box_breakout_atr_period)
+      + "|" + DoubleToString(config.box_breakout_touch_atr_multiplier, 16)
+      + "|" + IntegerToString(config.box_breakout_min_upper_touches)
+      + "|" + IntegerToString(config.box_breakout_min_lower_touches)
+      + "|" + IntegerToString(config.box_breakout_min_round_trips)
+      + "|" + IntegerToString(config.box_breakout_min_touch_spacing_bars)
+      + "|" + IntegerToString(config.box_breakout_min_width_points)
+      + "|" + IntegerToString(config.box_breakout_max_width_points)
+      + "|" + DoubleToString(config.box_breakout_buffer_atr_multiplier, 16);
+   return StringSubstr(text, 0, StringLen(text) - StringLen(suffix));
+  }
+
+double GuiConfigBeforeBoxBreakoutFingerprint(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBoxBreakoutFingerprintText(config);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(text, index), 1000000007.0);
+   return hash;
+  }
+
+double GuiConfigBeforeBoxBreakoutFingerprint2(const GuiConfig &config)
+  {
+   const string text = GuiConfigBeforeBoxBreakoutFingerprintText(config);
+   double hash = 1000033.0;
+   for(int index = 0; index < StringLen(text); index++)
+      hash = MathMod(hash * 263.0 + StringGetCharacter(text, index), 1000000009.0);
+   return hash;
+  }
+
+
+string GuiConfigBeforeBollingerFingerprintText(const GuiConfig &config)
+  {
+    string text = GuiConfigBeforeBollingerLimitsFingerprintText(config);
    const string suffix = "|" + IntegerToString((int)config.first_direction_mode)
                          + "|" + IntegerToString(config.bollinger_period)
                          + "|" + DoubleToString(config.bollinger_deviation, 16);
@@ -698,7 +1021,7 @@ bool MigrateLegacyGuiConfig(const GuiConfig &config, string &error)
 bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
   {
    error = "";
-   const string prefix = StateReadPrefixForMagic(config.magic_number);
+   const string prefix = BasketRenewalConfigPrefix(StateReadPrefixForMagic(config.magic_number));
    const bool has_state = HasStrategyStateDataAtPrefix(prefix);
    if(!has_state && !HasManagedExposureForMagic(config.magic_number))
       return true;
@@ -711,10 +1034,102 @@ bool ValidatePersistedConfigForMagic(const GuiConfig &config, string &error)
      }
     const double persisted_fingerprint = GlobalVariableGet(fingerprint_key);
     const double persisted_fingerprint2 = GlobalVariableGet(fingerprint2_key);
-    const bool current_match = MathAbs(persisted_fingerprint
-                                       - GuiConfigFingerprint(config)) <= 0.5
+     const bool current_match = MathAbs(persisted_fingerprint
+                                        - GuiConfigFingerprint(config)) <= 0.5
                                && MathAbs(persisted_fingerprint2
-                                          - GuiConfigFingerprint2(config)) <= 0.5;
+                                           - GuiConfigFingerprint2(config)) <= 0.5;
+     const bool before_box_breakout_match = MathAbs(persisted_fingerprint
+          - GuiConfigBeforeBoxBreakoutFingerprint(config)) <= 0.5
+          && MathAbs(persisted_fingerprint2
+          - GuiConfigBeforeBoxBreakoutFingerprint2(config)) <= 0.5;
+
+     const bool before_ratio_match = MathAbs(persisted_fingerprint
+                                              - GuiConfigBeforeBollingerRatioFingerprint(config)) <= 0.5
+                                     && MathAbs(persisted_fingerprint2
+                                                - GuiConfigBeforeBollingerRatioFingerprint2(config)) <= 0.5;
+     const bool before_box_range_match = MathAbs(persisted_fingerprint
+                                                  - GuiConfigBeforeBoxRangeFingerprint(config)) <= 0.5
+                                        && MathAbs(persisted_fingerprint2
+                                                   - GuiConfigBeforeBoxRangeFingerprint2(config)) <= 0.5;
+     if(!current_match && before_box_breakout_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding box-breakout settings.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding box-breakout settings");
+        return true;
+       }
+
+     if(!current_match && before_box_range_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding box-height distance.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding box-height distance");
+        return true;
+       }
+     if(!current_match && before_ratio_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding Bollinger reward/risk ratio.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding Bollinger reward/risk ratio");
+        return true;
+       }
+     const bool before_percent_match = MathAbs(persisted_fingerprint
+                                               - GuiConfigBeforeBollingerPercentFingerprint(config)) <= 0.5
+                                       && MathAbs(persisted_fingerprint2
+                                                  - GuiConfigBeforeBollingerPercentFingerprint2(config)) <= 0.5;
+     if(!current_match && before_percent_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding Bollinger stop percent.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding Bollinger stop percent");
+        return true;
+       }
+     const bool before_zigzag_match = MathAbs(persisted_fingerprint
+                                              - GuiConfigBeforeZigZagFingerprint(config)) <= 0.5
+                                      && MathAbs(persisted_fingerprint2
+                                                 - GuiConfigBeforeZigZagFingerprint2(config)) <= 0.5;
+     if(!current_match && before_zigzag_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding ZigZag distance.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding ZigZag distance");
+        return true;
+       }
+     const bool before_limits_match = MathAbs(persisted_fingerprint
+                                              - GuiConfigBeforeBollingerLimitsFingerprint(config)) <= 0.5
+                                      && MathAbs(persisted_fingerprint2
+                                                 - GuiConfigBeforeBollingerLimitsFingerprint2(config)) <= 0.5;
+     if(!current_match && before_limits_match)
+       {
+        if(!GlobalVariableSet(fingerprint_key, GuiConfigFingerprint(config))
+           || !GlobalVariableSet(fingerprint2_key, GuiConfigFingerprint2(config)))
+          {
+           error = "Failed to migrate the persisted configuration after adding Bollinger distance limits.";
+           return false;
+          }
+        Print("Migrated legacy fingerprint after adding Bollinger distance limits");
+        return true;
+       }
     const bool pre_operation_windows_match = MathAbs(persisted_fingerprint
                                                      - GuiConfigPreOperationWindowsFingerprint(config)) <= 0.5
                                              && MathAbs(persisted_fingerprint2
@@ -811,6 +1226,8 @@ void SaveState()
    GlobalVariableSet(prefix + ".pendingticket", (double)g_pending_ticket);
    GlobalVariableSet(prefix + ".initial_high_ticket", (double)g_initial_high_ticket);
    GlobalVariableSet(prefix + ".initial_low_ticket", (double)g_initial_low_ticket);
+   GlobalVariableSet(prefix + ".initial_pair_incomplete", g_initial_pair_incomplete ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".initial_pair_volume", g_initial_pair_volume);
    GlobalVariableSet(prefix + ".initial_high_price", g_initial_high_price);
    GlobalVariableSet(prefix + ".initial_low_price", g_initial_low_price);
    GlobalVariableSet(prefix + ".initial_high_direction", (double)g_initial_high_direction);
@@ -858,6 +1275,8 @@ void ClearState()
    GlobalVariableDel(prefix + ".pendingticket");
    GlobalVariableDel(prefix + ".initial_high_ticket");
    GlobalVariableDel(prefix + ".initial_low_ticket");
+   GlobalVariableDel(prefix + ".initial_pair_incomplete");
+   GlobalVariableDel(prefix + ".initial_pair_volume");
    GlobalVariableDel(prefix + ".initial_high_price");
    GlobalVariableDel(prefix + ".initial_low_price");
    GlobalVariableDel(prefix + ".initial_high_direction");
@@ -899,6 +1318,8 @@ void ClearState()
    g_pending_ticket = 0;
    g_initial_high_ticket = 0;
    g_initial_low_ticket = 0;
+   g_initial_pair_incomplete = false;
+   g_initial_pair_volume = 0.0;
    g_initial_high_price = 0.0;
    g_initial_low_price = 0.0;
    g_initial_high_direction = ORDER_TYPE_BUY;
@@ -1008,6 +1429,10 @@ bool LoadStateFromPrefix(const string prefix)
       g_initial_high_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_high_ticket"));
    if(GlobalVariableCheck(prefix + ".initial_low_ticket"))
       g_initial_low_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".initial_low_ticket"));
+   if(GlobalVariableCheck(prefix + ".initial_pair_incomplete"))
+      g_initial_pair_incomplete = GlobalVariableGet(prefix + ".initial_pair_incomplete") >= 0.5;
+   if(GlobalVariableCheck(prefix + ".initial_pair_volume"))
+      g_initial_pair_volume = GlobalVariableGet(prefix + ".initial_pair_volume");
    if(GlobalVariableCheck(prefix + ".initial_high_price"))
       g_initial_high_price = GlobalVariableGet(prefix + ".initial_high_price");
    if(GlobalVariableCheck(prefix + ".initial_low_price"))
@@ -1218,6 +1643,60 @@ int ParseTimeMinutes(const string value)
    if(hour < 0 || hour > 23 || minute < 0 || minute > 59)
       return -1;
    return hour * 60 + minute;
+  }
+
+bool GetBoxRangePoints(int &range_points)
+  {
+   range_points = 0;
+   if(g_gui_applied_config.box_range_min_points <= 0
+      || g_gui_applied_config.box_range_max_points < g_gui_applied_config.box_range_min_points
+      || _Point <= 0.0)
+      return false;
+   const datetime now = TimeCurrent();
+   datetime start_time = 0;
+   datetime end_time = now - (now % 60) + 60;
+   if(g_gui_applied_config.box_range_time_mode == BOX_RANGE_ROLLING)
+     {
+      if(g_gui_applied_config.box_range_lookback_hours <= 0
+         || g_gui_applied_config.box_range_lookback_hours > 720) return false;
+      start_time = now - g_gui_applied_config.box_range_lookback_hours * 3600;
+      start_time -= start_time % 60;
+     }
+   else if(g_gui_applied_config.box_range_time_mode == BOX_RANGE_DAILY_SESSION)
+     {
+      const int start_minutes = ParseTimeMinutes(g_gui_applied_config.box_range_start_time);
+      const int end_minutes = ParseTimeMinutes(g_gui_applied_config.box_range_end_time);
+      if(start_minutes < 0 || end_minutes < 0 || start_minutes == end_minutes) return false;
+      MqlDateTime parts;
+      TimeToStruct(now, parts);
+      parts.hour = 0; parts.min = 0; parts.sec = 0;
+      const datetime day_start = StructToTime(parts);
+      datetime session_start = day_start + start_minutes * 60;
+      datetime session_end = day_start + end_minutes * 60;
+      if(end_minutes <= start_minutes) session_end += 86400;
+      if(now < session_end) { session_start -= 86400; session_end -= 86400; }
+      start_time = session_start;
+      end_time = session_end;
+     }
+   else return false;
+   MqlRates rates[];
+   ArraySetAsSeries(rates, false);
+   const int copied = CopyRates(_Symbol, PERIOD_M1, start_time, end_time - 1, rates);
+   if(copied <= 0 || rates[0].time > start_time
+      || rates[copied - 1].time + 60 < end_time)
+      return false;
+   double highest = -DBL_MAX;
+   double lowest = DBL_MAX;
+   for(int index = 0; index < copied; index++)
+     {
+      if(rates[index].time < start_time || rates[index].time >= end_time) continue;
+      highest = MathMax(highest, rates[index].high);
+      lowest = MathMin(lowest, rates[index].low);
+     }
+   if(highest <= lowest || lowest == DBL_MAX) return false;
+   range_points = (int)MathRound((highest - lowest) / _Point);
+   return range_points >= g_gui_applied_config.box_range_min_points
+          && range_points <= g_gui_applied_config.box_range_max_points;
   }
 
 bool IsOperationWindowActive(const int current_minutes, const int start_minutes,
@@ -1520,6 +1999,11 @@ bool ForgetManagedScopeIfFlat(const ulong magic_number, string &error)
 bool ValidateGuiConfig(const GuiConfig &config, string &error)
   {
    error = "";
+   if(最大首单点差 < 0)
+     {
+      error = "最大首单点差不能小于0。";
+      return false;
+     }
    if(config.first_direction != FIRST_BUY && config.first_direction != FIRST_SELL)
      {
        error = "首单方向设置无效。";
@@ -1531,9 +2015,13 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "首单方向确定方式设置无效。";
       return false;
      }
-   if(config.bollinger_period <= 0 || !IsFinitePositive(config.bollinger_deviation))
-     {
-       error = "布林带周期必须大于0，标准差倍数必须为有限正数。";
+    if(config.bollinger_period <= 0 || !IsFinitePositive(config.bollinger_deviation)
+       || !IsFinitePositive(config.bollinger_stop_percent)
+       || !IsFinitePositive(config.bollinger_reward_risk_ratio)
+       || config.bollinger_min_stop_points <= 0
+       || config.bollinger_max_stop_points < config.bollinger_min_stop_points)
+      {
+        error = "布林带周期、标准差、止损百分比或距离范围设置无效。";
       return false;
      }
    if(config.cycle_mode != CYCLE_MODE_1 && config.cycle_mode != CYCLE_MODE_2
@@ -1546,7 +2034,11 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       && config.distance_mode != DISTANCE_CANDLE_RANGE
       && config.distance_mode != DISTANCE_AVERAGE_CANDLE_RANGE
       && config.distance_mode != DISTANCE_LONG_CANDLE
-      && config.distance_mode != DISTANCE_BOLLINGER_RANGE)
+      && config.distance_mode != DISTANCE_BOLLINGER_RANGE
+      && config.distance_mode != DISTANCE_ZIGZAG_RANGE
+      && config.distance_mode != DISTANCE_BOX_RANGE
+      && config.distance_mode != DISTANCE_BOX_BREAKOUT)
+
      {
        error = "距离模式设置无效。";
       return false;
@@ -1567,15 +2059,27 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "K线多组必须为0或1。";
       return false;
      }
+   if(篮子数量 != 1 && 篮子数量 != 2 && 篮子数量 != 3)
+     {
+      error = "篮子数量必须为1、2或3。";
+      return false;
+     }
+   if(IsPairedBasketMode()
+      && AccountInfoInteger(ACCOUNT_MARGIN_MODE) != ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
+     {
+      error = "篮子数量为2或3需要MT5对冲账户。";
+      return false;
+     }
     if(config.take_profit_mode != TAKE_PROFIT_GRID
        && config.take_profit_mode != TAKE_PROFIT_LINEAR)
      {
        error = "止盈移动模式设置无效。";
        return false;
       }
-    if(config.first_order_lot_type != 1 && config.first_order_lot_type != 2)
+    if(config.first_order_lot_type != 1 && config.first_order_lot_type != 2
+       && config.first_order_lot_type != 3)
       {
-       error = "止损首单类型必须为1或2。";
+       error = "止损首单类型必须为1、2或3。";
        return false;
       }
      if(config.favorable_grid_enable != 0 && config.favorable_grid_enable != 1)
@@ -1591,6 +2095,7 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
     if(!IsFinitePositive(config.initial_lots)
        || !IsFinitePositive(config.initial_lots_multiplier)
        || !IsFinitePositive(config.first_order_mult)
+       || !IsFinitePositive(config.stop_first_order_lots)
        || !IsFinitePositive(config.grid_lot_multiplier))
      {
        error = "手数和倍数必须为有限正数。";
@@ -1612,6 +2117,8 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
                            volume_min, volume_max, volume_step)
        || !IsVolumeAligned(config.initial_lots * config.first_order_mult,
                            volume_min, volume_max, volume_step)
+       || !IsVolumeAligned(config.stop_first_order_lots,
+                           volume_min, volume_max, volume_step)
        || !IsVolumeAligned(config.initial_lots * config.grid_lot_multiplier,
                           volume_min, volume_max, volume_step))
      {
@@ -1628,6 +2135,40 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
        error = "距离和K线范围设置无效。";
       return false;
      }
+   if((config.box_range_time_mode != BOX_RANGE_ROLLING
+       && config.box_range_time_mode != BOX_RANGE_DAILY_SESSION)
+      || config.box_range_lookback_hours <= 0 || config.box_range_lookback_hours > 720
+      || ParseTimeMinutes(config.box_range_start_time) < 0
+      || ParseTimeMinutes(config.box_range_end_time) < 0
+      || ParseTimeMinutes(config.box_range_start_time) == ParseTimeMinutes(config.box_range_end_time)
+      || config.box_range_min_points <= 0
+      || config.box_range_max_points < config.box_range_min_points)
+     {
+      error = "箱体时间或高度范围设置无效。";
+      return false;
+     }
+   if(config.distance_mode == DISTANCE_BOX_BREAKOUT)
+     {
+      const ENUM_TIMEFRAMES box_timeframe = config.box_breakout_timeframe == PERIOD_CURRENT
+                                            ? (ENUM_TIMEFRAMES)_Period
+                                            : config.box_breakout_timeframe;
+      if(PeriodSeconds(box_timeframe) <= 0
+         || config.box_breakout_lookback_bars < config.box_breakout_min_round_trips * 2 + 1
+         || config.box_breakout_atr_period <= 0
+         || !IsFinitePositive(config.box_breakout_touch_atr_multiplier)
+         || config.box_breakout_min_upper_touches <= 0
+         || config.box_breakout_min_lower_touches <= 0
+         || config.box_breakout_min_round_trips <= 0
+         || config.box_breakout_min_touch_spacing_bars <= 0
+         || config.box_breakout_min_width_points <= 0
+         || config.box_breakout_max_width_points < config.box_breakout_min_width_points
+         || !IsFinitePositive(config.box_breakout_buffer_atr_multiplier))
+        {
+         error = "箱体突破周期、窗口、ATR、触碰、往返、间隔或宽度设置无效。";
+         return false;
+        }
+     }
+
    string comment = config.order_comment;
    StringTrimLeft(comment);
    StringTrimRight(comment);
@@ -1648,6 +2189,17 @@ bool ValidateGuiConfig(const GuiConfig &config, string &error)
       || ParseTimeMinutes(config.end_time_3) < 0)
      {
       error = "All operation windows must use HH:MM within the server day.";
+      return false;
+     }
+   if(config.zigzag_depth <= 0 || config.zigzag_deviation <= 0
+      || config.zigzag_backstep <= 0
+      || config.zigzag_backstep >= config.zigzag_depth
+      || config.zigzag_min_points <= 0
+      || config.zigzag_max_points < config.zigzag_min_points
+      || !IsFinitePositive(config.zigzag_stop_percent)
+      || !IsFinitePositive(config.zigzag_take_profit_multiplier))
+     {
+      error = "ZigZag参数或距离范围设置无效。";
       return false;
      }
    return true;
@@ -1717,8 +2269,15 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
    if(magic_changed)
       ReleaseExecutionOwnership();
 
+   const double previous_box_config_fingerprint = g_gui_config_initialized
+      ? BoxBreakoutConfigFingerprint() : -1.0;
    g_gui_applied_config = config;
    g_gui_draft_config = config;
+   if(previous_box_config_fingerprint >= 0.0
+      && MathAbs(previous_box_config_fingerprint
+                 - BoxBreakoutConfigFingerprint()) > 0.5)
+      ClearBoxState();
+   EnsureBoxAtrHandle();
    g_start_operation_minutes[0] = ParseTimeMinutes(config.start_time);
    g_end_operation_minutes[0] = ParseTimeMinutes(config.end_time);
    g_start_operation_minutes[1] = ParseTimeMinutes(config.start_time_2);
@@ -1813,6 +2372,7 @@ bool ApplyGuiConfig(const GuiConfig &config, string &error)
       if(config.distance_mode == DISTANCE_CANDLE_RANGE
          && config.candle_enable_multiple == 1)
          MultiLoadGroups();
+   BasketRenewalLoad();
      }
    g_gui_has_unapplied_changes = false;
    g_gui_notice = "";
@@ -1831,9 +2391,31 @@ GuiConfig LoadConfigFromInputs()
    config.first_direction = 首单方向;
    config.first_direction_mode = 首单方向确定方式;
    config.bollinger_period = 布林带周期;
-   config.bollinger_deviation = 布林带标准差;
+    config.bollinger_deviation = 布林带标准差;
+    config.bollinger_stop_percent = 布林带止损百分比;
+    config.bollinger_reward_risk_ratio = 布林带盈亏比;
+    config.bollinger_min_stop_points = 布林带最小止损距离;
+    config.bollinger_max_stop_points = 布林带最大止损距离;
    config.cycle_mode = 循环模式;
    config.distance_mode = 距离模式;
+   config.box_range_time_mode = 箱体时间模式;
+   config.box_range_lookback_hours = 箱体回看小时数;
+   config.box_range_start_time = 箱体开始时间;
+   config.box_range_end_time = 箱体结束时间;
+   config.box_range_min_points = 箱体最小高度;
+   config.box_range_max_points = 箱体最大高度;
+   config.box_breakout_timeframe = 箱体识别周期;
+   config.box_breakout_lookback_bars = 箱体观察窗口K线数;
+   config.box_breakout_atr_period = 箱体ATR周期;
+   config.box_breakout_touch_atr_multiplier = 箱体触碰ATR倍数;
+   config.box_breakout_min_upper_touches = 箱体上沿最少触碰;
+   config.box_breakout_min_lower_touches = 箱体下沿最少触碰;
+   config.box_breakout_min_round_trips = 箱体最少完整往返;
+   config.box_breakout_min_touch_spacing_bars = 箱体同侧触碰间隔;
+   config.box_breakout_min_width_points = 箱体突破最小宽度;
+   config.box_breakout_max_width_points = 箱体突破最大宽度;
+   config.box_breakout_buffer_atr_multiplier = 箱体突破缓冲ATR倍数;
+
    config.order_type = 开单方式;
    config.candle_order_mode = K线开单模式;
    config.candle_enable_multiple = kline_enable_multiple;
@@ -1842,6 +2424,7 @@ GuiConfig LoadConfigFromInputs()
     config.initial_lots_multiplier = 首单手数倍数;
     config.first_order_lot_type = FirstOrderLotType;
      config.first_order_mult = FirstOrderMult;
+    config.stop_first_order_lots = 止损首单固定手数;
      config.favorable_grid_enable = FavorableGridEnable;
      config.dynamic_stop_loss_enable = DynamicStopLossEnable;
     config.max_reversals = 最大反手次数;
@@ -1854,6 +2437,13 @@ GuiConfig LoadConfigFromInputs()
    config.average_candle_count = 平均K线根数;
    config.average_stop_multiplier = 平均止损倍数;
    config.average_take_profit_multiplier = 平均止盈倍数;
+   config.zigzag_depth = ZigZag深度;
+   config.zigzag_deviation = ZigZag偏差;
+   config.zigzag_backstep = ZigZag回退;
+   config.zigzag_min_points = ZigZag距离最小值;
+   config.zigzag_max_points = ZigZag距离最大值;
+   config.zigzag_stop_percent = ZigZag止损百分比;
+   config.zigzag_take_profit_multiplier = ZigZag止盈倍数;
    config.magic_number = 订单识别编号;
    config.order_comment = 订单注释;
    config.start_time = 开始时间;
@@ -1880,31 +2470,53 @@ bool IsInitialEntryAllowed()
    return false;
   }
 
+bool IsInitialSpreadAllowed()
+  {
+   if(最大首单点差 < 0)
+      return false;
+   if(最大首单点差 == 0)
+      return true;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick) || _Point <= 0.0
+      || tick.bid <= 0.0 || tick.ask < tick.bid)
+      return false;
+   const double spread_points = MathCeil((tick.ask - tick.bid) / _Point);
+   return MathIsValidNumber(spread_points)
+          && spread_points <= (double)最大首单点差;
+  }
+
 int CycleLength(const int cycle_mode)
   {
    return cycle_mode == CYCLE_MODE_4 ? 7 : 6;
   }
 
-long SequenceDirection(const int index)
+long BasketSequenceDirection(const int first_direction, const int cycle_mode,
+                             const int index)
   {
-   const int cycle_length = CycleLength(g_active_cycle_mode);
+   const int cycle_length = CycleLength(cycle_mode);
    const int normalized_index = ((index % cycle_length) + cycle_length) % cycle_length;
    bool buy_direction = false;
-   if(g_active_cycle_mode == CYCLE_MODE_1)
+   if(cycle_mode == CYCLE_MODE_1)
       buy_direction = normalized_index == 0 || normalized_index == 3;
-   else if(g_active_cycle_mode == CYCLE_MODE_2)
+   else if(cycle_mode == CYCLE_MODE_2)
       buy_direction = normalized_index == 0 || normalized_index == 2
                       || normalized_index == 4 || normalized_index == 5;
-   else if(g_active_cycle_mode == CYCLE_MODE_3)
+   else if(cycle_mode == CYCLE_MODE_3)
       buy_direction = normalized_index == 0 || normalized_index == 2
                       || normalized_index == 3 || normalized_index == 5;
    else
       buy_direction = normalized_index == 0 || normalized_index == 3
                       || normalized_index == 4;
 
-   if(g_active_first_direction == FIRST_SELL)
+   if(first_direction == FIRST_SELL)
       buy_direction = !buy_direction;
    return buy_direction ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+  }
+
+long SequenceDirection(const int index)
+  {
+   return BasketSequenceDirection(g_active_first_direction,
+                                  g_active_cycle_mode, index);
   }
 
 int NextCycleIndex()
@@ -2034,10 +2646,59 @@ bool GetBollingerFirstDirection(long &first_direction)
    return true;
   }
 
+bool GetBollingerTouchDirection(long &first_direction)
+  {
+   if(g_gui_applied_config.bollinger_period <= 0
+      || !IsFinitePositive(g_gui_applied_config.bollinger_deviation))
+      return false;
+   const int handle = iBands(_Symbol, _Period,
+                             g_gui_applied_config.bollinger_period, 0,
+                             g_gui_applied_config.bollinger_deviation, PRICE_CLOSE);
+   if(handle == INVALID_HANDLE)
+      return false;
+   double upper[1];
+   double lower[1];
+   const int upper_copied = CopyBuffer(handle, 1, 0, 1, upper);
+   const int lower_copied = CopyBuffer(handle, 2, 0, 1, lower);
+   IndicatorRelease(handle);
+   if(upper_copied != 1 || lower_copied != 1
+      || !MathIsValidNumber(upper[0]) || !MathIsValidNumber(lower[0])
+      || upper[0] == EMPTY_VALUE || lower[0] == EMPTY_VALUE
+      || upper[0] <= lower[0] || _Point <= 0.0)
+      return false;
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0)
+      return false;
+   const double tolerance = _Point * 0.5;
+   if(tick.bid >= upper[0] - tolerance)
+     {
+      if(g_gui_applied_config.order_type == ORDERTYPE_FORWARD)
+         first_direction = ORDER_TYPE_BUY;
+      else if(g_gui_applied_config.order_type == ORDERTYPE_REVERSE)
+         first_direction = ORDER_TYPE_SELL;
+      else
+         return false;
+     }
+   else if(tick.bid <= lower[0] + tolerance)
+     {
+      if(g_gui_applied_config.order_type == ORDERTYPE_FORWARD)
+         first_direction = ORDER_TYPE_SELL;
+      else if(g_gui_applied_config.order_type == ORDERTYPE_REVERSE)
+         first_direction = ORDER_TYPE_BUY;
+      else
+         return false;
+     }
+   else
+      return false;
+   return true;
+  }
+
 bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
    if(g_gui_applied_config.bollinger_period <= 0
-      || g_gui_applied_config.bollinger_deviation <= 0.0)
+      || g_gui_applied_config.bollinger_deviation <= 0.0
+      || !IsFinitePositive(g_gui_applied_config.bollinger_stop_percent)
+      || !IsFinitePositive(g_gui_applied_config.bollinger_reward_risk_ratio))
       return false;
    const int handle = iBands(_Symbol, _Period,
                              g_gui_applied_config.bollinger_period, 0,
@@ -2054,13 +2715,147 @@ bool GetBollingerDistancePoints(int &stop_loss_points, int &take_profit_points)
       || upper[0] <= lower[0])
       return false;
    const double width_points = (upper[0] - lower[0]) / _Point;
-   stop_loss_points = (int)MathRound(width_points / 4.0);
-   take_profit_points = stop_loss_points;
+    const double distance = width_points * g_gui_applied_config.bollinger_stop_percent / 100.0;
+    if(!MathIsValidNumber(distance) || distance > 2147483647.0)
+       return false;
+    stop_loss_points = (int)MathRound(distance);
+    const double take_profit = stop_loss_points
+                               * g_gui_applied_config.bollinger_reward_risk_ratio;
+    if(!MathIsValidNumber(take_profit) || take_profit > 2147483647.0)
+       return false;
+    take_profit_points = (int)MathRound(take_profit);
+    return stop_loss_points >= g_gui_applied_config.bollinger_min_stop_points
+           && stop_loss_points <= g_gui_applied_config.bollinger_max_stop_points;
+  }
+
+bool GetZigZagDistancePoints(int &stop_loss_points, int &take_profit_points,
+                            double &breakout_high, double &breakout_low)
+  {
+   const GuiConfig config = g_gui_applied_config;
+   if(g_zigzag_handle != INVALID_HANDLE
+      && (g_zigzag_handle_depth != config.zigzag_depth
+          || g_zigzag_handle_deviation != config.zigzag_deviation
+          || g_zigzag_handle_backstep != config.zigzag_backstep))
+     {
+      IndicatorRelease(g_zigzag_handle);
+      g_zigzag_handle = INVALID_HANDLE;
+     }
+   if(g_zigzag_handle == INVALID_HANDLE)
+     {
+      g_zigzag_handle = iCustom(_Symbol, _Period, "Examples\\ZigZag",
+                                config.zigzag_depth, config.zigzag_deviation,
+                                config.zigzag_backstep);
+      if(g_zigzag_handle == INVALID_HANDLE)
+         return false;
+      g_zigzag_handle_depth = config.zigzag_depth;
+      g_zigzag_handle_deviation = config.zigzag_deviation;
+      g_zigzag_handle_backstep = config.zigzag_backstep;
+     }
+   const int bars = MathMin(iBars(_Symbol, _Period), 2000);
+   if(bars < 100)
+      return false;
+   double values[];
+   const int copied = CopyBuffer(g_zigzag_handle, 0, 0, bars, values);
+   if(copied != bars)
+      return false;
+   int found = 0;
+   double first = 0.0;
+   double second = 0.0;
+   int first_kind = 0;
+   int second_kind = 0;
+   // CopyBuffer 将最早的元素放在数组开头，shift=1 对应 copied-2。
+   for(int shift = 1; shift < copied && found < 5; shift++)
+     {
+      const double price = values[copied - 1 - shift];
+      if(!MathIsValidNumber(price) || price == EMPTY_VALUE || price <= 0.0)
+         continue;
+      const double high = iHigh(_Symbol, _Period, shift);
+      const double low = iLow(_Symbol, _Period, shift);
+      const int kind = MathAbs(price - high) <= _Point * 0.5 ? 1
+                       : (MathAbs(price - low) <= _Point * 0.5 ? -1 : 0);
+      if(kind == 0)
+         return false;
+      found++;
+      if(found == 4) { first = price; first_kind = kind; }
+      if(found == 5) { second = price; second_kind = kind; }
+     }
+   if(found < 5 || first_kind == second_kind
+      || (first_kind == 1 && first <= second)
+      || (first_kind == -1 && first >= second))
+      return false;
+   const double raw = MathAbs(first - second) / _Point;
+   if(!MathIsValidNumber(raw) || raw > 2147483647.0)
+      return false;
+   const int raw_points = (int)MathRound(raw);
+   if(raw_points < config.zigzag_min_points || raw_points > config.zigzag_max_points)
+      return false;
+   breakout_high = MathMax(first, second) + raw_points * _Point;
+   breakout_low = MathMin(first, second) - raw_points * _Point;
+   const double stop = raw_points * config.zigzag_stop_percent / 100.0;
+   if(!MathIsValidNumber(stop) || stop > 2147483647.0)
+      return false;
+   stop_loss_points = (int)MathRound(stop);
+   const double take_profit = stop_loss_points * config.zigzag_take_profit_multiplier;
+   if(!MathIsValidNumber(take_profit) || take_profit > 2147483647.0)
+      return false;
+   take_profit_points = (int)MathRound(take_profit);
    return stop_loss_points > 0 && take_profit_points > 0;
+  }
+
+bool GetZigZagBreakoutDirection(const double breakout_high,
+                                const double breakout_low,
+                                long &first_direction)
+  {
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(bid <= 0.0 || ask <= bid || _Point <= 0.0
+      || breakout_high <= breakout_low)
+      return false;
+   const double tolerance = _Point * 0.5;
+   if(bid >= breakout_high - tolerance)
+     {
+      first_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                        ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      return true;
+     }
+   if(ask <= breakout_low + tolerance)
+     {
+      first_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                        ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      return true;
+     }
+   return false;
+  }
+
+bool ZigZagBrokerDistanceValid(const int stop_points, const int take_profit_points)
+  {
+   MqlTick tick;
+   if(!SymbolInfoTick(_Symbol, tick) || tick.bid <= 0.0
+      || tick.ask <= tick.bid || _Point <= 0.0)
+      return false;
+   const int spread_points = (int)MathCeil((tick.ask - tick.bid) / _Point);
+   const long stop_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   const long freeze_level = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   const double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   const int tick_points = (int)MathCeil((tick_size > 0.0 ? tick_size : _Point) / _Point);
+   const long required_points = spread_points + MathMax(stop_level, freeze_level)
+                                + tick_points + 1;
+   return stop_points >= required_points && take_profit_points >= required_points;
   }
 
 bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
   {
+   if(g_gui_applied_config.distance_mode == DISTANCE_BOX_BREAKOUT)
+      return false;
+
+   if(g_gui_applied_config.distance_mode == DISTANCE_BOX_RANGE)
+     {
+      int box_points = 0;
+      if(!GetBoxRangePoints(box_points)) return false;
+      stop_loss_points = box_points;
+      take_profit_points = box_points;
+      return true;
+     }
    if(g_gui_applied_config.distance_mode == DISTANCE_FIXED)
      {
       stop_loss_points = g_gui_applied_config.stop_loss_distance_points;
@@ -2092,6 +2887,14 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
    if(g_gui_applied_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
       return GetBollingerDistancePoints(stop_loss_points, take_profit_points);
 
+   if(g_gui_applied_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+     {
+      double breakout_high = 0.0;
+      double breakout_low = 0.0;
+      return GetZigZagDistancePoints(stop_loss_points, take_profit_points,
+                                     breakout_high, breakout_low);
+     }
+
    double previous_high = 0.0;
    double previous_low = 0.0;
    int range_points = 0;
@@ -2100,6 +2903,371 @@ bool GetDistancePoints(int &stop_loss_points, int &take_profit_points)
 
    stop_loss_points = range_points;
    take_profit_points = range_points;
+   return true;
+  }
+
+ENUM_TIMEFRAMES BoxRecognitionTimeframe()
+  {
+   return g_gui_applied_config.box_breakout_timeframe == PERIOD_CURRENT
+          ? (ENUM_TIMEFRAMES)_Period : g_gui_applied_config.box_breakout_timeframe;
+  }
+
+bool EnsureBoxAtrHandle()
+  {
+   const ENUM_TIMEFRAMES timeframe = BoxRecognitionTimeframe();
+   const int period = g_gui_applied_config.box_breakout_atr_period;
+   if(g_box_atr_handle != INVALID_HANDLE
+      && g_box_atr_timeframe == timeframe && g_box_atr_period == period)
+      return true;
+   if(g_box_atr_handle != INVALID_HANDLE)
+      IndicatorRelease(g_box_atr_handle);
+   g_box_atr_handle = iATR(_Symbol, timeframe, period);
+   g_box_atr_timeframe = timeframe;
+   g_box_atr_period = period;
+   return g_box_atr_handle != INVALID_HANDLE;
+  }
+
+void ReleaseBoxAtrHandle()
+  {
+   if(g_box_atr_handle != INVALID_HANDLE)
+      IndicatorRelease(g_box_atr_handle);
+   g_box_atr_handle = INVALID_HANDLE;
+   g_box_atr_timeframe = PERIOD_CURRENT;
+   g_box_atr_period = 0;
+  }
+
+double BoxBreakoutConfigFingerprint()
+  {
+   const string config = IntegerToString((int)BoxRecognitionTimeframe()) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_lookback_bars) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_atr_period) + "|"
+      + DoubleToString(g_gui_applied_config.box_breakout_touch_atr_multiplier, 12) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_min_upper_touches) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_min_lower_touches) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_min_round_trips) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_min_touch_spacing_bars) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_min_width_points) + "|"
+      + IntegerToString(g_gui_applied_config.box_breakout_max_width_points) + "|"
+      + DoubleToString(g_gui_applied_config.box_breakout_buffer_atr_multiplier, 12) + "|"
+      + IntegerToString((int)g_gui_applied_config.order_type);
+   double hash = 1000003.0;
+   for(int index = 0; index < StringLen(config); index++)
+      hash = MathMod(hash * 257.0 + StringGetCharacter(config, index), 1000000007.0);
+   return hash;
+  }
+
+string BoxStatePrefix()
+  {
+   return StatePrefix() + ".box";
+  }
+
+void ClearBoxState()
+  {
+   ZeroMemory(g_box_state);
+   const string prefix = BoxStatePrefix();
+   string keys[14] = {"active", "upper", "lower", "width", "atr", "buffer",
+                      "confirm", "last", "upcount", "downcount", "age",
+                      "signal", "signalbar", "direction"};
+   for(int index = 0; index < ArraySize(keys); index++)
+      GlobalVariableDel(prefix + "." + keys[index]);
+   GlobalVariableDel(prefix + ".fingerprint");
+  }
+
+bool SaveBoxState()
+  {
+   const string prefix = BoxStatePrefix();
+   if(!g_box_state.valid)
+     {
+      ClearBoxState();
+      return true;
+     }
+   GlobalVariableSet(prefix + ".active", 0.0);
+   if(!GlobalVariableSet(prefix + ".upper", g_box_state.upper)
+      || !GlobalVariableSet(prefix + ".lower", g_box_state.lower)
+      || !GlobalVariableSet(prefix + ".width", g_box_state.width_points)
+      || !GlobalVariableSet(prefix + ".atr", g_box_state.atr)
+      || !GlobalVariableSet(prefix + ".buffer", g_box_state.breakout_buffer)
+      || !GlobalVariableSet(prefix + ".confirm", (double)g_box_state.confirmation_time)
+      || !GlobalVariableSet(prefix + ".last", (double)g_box_state.last_processed_time)
+      || !GlobalVariableSet(prefix + ".upcount", g_box_state.upper_breakout_count)
+      || !GlobalVariableSet(prefix + ".downcount", g_box_state.lower_breakout_count)
+      || !GlobalVariableSet(prefix + ".age", g_box_state.age_bars)
+      || !GlobalVariableSet(prefix + ".signal", (double)g_box_state.signal_id)
+      || !GlobalVariableSet(prefix + ".signalbar", (double)g_box_state.signal_bar_time)
+      || !GlobalVariableSet(prefix + ".direction", (double)g_box_state.signal_direction)
+      || !GlobalVariableSet(prefix + ".fingerprint", BoxBreakoutConfigFingerprint()))
+      return false;
+   return GlobalVariableSet(prefix + ".active", 1.0) != 0;
+  }
+
+bool LoadBoxState()
+  {
+   const string prefix = BoxStatePrefix();
+   if(!GlobalVariableCheck(prefix + ".active")
+      || GlobalVariableGet(prefix + ".active") < 0.5)
+      return false;
+   if(!GlobalVariableCheck(prefix + ".fingerprint")
+      || MathAbs(GlobalVariableGet(prefix + ".fingerprint")
+                 - BoxBreakoutConfigFingerprint()) > 0.5)
+     {
+      ClearBoxState();
+      return false;
+     }
+   string keys[13] = {"upper", "lower", "width", "atr", "buffer", "confirm",
+                      "last", "upcount", "downcount", "age", "signal",
+                      "signalbar", "direction"};
+   for(int index = 0; index < ArraySize(keys); index++)
+      if(!GlobalVariableCheck(prefix + "." + keys[index]))
+        {
+         ClearBoxState();
+         return false;
+        }
+   g_box_state.upper = GlobalVariableGet(prefix + ".upper");
+   g_box_state.lower = GlobalVariableGet(prefix + ".lower");
+   g_box_state.width_points = (int)MathRound(GlobalVariableGet(prefix + ".width"));
+   g_box_state.atr = GlobalVariableGet(prefix + ".atr");
+   g_box_state.breakout_buffer = GlobalVariableGet(prefix + ".buffer");
+   g_box_state.confirmation_time = (datetime)MathRound(GlobalVariableGet(prefix + ".confirm"));
+   g_box_state.last_processed_time = (datetime)MathRound(GlobalVariableGet(prefix + ".last"));
+   g_box_state.upper_breakout_count = (int)MathRound(GlobalVariableGet(prefix + ".upcount"));
+   g_box_state.lower_breakout_count = (int)MathRound(GlobalVariableGet(prefix + ".downcount"));
+   g_box_state.age_bars = (int)MathRound(GlobalVariableGet(prefix + ".age"));
+   g_box_state.signal_id = (long)MathRound(GlobalVariableGet(prefix + ".signal"));
+   g_box_state.signal_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".signalbar"));
+   g_box_state.signal_direction = (long)MathRound(GlobalVariableGet(prefix + ".direction"));
+   g_box_state.valid = g_box_state.upper > g_box_state.lower
+                       && g_box_state.width_points > 0 && g_box_state.atr > 0.0
+                       && g_box_state.breakout_buffer > 0.0
+                       && g_box_state.confirmation_time > 0
+                       && g_box_state.last_processed_time > 0
+                       && g_box_state.age_bars >= 0;
+   if(!g_box_state.valid)
+      ClearBoxState();
+   return g_box_state.valid;
+  }
+
+bool FindConfirmedBox()
+  {
+   if(!EnsureBoxAtrHandle())
+      return false;
+   const int count = g_gui_applied_config.box_breakout_lookback_bars;
+   MqlRates rates[];
+   double atr_values[];
+   ArraySetAsSeries(rates, true);
+   ArraySetAsSeries(atr_values, true);
+   if(CopyRates(_Symbol, BoxRecognitionTimeframe(), 1, count, rates) != count
+      || CopyBuffer(g_box_atr_handle, 0, 1, count, atr_values) != count)
+      return false;
+   double upper = -DBL_MAX;
+   double lower = DBL_MAX;
+   for(int index = 0; index < count; index++)
+     {
+      if(!MathIsValidNumber(rates[index].high) || !MathIsValidNumber(rates[index].low)
+         || rates[index].high <= rates[index].low)
+         return false;
+      upper = MathMax(upper, rates[index].high);
+      lower = MathMin(lower, rates[index].low);
+     }
+   const int width_points = (int)MathRound((upper - lower) / _Point);
+   if(width_points < g_gui_applied_config.box_breakout_min_width_points
+      || width_points > g_gui_applied_config.box_breakout_max_width_points)
+      return false;
+   int events[];
+   int last_upper_index = -1000000;
+   int last_lower_index = -1000000;
+   int upper_touches = 0;
+   int lower_touches = 0;
+   for(int index = count - 1; index >= 0; index--)
+     {
+      const double atr = atr_values[index];
+      if(!MathIsValidNumber(atr) || atr <= 0.0)
+         continue;
+      const double tolerance = atr * g_gui_applied_config.box_breakout_touch_atr_multiplier;
+      const bool upper_hit = upper - rates[index].high <= tolerance;
+      const bool lower_hit = rates[index].low - lower <= tolerance;
+      if(upper_hit && lower_hit)
+         continue;
+      const int bar_index = count - 1 - index;
+      const int side = upper_hit ? 1 : lower_hit ? -1 : 0;
+      if(side == 0)
+         continue;
+      if(side == 1)
+        {
+         if(bar_index - last_upper_index < g_gui_applied_config.box_breakout_min_touch_spacing_bars)
+            continue;
+         last_upper_index = bar_index;
+         upper_touches++;
+        }
+      else
+        {
+         if(bar_index - last_lower_index < g_gui_applied_config.box_breakout_min_touch_spacing_bars)
+            continue;
+         last_lower_index = bar_index;
+         lower_touches++;
+        }
+      const int size = ArraySize(events);
+      if(ArrayResize(events, size + 1) != size + 1)
+         return false;
+      events[size] = side;
+     }
+   int round_trips = 0;
+   for(int event = 2; event < ArraySize(events); )
+     {
+      if(events[event] == events[event - 2] && events[event] != events[event - 1])
+        {
+         round_trips++;
+         event += 2;
+        }
+      else
+         event++;
+     }
+   if(upper_touches < g_gui_applied_config.box_breakout_min_upper_touches
+      || lower_touches < g_gui_applied_config.box_breakout_min_lower_touches
+      || round_trips < g_gui_applied_config.box_breakout_min_round_trips)
+      return false;
+   if(!MathIsValidNumber(atr_values[0]) || atr_values[0] <= 0.0
+      || rates[0].time <= 0)
+      return false;
+   ZeroMemory(g_box_state);
+   g_box_state.valid = true;
+   g_box_state.upper = upper;
+   g_box_state.lower = lower;
+   g_box_state.width_points = width_points;
+   g_box_state.atr = atr_values[0];
+   g_box_state.breakout_buffer = atr_values[0]
+      * g_gui_applied_config.box_breakout_buffer_atr_multiplier;
+   g_box_state.confirmation_time = rates[0].time;
+   g_box_state.last_processed_time = rates[0].time;
+   return SaveBoxState();
+  }
+
+bool AdvanceBoxBreakout(long &direction, datetime &signal_time, long &signal_id)
+  {
+   direction = ORDER_TYPE_BUY;
+   signal_time = 0;
+   signal_id = 0;
+   if(!g_box_state.valid && !LoadBoxState() && !FindConfirmedBox())
+      return false;
+   const ENUM_TIMEFRAMES timeframe = BoxRecognitionTimeframe();
+   const int last_shift = iBarShift(_Symbol, timeframe, g_box_state.last_processed_time, true);
+   if(last_shift < 1 || iTime(_Symbol, timeframe, last_shift) != g_box_state.last_processed_time)
+     {
+      ClearBoxState();
+      return false;
+     }
+   if(g_box_state.age_bars + last_shift - 1
+      > g_gui_applied_config.box_breakout_lookback_bars)
+     {
+      ClearBoxState();
+      return false;
+     }
+   if(g_box_state.signal_id != 0)
+     {
+      direction = g_box_state.signal_direction;
+      signal_time = g_box_state.signal_bar_time;
+      signal_id = g_box_state.signal_id;
+      return true;
+     }
+   for(int shift = last_shift - 1; shift >= 1; shift--)
+     {
+      const datetime bar_time = iTime(_Symbol, timeframe, shift);
+      const double close = iClose(_Symbol, timeframe, shift);
+      if(bar_time <= 0 || !MathIsValidNumber(close) || close <= 0.0)
+         return false;
+      g_box_state.age_bars++;
+      if(close > g_box_state.upper + g_box_state.breakout_buffer)
+        {
+         g_box_state.upper_breakout_count++;
+         g_box_state.lower_breakout_count = 0;
+        }
+      else if(close < g_box_state.lower - g_box_state.breakout_buffer)
+        {
+         g_box_state.lower_breakout_count++;
+         g_box_state.upper_breakout_count = 0;
+        }
+      else
+        {
+         g_box_state.upper_breakout_count = 0;
+         g_box_state.lower_breakout_count = 0;
+        }
+      g_box_state.last_processed_time = bar_time;
+      if(g_box_state.upper_breakout_count >= 2 || g_box_state.lower_breakout_count >= 2)
+        {
+         const bool upper_break = g_box_state.upper_breakout_count >= 2;
+         const long signal = upper_break
+            ? (g_gui_applied_config.order_type == ORDERTYPE_FORWARD ? ORDER_TYPE_BUY : ORDER_TYPE_SELL)
+            : (g_gui_applied_config.order_type == ORDERTYPE_FORWARD ? ORDER_TYPE_SELL : ORDER_TYPE_BUY);
+         signal_time = bar_time;
+         signal_id = (long)signal_time * 1000
+                     + (long)(int)timeframe * 10
+                     + (signal == ORDER_TYPE_BUY ? 1 : 2);
+         direction = signal;
+         g_box_state.signal_id = signal_id;
+         g_box_state.signal_bar_time = signal_time;
+         g_box_state.signal_direction = direction;
+         if(!SaveBoxState())
+            return false;
+         return true;
+        }
+      if(g_box_state.age_bars >= g_gui_applied_config.box_breakout_lookback_bars)
+        {
+         ClearBoxState();
+         return false;
+        }
+     }
+   SaveBoxState();
+   return false;
+  }
+
+bool PrepareInitialSignal(const datetime bar_time, const long direction,
+                          const long explicit_signal_id = 0);
+bool MultiStartResolvedPair(const long direction, const int stop_points,
+                            const int take_profit_points, const double lots,
+                            const datetime signal_bar_time = 0,
+                            const long signal_id = 0);
+
+bool ManageBoxBreakoutEntry()
+  {
+   long direction = ORDER_TYPE_BUY;
+   datetime signal_time = 0;
+   long signal_id = 0;
+   if(!AdvanceBoxBreakout(direction, signal_time, signal_id))
+      return true;
+   if(!GuiAllowsInitialEntry() || !IsInitialEntryAllowed()
+      || !IsInitialSpreadAllowed())
+      return true;
+   if(HasOurPosition() || HasOurPending())
+      return true;
+   const int distance_points = g_box_state.width_points;
+   if(distance_points <= 0 || !SaveBoxState())
+      return true;
+   g_active_first_direction = direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+   g_active_cycle_mode = g_gui_applied_config.cycle_mode;
+   g_group_stop_points = distance_points;
+   g_group_take_profit_points = distance_points;
+   g_had_position = false;
+   g_cycle_index = 0;
+   g_pending_index = -1;
+   const double initial_lots = g_cumulative_loss_lots > 0.0
+      ? (g_gui_applied_config.first_order_lot_type == 1
+         ? VolumeNormalize(g_cumulative_loss_lots)
+         : NextGroupLotsAfterStop(g_group_first_lots))
+      : VolumeNormalize(g_gui_applied_config.initial_lots);
+   if(IsPairedBasketMode())
+     {
+      SaveState();
+      if(MultiStartResolvedPair(direction, distance_points, distance_points,
+                                initial_lots, signal_time, signal_id)
+         && MultiHasActiveGroups())
+         ClearBoxState();
+      return true;
+     }
+   if(!PrepareInitialSignal(signal_time, direction, signal_id))
+      return true;
+   SaveState();
+   if(!OpenMarket(direction, initial_lots))
+      return true;
+   SaveState();
    return true;
   }
 
@@ -2132,6 +3300,10 @@ bool GetActiveDistancePoints(const double stop_loss, const double take_profit,
       take_profit_points = g_group_take_profit_points;
       return true;
      }
+   if(g_gui_applied_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+      return false;
+   if(g_gui_applied_config.distance_mode == DISTANCE_BOX_RANGE)
+      return false;
    if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
       && stop_loss > 0.0 && take_profit > 0.0)
      {
@@ -2442,6 +3614,8 @@ void ResetInitialPendingTracking()
   {
    g_initial_high_ticket = 0;
    g_initial_low_ticket = 0;
+   g_initial_pair_incomplete = false;
+   g_initial_pair_volume = 0.0;
    g_initial_high_price = 0.0;
    g_initial_low_price = 0.0;
    g_initial_high_direction = ORDER_TYPE_BUY;
@@ -2631,11 +3805,12 @@ bool HasOurPending()
 
 void BeginFullReset(const string reason)
   {
+   const bool renewal_cleanup=BasketRenewalResetRequiresDeferral();
    Print(reason);
    g_gui_run_state = GUI_RUN_CLEANING;
    g_gui_notice = "清理中";
    GuiMarkDirty();
-   MultiClearAll();
+   if(renewal_cleanup) BasketRenewalDeferReset(); else MultiClearAll();
    g_reset_pending = true;
    g_had_position = false;
    g_last_position_type = POSITION_TYPE_BUY;
@@ -2663,7 +3838,7 @@ void BeginFullReset(const string reason)
     g_favorable_grid_pending_price = 0.0;
     SaveState();
    DeleteAllPending();
-   if(CloseAllOurPositions() && !HasOurPending())
+   if(CloseAllOurPositions() && !HasOurPending() && !renewal_cleanup && BasketRenewalResetReady())
       ClearState();
   }
 
@@ -2682,6 +3857,7 @@ bool ProcessReset()
    DeleteAllPending();
    if(!CloseAllOurPositions() || HasOurPosition() || HasOurPending())
       return false;
+   if(!BasketRenewalResetReady()) return false;
    ClearState();
    return true;
   }
@@ -2738,16 +3914,17 @@ void RegisterProtectionFailure(const uint retcode, const string reason)
                        0.0, 0.0, 0.0, reason);
   }
 
-double GroupStopPrice(const long type)
+double BasketStopPrice(const long type, const double anchor_price,
+                       const int stop_points, const long favorable_grid_mask)
   {
    double stop_loss = type == POSITION_TYPE_BUY
-                      ? g_group_anchor_price - g_group_stop_points * _Point
-                      : g_group_anchor_price + g_group_stop_points * _Point;
+                      ? anchor_price - stop_points * _Point
+                      : anchor_price + stop_points * _Point;
    if(g_gui_applied_config.dynamic_stop_loss_enable == 1
       && g_gui_applied_config.grid_count >= 2)
      {
-      const int level = HighestFavorableGridLevel(g_favorable_grid_filled_mask);
-      const double grid_spacing = g_group_stop_points * _Point
+      const int level = HighestFavorableGridLevel(favorable_grid_mask);
+      const double grid_spacing = stop_points * _Point
                                   / g_gui_applied_config.grid_count;
       if(type == POSITION_TYPE_BUY)
          stop_loss += level * grid_spacing;
@@ -2757,16 +3934,31 @@ double GroupStopPrice(const long type)
    return PriceNormalize(stop_loss);
   }
 
+double GroupStopPrice(const long type)
+  {
+   return BasketStopPrice(type, g_group_anchor_price, g_group_stop_points,
+                          g_favorable_grid_filled_mask);
+  }
+
+double BasketTakeProfitPrice(const long type, const double last_entry,
+                             const double linear_extreme,
+                             const int take_profit_points)
+  {
+   double reference_price = last_entry;
+   if(g_gui_applied_config.take_profit_mode == TAKE_PROFIT_LINEAR
+      && linear_extreme > 0.0)
+      reference_price = linear_extreme;
+   if(type == POSITION_TYPE_BUY)
+      return PriceNormalize(reference_price + take_profit_points * _Point);
+   return PriceNormalize(reference_price - take_profit_points * _Point);
+  }
+
 double GroupTakeProfitPrice(const long type)
   {
-   double reference_price = g_group_last_entry;
-   if(g_gui_applied_config.take_profit_mode == TAKE_PROFIT_LINEAR
-      && g_group_linear_extreme > 0.0)
-      reference_price = g_group_linear_extreme;
-   if(type == POSITION_TYPE_BUY)
-      return PriceNormalize(reference_price + g_group_take_profit_points * _Point);
-   return PriceNormalize(reference_price - g_group_take_profit_points * _Point);
-   }
+   return BasketTakeProfitPrice(type, g_group_last_entry,
+                                g_group_linear_extreme,
+                                g_group_take_profit_points);
+  }
 
 bool SetGroupStops(const long type)
   {
@@ -2986,6 +4178,8 @@ bool OpenMarket(const long order_type, const double requested_volume)
 
 double NextGroupLotsRaw(const double fallback_volume)
    {
+    if(g_gui_applied_config.first_order_lot_type == 3)
+       return g_gui_applied_config.stop_first_order_lots;
     if(g_gui_applied_config.first_order_lot_type == 2)
       {
        const double base = g_group_first_lots > 0.0
@@ -3005,17 +4199,27 @@ double NextGroupLots(const double fallback_volume)
     return VolumeNormalize(NextGroupLotsRaw(fallback_volume));
    }
 
-double NextGroupLotsAfterStopRaw(const double fallback_volume)
+double BasketNextGroupLotsAfterStopRaw(const double cumulative_loss_lots,
+                                       const double first_lots,
+                                       const double fallback_volume)
    {
+    if(g_gui_applied_config.first_order_lot_type == 3)
+       return g_gui_applied_config.stop_first_order_lots;
     if(g_gui_applied_config.first_order_lot_type == 2)
       {
-       const double base = g_group_first_lots > 0.0
-                           ? g_group_first_lots : fallback_volume;
+       const double base = first_lots > 0.0 ? first_lots : fallback_volume;
        return base * g_gui_applied_config.first_order_mult;
       }
-    const double requested = g_cumulative_loss_lots > 0.0
-                             ? g_cumulative_loss_lots : fallback_volume;
+    const double requested = cumulative_loss_lots > 0.0
+                             ? cumulative_loss_lots : fallback_volume;
     return requested * g_gui_applied_config.initial_lots_multiplier;
+   }
+
+double NextGroupLotsAfterStopRaw(const double fallback_volume)
+   {
+    return BasketNextGroupLotsAfterStopRaw(g_cumulative_loss_lots,
+                                           g_group_first_lots,
+                                           fallback_volume);
    }
 
 double NextGroupLotsAfterStop(const double fallback_volume)
@@ -3028,6 +4232,8 @@ bool PlaceInitialPendingOrder(const long direction, const double entry,
                               const string comment, ulong &ticket)
   {
    ticket = 0;
+   if(!IsInitialSpreadAllowed())
+      return false;
    const long pending_type = PendingTypeForDirection(direction, entry);
    const double normalized_entry = PriceNormalize(entry);
    double stop_loss = 0.0;
@@ -3073,7 +4279,7 @@ bool PlaceInitialPendingPair(const double previous_high, const double previous_l
                              const int range_points, const double volume)
   {
    if(g_initial_high_ticket > 0 || g_initial_low_ticket > 0
-      || range_points <= 0 || volume <= 0.0)
+      || range_points <= 0 || volume <= 0.0 || !IsInitialSpreadAllowed())
       return false;
    const long high_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
                                ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
@@ -3089,7 +4295,23 @@ bool PlaceInitialPendingPair(const double previous_high, const double previous_l
                                 g_gui_applied_config.order_comment + ".InitialLow",
                                 low_ticket))
      {
-      DeletePendingTicket(high_ticket, "Initial pending rollback");
+      if(!DeletePendingTicket(high_ticket, "Initial pending rollback"))
+        {
+         g_initial_high_ticket = high_ticket;
+         g_initial_low_ticket = 0;
+         g_initial_high_price = PriceNormalize(previous_high);
+         g_initial_low_price = PriceNormalize(previous_low);
+         g_initial_high_direction = high_direction;
+         g_initial_low_direction = low_direction;
+         g_initial_pair_incomplete = true;
+         g_initial_pair_volume = volume;
+         g_group_stop_points = range_points;
+         g_group_take_profit_points = range_points;
+         SaveState();
+         PrintFormat("[PAIR_STATUS=INCOMPLETE_OCO][GROUP=single][FIRST_PENDING=%I64u][REASON=ROLLBACK_CANCEL_FAILED]",
+                     high_ticket);
+         return true;
+        }
       return false;
      }
    g_initial_high_ticket = high_ticket;
@@ -3098,6 +4320,8 @@ bool PlaceInitialPendingPair(const double previous_high, const double previous_l
    g_initial_low_price = PriceNormalize(previous_low);
    g_initial_high_direction = high_direction;
    g_initial_low_direction = low_direction;
+   g_initial_pair_incomplete = false;
+   g_initial_pair_volume = volume;
    g_group_stop_points = range_points;
    g_group_take_profit_points = range_points;
    SaveState();
@@ -3126,14 +4350,66 @@ int InitialPendingStatus(const ulong ticket)
    return REVERSE_PENDING_UNKNOWN;
   }
 
+bool CancelInitialPendingPairIfSpreadTooHigh()
+  {
+   if(IsInitialSpreadAllowed())
+      return false;
+   bool deletion_failed = false;
+   for(int index = OrdersTotal() - 1; index >= 0; index--)
+     {
+      const ulong candidate = OrderGetTicket(index);
+      if(candidate == 0 || OrderGetString(ORDER_SYMBOL) != _Symbol
+         || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+         || !IsReversePendingType(OrderGetInteger(ORDER_TYPE))
+         || !IsInitialPendingComment(OrderGetString(ORDER_COMMENT)))
+         continue;
+      if(!DeletePendingTicket(candidate, "Wide-spread initial pending cancellation"))
+         deletion_failed = true;
+     }
+   return deletion_failed;
+  }
+
 bool HandleInitialPendingFill()
   {
    // The two initial orders form one OCO pair: once either side fills,
    // cancel the still-active opposite order before managing the position.
    if(g_initial_high_ticket == 0 && g_initial_low_ticket == 0)
       return false;
-   const int high_status = InitialPendingStatus(g_initial_high_ticket);
-   const int low_status = InitialPendingStatus(g_initial_low_ticket);
+   int high_status = InitialPendingStatus(g_initial_high_ticket);
+   int low_status = InitialPendingStatus(g_initial_low_ticket);
+   if(g_initial_pair_incomplete && g_initial_high_ticket > 0
+      && g_initial_low_ticket == 0)
+     {
+      if(high_status == REVERSE_PENDING_ACTIVE)
+        {
+         if(!DeletePendingTicket(g_initial_high_ticket,
+                                 "Incomplete initial OCO rollback"))
+            return true;
+         high_status = InitialPendingStatus(g_initial_high_ticket);
+        }
+      if(high_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(high_status == REVERSE_PENDING_FILLED)
+        {
+         g_initial_pair_incomplete = false;
+         low_status = REVERSE_PENDING_CANCELED;
+        }
+      else
+        {
+         const double retry_high = g_initial_high_price;
+         const double retry_low = g_initial_low_price;
+         const double retry_volume = g_initial_pair_volume;
+         const int retry_range = g_group_stop_points;
+         g_initial_high_ticket = 0;
+         g_initial_low_ticket = 0;
+         g_initial_pair_incomplete = false;
+         g_initial_pair_volume = 0.0;
+         if(GuiAllowsInitialEntry() && IsInitialEntryAllowed())
+            PlaceInitialPendingPair(retry_high, retry_low, retry_range, retry_volume);
+         SaveState();
+         return true;
+        }
+     }
    const bool high_filled = high_status == REVERSE_PENDING_FILLED;
    const bool low_filled = low_status == REVERSE_PENDING_FILLED;
    if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
@@ -3309,28 +4585,29 @@ bool PastLastTakeProfit()
                                                     : ask <= g_last_take_profit;
   }
 
+double BasketGridPrice(const double anchor_price, const int stop_points,
+                       const long position_type, const int level,
+                       const bool favorable)
+  {
+   if(g_gui_applied_config.grid_count <= 0 || stop_points <= 0
+      || anchor_price <= 0.0)
+      return 0.0;
+   const double distance = stop_points * _Point * level
+                           / g_gui_applied_config.grid_count;
+   const bool move_with_price = (position_type == POSITION_TYPE_BUY) == favorable;
+   return PriceNormalize(anchor_price + (move_with_price ? distance : -distance));
+  }
+
 double GridLevelPrice(const long position_type, const int level)
   {
-   if(g_gui_applied_config.grid_count <= 0 || g_group_stop_points <= 0
-      || g_group_anchor_price <= 0.0)
-      return 0.0;
-   const double distance = g_group_stop_points * _Point * level
-                           / g_gui_applied_config.grid_count;
-   if(position_type == POSITION_TYPE_BUY)
-      return PriceNormalize(g_group_anchor_price - distance);
-   return PriceNormalize(g_group_anchor_price + distance);
+   return BasketGridPrice(g_group_anchor_price, g_group_stop_points,
+                          position_type, level, false);
   }
 
 double FavorableGridLevelPrice(const long position_type, const int level)
   {
-   if(g_gui_applied_config.grid_count <= 0 || g_group_stop_points <= 0
-      || g_group_anchor_price <= 0.0)
-      return 0.0;
-   const double distance = g_group_stop_points * _Point * level
-                           / g_gui_applied_config.grid_count;
-   if(position_type == POSITION_TYPE_BUY)
-      return PriceNormalize(g_group_anchor_price + distance);
-   return PriceNormalize(g_group_anchor_price - distance);
+   return BasketGridPrice(g_group_anchor_price, g_group_stop_points,
+                          position_type, level, true);
   }
 
 long GridLevelBit(const int level)
@@ -3723,9 +5000,11 @@ bool RecoverDuplicateSingleGroupExposure()
    return false;
   }
 
-bool PrepareInitialSignal(const datetime bar_time, const long direction)
+bool PrepareInitialSignal(const datetime bar_time, const long direction,
+                          const long explicit_signal_id)
   {
-   const long signal_id = BuildSignalId(bar_time, direction);
+   const long signal_id = explicit_signal_id > 0
+                          ? explicit_signal_id : BuildSignalId(bar_time, direction);
    if(g_signal_consumed && g_signal_id == signal_id
       && g_signal_bar_time == bar_time && g_signal_direction == direction)
      {
@@ -4266,6 +5545,15 @@ void MarkCandleEntryBarProcessed(const datetime current_bar_time)
    GlobalVariableSet(StatePrefix() + ".candleentrybar", (double)g_last_candle_entry_bar_time);
   }
 
+bool MultiStartResolvedPair(const long direction, const int stop_points,
+                            const int take_profit_points, const double lots,
+                            const datetime signal_bar_time,
+                            const long signal_id);
+
+bool MultiStartCandleOcoPair(const double high, const double low,
+                             const int range_points, const double lots);
+bool MultiHasActiveGroups();
+
 void Manage()
   {
    if(GuiProcessPendingReset())
@@ -4322,6 +5610,8 @@ void Manage()
       && !PrepareCandleOnceEntry(current_bar_time))
       return;
 
+   if(CancelInitialPendingPairIfSpreadTooHigh())
+      return;
    if(HandleInitialPendingFill())
       return;
 
@@ -4346,6 +5636,9 @@ void Manage()
                                              entry, stop_loss, take_profit);
    if(has_position)
      {
+      if(g_gui_applied_config.distance_mode == DISTANCE_BOX_BREAKOUT
+         && g_group_stop_points > 0 && g_group_take_profit_points > 0)
+         ClearBoxState();
       const double previous_group_total_lots = g_group_total_lots;
       const double previous_grid_lots = g_grid_lots;
       ulong state_pending_ticket = 0;
@@ -4551,9 +5844,16 @@ void Manage()
       ReconcileOrphanSingleGroupPending();
       return;
      }
+   if(g_gui_applied_config.distance_mode == DISTANCE_BOX_BREAKOUT)
+     {
+      ManageBoxBreakoutEntry();
+      return;
+     }
    if(!GuiAllowsInitialEntry())
       return;
    if(!IsInitialEntryAllowed())
+      return;
+   if(!IsInitialSpreadAllowed())
       return;
    if(candle_once_mode)
      {
@@ -4569,11 +5869,14 @@ void Manage()
          return;
         }
        const double initial_lots = g_cumulative_loss_lots > 0.0
-                                   ? (g_gui_applied_config.first_order_lot_type == 2
-                                      ? NextGroupLotsAfterStop(g_group_first_lots)
-                                      : VolumeNormalize(g_cumulative_loss_lots))
+                                   ? (g_gui_applied_config.first_order_lot_type == 1
+                                      ? VolumeNormalize(g_cumulative_loss_lots)
+                                      : NextGroupLotsAfterStop(g_group_first_lots))
                                    : VolumeNormalize(g_gui_applied_config.initial_lots);
-      if(PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots))
+      const bool pair_placed = IsPairedBasketMode()
+         ? MultiStartCandleOcoPair(previous_high, previous_low, range_points, initial_lots)
+         : PlaceInitialPendingPair(previous_high, previous_low, range_points, initial_lots);
+      if(pair_placed)
          MarkCandleEntryBarProcessed(current_bar_time);
       return;
      }
@@ -4605,28 +5908,65 @@ void Manage()
      }
    else
      {
-      if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_BOLLINGER
-         && !GetBollingerFirstDirection(first_direction))
-         return;
-      if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_PRESET)
-         first_direction = g_gui_applied_config.first_direction == FIRST_SELL
-                           ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      if(g_gui_applied_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+        {
+         double breakout_high = 0.0;
+         double breakout_low = 0.0;
+         if(!GetZigZagDistancePoints(initial_stop_points, initial_take_profit_points,
+                                     breakout_high, breakout_low)
+            || !GetZigZagBreakoutDirection(breakout_high, breakout_low,
+                                           first_direction))
+            return;
+        }
+      else if(g_gui_applied_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+        {
+         if(!GetBollingerTouchDirection(first_direction))
+            return;
+        }
+      else
+        {
+         if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_BOLLINGER
+            && !GetBollingerFirstDirection(first_direction))
+            return;
+         if(g_gui_applied_config.first_direction_mode == FIRST_DIRECTION_PRESET)
+            first_direction = g_gui_applied_config.first_direction == FIRST_SELL
+                              ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+        }
       g_active_first_direction = first_direction == ORDER_TYPE_BUY
                                  ? FIRST_BUY : FIRST_SELL;
       g_active_cycle_mode = g_gui_applied_config.cycle_mode;
-      if(!GetDistancePoints(initial_stop_points, initial_take_profit_points))
+      if(g_gui_applied_config.distance_mode != DISTANCE_ZIGZAG_RANGE
+         && !GetDistancePoints(initial_stop_points, initial_take_profit_points))
          return;
      }
+   if(g_gui_applied_config.distance_mode == DISTANCE_ZIGZAG_RANGE
+      && !ZigZagBrokerDistanceValid(initial_stop_points, initial_take_profit_points))
+      return;
    g_had_position = false;
    g_cycle_index = 0;
    g_pending_index = -1;
    g_group_stop_points = initial_stop_points;
    g_group_take_profit_points = initial_take_profit_points;
     const double initial_lots = g_cumulative_loss_lots > 0.0
-                                ? (g_gui_applied_config.first_order_lot_type == 2
-                                   ? NextGroupLotsAfterStop(g_group_first_lots)
-                                   : VolumeNormalize(g_cumulative_loss_lots))
+                                ? (g_gui_applied_config.first_order_lot_type == 1
+                                   ? VolumeNormalize(g_cumulative_loss_lots)
+                                   : NextGroupLotsAfterStop(g_group_first_lots))
                                 : VolumeNormalize(g_gui_applied_config.initial_lots);
+   if(IsPairedBasketMode())
+     {
+      if(MultiStartResolvedPair(first_direction, initial_stop_points,
+                                initial_take_profit_points, initial_lots))
+        {
+         if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
+            && g_gui_applied_config.candle_order_mode == KORDER_ONCE_PER_BAR)
+           {
+            const datetime pair_entry_bar = iTime(_Symbol, _Period, 0);
+            if(pair_entry_bar > 0)
+               g_last_candle_entry_bar_time = pair_entry_bar;
+           }
+        }
+      return;
+     }
    if(!PrepareInitialSignal(iTime(_Symbol, _Period, 0), first_direction))
       return;
    if(OpenMarket(first_direction, initial_lots))
@@ -4665,9 +6005,21 @@ void Manage()
 
 struct MultiGroupState
   {
+   int      basket_mode_at_start;
+   int      basket_family_id;
+   int      stop_event_sequence;
+   int      renewal_request_state;
+   ulong    renewal_deal_cursor;
+   int      renewal_request_direction;
+   double   renewal_request_volume_before;
    int      id;
    bool     active;
    bool     dirty;
+   int      pair_role;
+   bool     dual_basket_member;
+   int      pair_peer_id;
+   int      pair_failure_retcode;
+   bool     initial_pair_incomplete;
    int      first_direction;
    int      cycle_mode;
    int      cycle_index;
@@ -4678,6 +6030,7 @@ struct MultiGroupState
    ulong    initial_low_ticket;
    double   initial_high_price;
    double   initial_low_price;
+   double   initial_pending_lots;
    long     initial_high_direction;
    long     initial_low_direction;
    ulong    grid_pending_ticket;
@@ -4717,9 +6070,13 @@ struct MultiGroupState
 
 MultiGroupState g_multi_groups[];
 datetime g_multi_last_trigger_bar = 0;
+datetime g_multi_pair_failure_log_time = 0;
 int g_multi_next_id = 1;
 ulong g_multi_grid_order_tickets[];
 ulong g_multi_favorable_grid_order_tickets[];
+
+
+#include "NoMatterRiseFall_BasketRenewal.mqh"
 
 int MultiGridTicketCacheIndex(const int group_id, const int level)
   {
@@ -4818,25 +6175,42 @@ string MultiGroupTag(const int group_id)
 
 string MultiGroupComment(const int group_id, const bool grid)
   {
-   return g_gui_applied_config.order_comment + MultiGroupTag(group_id)
+   return MultiGroupTag(group_id) + "."
+          + g_gui_applied_config.order_comment
           + (grid ? ".Grid" : "");
   }
 
 string MultiInitialPendingComment(const int group_id, const bool high)
   {
-   return g_gui_applied_config.order_comment + MultiGroupTag(group_id)
-          + (high ? ".InitialHigh" : ".InitialLow");
+   return MultiGroupTag(group_id)
+          + (high ? ".InitialHigh." : ".InitialLow.")
+          + g_gui_applied_config.order_comment;
   }
 
 string MultiStatePrefix(const int group_id)
   {
+   const string compact=R3GroupPrefix(group_id);
+   if(GlobalVariableCheck(compact+".bmode") && GlobalVariableGet(compact+".bmode")==3) return compact;
+   const int renewal_index=R3GroupIndex(group_id);
+   if(renewal_index>=0 && g_multi_groups[renewal_index].basket_mode_at_start==3) return compact;
+
    return StatePrefix() + ".multi." + IntegerToString(group_id);
   }
 
 void MultiDeleteState(const int group_id)
   {
    const string prefix = MultiStatePrefix(group_id);
+   GlobalVariableDel(prefix + ".bmode");
+   GlobalVariableDel(prefix + ".bfam");
+   GlobalVariableDel(prefix + ".stopseq");
+   GlobalVariableDel(prefix + ".rrs");
+   GlobalVariableDel(prefix + ".rhi");
+   GlobalVariableDel(prefix + ".rlo");
+   GlobalVariableDel(prefix + ".rrd");
+   GlobalVariableDel(prefix + ".rrv");
+   GlobalVariableDel(prefix + ".rrcommit");
    GlobalVariableDel(prefix + ".active");
+   GlobalVariableDel(prefix + ".dualbasket");
    GlobalVariableDel(prefix + ".first");
    GlobalVariableDel(prefix + ".mode");
    GlobalVariableDel(prefix + ".index");
@@ -4874,7 +6248,32 @@ void MultiDeleteState(const int group_id)
 
 bool MultiCommentMatches(const string comment, const int group_id)
   {
-   return StringFind(comment, MultiGroupTag(group_id)) >= 0;
+   if(group_id <= 0)
+      return false;
+   const string tag = MultiGroupTag(group_id);
+   const int tag_length = StringLen(tag);
+   const int comment_length = StringLen(comment);
+   if(StringSubstr(comment, 0, tag_length) == tag)
+     {
+      if(comment_length == tag_length)
+         return true;
+      const ushort next_character = StringGetCharacter(comment, tag_length);
+      if(next_character < '0' || next_character > '9')
+         return true;
+      const string legacy_prefix = tag + g_gui_applied_config.order_comment;
+      return StringLen(g_gui_applied_config.order_comment) > 0
+             && StringSubstr(comment, 0, StringLen(legacy_prefix))
+                == legacy_prefix;
+     }
+
+   // Older grid comments put the configured comment before the group tag.
+   // Match only that exact legacy layout and its explicit ".Grid." delimiter.
+   const string legacy_grid_tag = tag + ".Grid.";
+   const int legacy_grid_position = StringFind(comment, legacy_grid_tag);
+   const int user_comment_length = StringLen(g_gui_applied_config.order_comment);
+   return legacy_grid_position == user_comment_length
+          && StringSubstr(comment, 0, user_comment_length)
+             == g_gui_applied_config.order_comment;
   }
 
 bool MultiIsInitialPendingComment(const string comment)
@@ -4894,8 +6293,20 @@ int MultiFindGroupIndex(const int group_id)
 void MultiResetState(MultiGroupState &group, const int group_id)
   {
    group.id = group_id;
+   group.basket_mode_at_start = 0;
+   group.basket_family_id = 0;
+   group.stop_event_sequence = 0;
+   group.renewal_request_state = 0;
+   group.renewal_deal_cursor = 0;
+   group.renewal_request_direction = -1;
+   group.renewal_request_volume_before = 0;
    group.active = true;
    group.dirty = true;
+   group.pair_role = 0;
+   group.dual_basket_member = false;
+   group.pair_peer_id = 0;
+   group.pair_failure_retcode = 0;
+   group.initial_pair_incomplete = false;
    group.first_direction = FIRST_BUY;
    group.cycle_mode = CYCLE_MODE_1;
    group.cycle_index = 0;
@@ -4906,6 +6317,7 @@ void MultiResetState(MultiGroupState &group, const int group_id)
    group.initial_low_ticket = 0;
    group.initial_high_price = 0.0;
    group.initial_low_price = 0.0;
+   group.initial_pending_lots = 0.0;
    group.initial_high_direction = ORDER_TYPE_BUY;
    group.initial_low_direction = ORDER_TYPE_SELL;
    group.grid_pending_ticket = 0;
@@ -4945,11 +6357,13 @@ void MultiResetState(MultiGroupState &group, const int group_id)
 
 void MultiClearAll()
   {
+   if(BasketRenewalDeferReset()) return;
+   BasketRenewalCancelAll();
    for(int id = 1; id < g_multi_next_id; id++)
       MultiDeleteState(id);
    ArrayResize(g_multi_groups, 0);
    g_multi_last_trigger_bar = 0;
-   g_multi_next_id = 1;
+   g_multi_next_id = g_basket_next_id_floor;
    GlobalVariableDel(StatePrefix() + ".multi.nextid");
    GlobalVariableDel(StatePrefix() + ".multi.lasttriggerbar");
    GlobalVariableDel(StatePrefix() + ".configfingerprint");
@@ -4962,6 +6376,8 @@ void MultiClearAll()
 void MultiRemoveGroup(const int index)
   {
    if(index < 0 || index >= ArraySize(g_multi_groups))
+      return;
+   if(!BasketRenewalRecordFinished(g_multi_groups[index]))
       return;
    MultiDeleteState(g_multi_groups[index].id);
    const int last = ArraySize(g_multi_groups) - 1;
@@ -5161,7 +6577,19 @@ int MultiGridFilledLevelCount(const MultiGroupState &group)
 bool MultiStateChanged(const MultiGroupState &before,
                        const MultiGroupState &after)
   {
-   return before.active != after.active
+   return before.basket_mode_at_start != after.basket_mode_at_start
+          || before.basket_family_id != after.basket_family_id
+          || before.stop_event_sequence != after.stop_event_sequence
+          || before.renewal_request_state != after.renewal_request_state
+          || before.renewal_deal_cursor != after.renewal_deal_cursor
+          || before.renewal_request_direction != after.renewal_request_direction
+          || before.renewal_request_volume_before != after.renewal_request_volume_before
+          || before.active != after.active
+          || before.pair_role != after.pair_role
+          || before.dual_basket_member != after.dual_basket_member
+          || before.pair_peer_id != after.pair_peer_id
+          || before.pair_failure_retcode != after.pair_failure_retcode
+          || before.initial_pair_incomplete != after.initial_pair_incomplete
           || before.first_direction != after.first_direction
           || before.cycle_mode != after.cycle_mode
           || before.cycle_index != after.cycle_index
@@ -5172,6 +6600,7 @@ bool MultiStateChanged(const MultiGroupState &before,
           || before.initial_low_ticket != after.initial_low_ticket
           || before.initial_high_price != after.initial_high_price
           || before.initial_low_price != after.initial_low_price
+          || before.initial_pending_lots != after.initial_pending_lots
           || before.initial_high_direction != after.initial_high_direction
           || before.initial_low_direction != after.initial_low_direction
           || before.grid_pending_ticket != after.grid_pending_ticket
@@ -5214,7 +6643,21 @@ void MultiSaveGroup(MultiGroupState &group)
    if(!group.dirty)
       return;
    const string prefix = MultiStatePrefix(group.id);
+   if(group.basket_mode_at_start==3) R3Put(R3Prefix()+".next",g_multi_next_id);
+   GlobalVariableSet(prefix + ".bmode", group.basket_mode_at_start);
+   GlobalVariableSet(prefix + ".bfam", group.basket_family_id);
+   GlobalVariableSet(prefix + ".stopseq", group.stop_event_sequence);
+   GlobalVariableSet(prefix + ".rrs", group.renewal_request_state);
+   GlobalVariableSet(prefix + ".rhi", (double)(group.renewal_deal_cursor >> 32));
+   GlobalVariableSet(prefix + ".rlo", (double)(group.renewal_deal_cursor & (ulong)0xFFFFFFFF));
+   GlobalVariableSet(prefix + ".rrd", group.renewal_request_direction);
+   GlobalVariableSet(prefix + ".rrv", group.renewal_request_volume_before);
    GlobalVariableSet(prefix + ".active", group.active ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".dualbasket", group.dual_basket_member ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".pairrole", (double)group.pair_role);
+   GlobalVariableSet(prefix + ".pairpeer", (double)group.pair_peer_id);
+   GlobalVariableSet(prefix + ".pairretcode", (double)group.pair_failure_retcode);
+   GlobalVariableSet(prefix + ".pairincomplete", group.initial_pair_incomplete ? 1.0 : 0.0);
    GlobalVariableSet(prefix + ".first", (double)group.first_direction);
    GlobalVariableSet(prefix + ".mode", (double)group.cycle_mode);
    GlobalVariableSet(prefix + ".index", (double)group.cycle_index);
@@ -5225,6 +6668,7 @@ void MultiSaveGroup(MultiGroupState &group)
    GlobalVariableSet(prefix + ".initial_low_ticket", (double)group.initial_low_ticket);
    GlobalVariableSet(prefix + ".initial_high_price", group.initial_high_price);
    GlobalVariableSet(prefix + ".initial_low_price", group.initial_low_price);
+   GlobalVariableSet(prefix + ".initial_lots", group.initial_pending_lots);
    GlobalVariableSet(prefix + ".initial_high_direction", (double)group.initial_high_direction);
    GlobalVariableSet(prefix + ".initial_low_direction", (double)group.initial_low_direction);
    GlobalVariableSet(prefix + ".gridticket", (double)group.grid_pending_ticket);
@@ -5248,6 +6692,14 @@ void MultiSaveGroup(MultiGroupState &group)
     SaveGridMask(prefix + ".favorable", group.favorable_grid_filled_mask);
     GlobalVariableSet(prefix + ".favorablegridpendinglevel", (double)group.favorable_grid_pending_level);
     GlobalVariableSet(prefix + ".favorablegridpendingprice", group.favorable_grid_pending_price);
+   GlobalVariableSet(prefix + ".reqflight", group.request_in_flight ? 1.0 : 0.0);
+   GlobalVariableSet(prefix + ".reqorder", (double)group.request_order_ticket);
+   GlobalVariableSet(prefix + ".reqposition", (double)group.request_position_ticket);
+   GlobalVariableSet(prefix + ".reqsignal", (double)group.request_signal_id);
+   GlobalVariableSet(prefix + ".reqbar", (double)group.request_bar_time);
+   GlobalVariableSet(prefix + ".reqdir", (double)group.request_direction);
+   GlobalVariableSet(prefix + ".reqvolume", group.request_volume);
+   GlobalVariableSet(prefix + ".reqretry", (double)group.request_retry_count);
    GlobalVariableSet(StatePrefix() + ".multi.nextid", (double)g_multi_next_id);
    if(!GlobalVariableSet(StatePrefix() + ".configfingerprint",
                          GuiConfigFingerprint(g_gui_applied_config))
@@ -5265,12 +6717,11 @@ void MultiLoadGroups()
    const string last_trigger_key = state_prefix + ".multi.lasttriggerbar";
    if(GlobalVariableCheck(last_trigger_key))
       g_multi_last_trigger_bar = (datetime)MathRound(GlobalVariableGet(last_trigger_key));
-   if(!GlobalVariableCheck(next_key))
-      return;
-   g_multi_next_id = (int)MathMax(1.0, MathRound(GlobalVariableGet(next_key)));
+   if(!GlobalVariableCheck(next_key) && !GlobalVariableCheck(R3Prefix()+".next")) return;
+   g_multi_next_id=(int)MathMax(1, MathMax(GlobalVariableGet(next_key),GlobalVariableGet(R3Prefix()+".next")));
    for(int id = 1; id < g_multi_next_id; id++)
      {
-      const string prefix = state_prefix + ".multi." + IntegerToString(id);
+      const string prefix = MultiStatePrefix(id);
       if(!GlobalVariableCheck(prefix + ".active")
          || GlobalVariableGet(prefix + ".active") < 0.5)
          continue;
@@ -5279,7 +6730,39 @@ void MultiLoadGroups()
          break;
       MultiGroupState state;
       MultiResetState(state, id);
+      if(GlobalVariableCheck(prefix + ".bmode"))
+         state.basket_mode_at_start = (int)GlobalVariableGet(prefix + ".bmode");
+      if(GlobalVariableCheck(prefix + ".bfam"))
+         state.basket_family_id = (int)GlobalVariableGet(prefix + ".bfam");
+      if(GlobalVariableCheck(prefix + ".stopseq"))
+         state.stop_event_sequence = (int)GlobalVariableGet(prefix + ".stopseq");
       state.first_direction = (int)MathRound(GlobalVariableGet(prefix + ".first"));
+      state.dual_basket_member = GlobalVariableCheck(prefix + ".dualbasket")
+         && GlobalVariableGet(prefix + ".dualbasket") >= 0.5;
+      if(GlobalVariableCheck(prefix + ".pairrole"))
+         state.pair_role = (int)MathRound(GlobalVariableGet(prefix + ".pairrole"));
+      if(GlobalVariableCheck(prefix + ".pairpeer"))
+         state.pair_peer_id = (int)MathRound(GlobalVariableGet(prefix + ".pairpeer"));
+      if(GlobalVariableCheck(prefix + ".pairretcode"))
+         state.pair_failure_retcode = (int)MathRound(GlobalVariableGet(prefix + ".pairretcode"));
+      state.initial_pair_incomplete = GlobalVariableCheck(prefix + ".pairincomplete")
+         && GlobalVariableGet(prefix + ".pairincomplete") >= 0.5;
+      state.request_in_flight = GlobalVariableCheck(prefix + ".reqflight")
+                                && GlobalVariableGet(prefix + ".reqflight") >= 0.5;
+      if(GlobalVariableCheck(prefix + ".reqorder"))
+         state.request_order_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".reqorder"));
+      if(GlobalVariableCheck(prefix + ".reqposition"))
+         state.request_position_ticket = (ulong)MathRound(GlobalVariableGet(prefix + ".reqposition"));
+      if(GlobalVariableCheck(prefix + ".reqsignal"))
+         state.request_signal_id = (long)MathRound(GlobalVariableGet(prefix + ".reqsignal"));
+      if(GlobalVariableCheck(prefix + ".reqbar"))
+         state.request_bar_time = (datetime)MathRound(GlobalVariableGet(prefix + ".reqbar"));
+      if(GlobalVariableCheck(prefix + ".reqdir"))
+         state.request_direction = (long)MathRound(GlobalVariableGet(prefix + ".reqdir"));
+      if(GlobalVariableCheck(prefix + ".reqvolume"))
+         state.request_volume = GlobalVariableGet(prefix + ".reqvolume");
+      if(GlobalVariableCheck(prefix + ".reqretry"))
+         state.request_retry_count = (int)MathRound(GlobalVariableGet(prefix + ".reqretry"));
       state.cycle_mode = (int)MathRound(GlobalVariableGet(prefix + ".mode"));
       state.cycle_index = (int)MathRound(GlobalVariableGet(prefix + ".index"));
       state.pending_index = (int)MathRound(GlobalVariableGet(prefix + ".pendingindex"));
@@ -5293,6 +6776,8 @@ void MultiLoadGroups()
          state.initial_high_price = GlobalVariableGet(prefix + ".initial_high_price");
       if(GlobalVariableCheck(prefix + ".initial_low_price"))
          state.initial_low_price = GlobalVariableGet(prefix + ".initial_low_price");
+      if(GlobalVariableCheck(prefix + ".initial_lots"))
+         state.initial_pending_lots = GlobalVariableGet(prefix + ".initial_lots");
       if(GlobalVariableCheck(prefix + ".initial_high_direction"))
          state.initial_high_direction = (long)MathRound(GlobalVariableGet(prefix + ".initial_high_direction"));
       if(GlobalVariableCheck(prefix + ".initial_low_direction"))
@@ -5334,6 +6819,17 @@ void MultiLoadGroups()
          state.favorable_grid_pending_level = (int)MathRound(GlobalVariableGet(prefix + ".favorablegridpendinglevel"));
       if(GlobalVariableCheck(prefix + ".favorablegridpendingprice"))
          state.favorable_grid_pending_price = GlobalVariableGet(prefix + ".favorablegridpendingprice");
+      if(GlobalVariableCheck(prefix + ".rrs"))
+         state.renewal_request_state=(int)GlobalVariableGet(prefix + ".rrs");
+      if(GlobalVariableCheck(prefix + ".rhi") && GlobalVariableCheck(prefix + ".rlo"))
+         state.renewal_deal_cursor=((ulong)GlobalVariableGet(prefix + ".rhi") << 32)
+                                  | (ulong)GlobalVariableGet(prefix + ".rlo");
+      if(GlobalVariableCheck(prefix + ".rrd"))
+         state.renewal_request_direction=(int)GlobalVariableGet(prefix + ".rrd");
+      if(GlobalVariableCheck(prefix + ".rrv"))
+         state.renewal_request_volume_before=GlobalVariableGet(prefix + ".rrv");
+      if(GlobalVariableCheck(prefix + ".rrcommit") && GlobalVariableGet(prefix + ".rrcommit")==0)
+         R3ClearRequest(state); // prepared metadata never reached the send boundary
       state.dirty = false;
       g_multi_groups[index] = state;
      }
@@ -5458,50 +6954,20 @@ bool MultiDeletePending(const int group_id)
 
 long MultiSequenceDirection(const MultiGroupState &group, const int index)
   {
-   const int cycle_length = CycleLength(group.cycle_mode);
-   const int normalized = ((index % cycle_length) + cycle_length) % cycle_length;
-   bool buy = false;
-   if(group.cycle_mode == CYCLE_MODE_1)
-      buy = normalized == 0 || normalized == 3;
-   else if(group.cycle_mode == CYCLE_MODE_2)
-      buy = normalized == 0 || normalized == 2 || normalized == 4 || normalized == 5;
-   else if(group.cycle_mode == CYCLE_MODE_3)
-      buy = normalized == 0 || normalized == 2 || normalized == 3 || normalized == 5;
-   else
-      buy = normalized == 0 || normalized == 3 || normalized == 4;
-   if(group.first_direction == FIRST_SELL)
-      buy = !buy;
-   return buy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   return BasketSequenceDirection(group.first_direction, group.cycle_mode, index);
   }
 
 double MultiStopPrice(const MultiGroupState &group, const long type)
   {
-   double stop_loss = type == POSITION_TYPE_BUY
-                      ? group.anchor_price - group.stop_points * _Point
-                      : group.anchor_price + group.stop_points * _Point;
-   if(g_gui_applied_config.dynamic_stop_loss_enable == 1
-      && g_gui_applied_config.grid_count >= 2)
-     {
-      const int level = HighestFavorableGridLevel(group.favorable_grid_filled_mask);
-      const double grid_spacing = group.stop_points * _Point
-                                  / g_gui_applied_config.grid_count;
-      if(type == POSITION_TYPE_BUY)
-         stop_loss += level * grid_spacing;
-      else
-         stop_loss -= level * grid_spacing;
-     }
-   return PriceNormalize(stop_loss);
+   return BasketStopPrice(type, group.anchor_price, group.stop_points,
+                          group.favorable_grid_filled_mask);
   }
 
 double MultiTakeProfitPrice(const MultiGroupState &group, const long type)
   {
-   double reference = group.last_entry;
-   if(g_gui_applied_config.take_profit_mode == TAKE_PROFIT_LINEAR
-      && group.linear_extreme > 0.0)
-      reference = group.linear_extreme;
-   if(type == POSITION_TYPE_BUY)
-      return PriceNormalize(reference + group.take_profit_points * _Point);
-   return PriceNormalize(reference - group.take_profit_points * _Point);
+   return BasketTakeProfitPrice(type, group.last_entry,
+                                group.linear_extreme,
+                                group.take_profit_points);
   }
 
 bool MultiSetStops(const MultiGroupState &group, const long type)
@@ -5625,6 +7091,10 @@ bool MultiConfirmTradeRequestFromTransaction(const MqlTradeTransaction &trans)
       if(!group.active || !group.request_in_flight
          || !MultiCommentMatches(comment, group.id))
          continue;
+      if(group.basket_mode_at_start==3
+         && (trans.deal<=group.renewal_deal_cursor
+             || (group.request_order_ticket>0 && group.request_order_ticket!=trans.order)))
+         continue;
       const long deal_type = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
       const long expected_type = group.request_direction == ORDER_TYPE_BUY
                                  ? DEAL_TYPE_BUY : DEAL_TYPE_SELL;
@@ -5652,6 +7122,7 @@ bool MultiSendMarketLeg(MultiGroupState &group, const long type, const double vo
    const double normalized_volume = VolumeNormalize(volume);
    if(normalized_volume <= 0.0)
       return false;
+   if(!BasketRenewalBeforeLeg(group,(int)type)) return false;
    group.request_in_flight = true;
    group.request_direction = type;
    group.request_volume = normalized_volume;
@@ -5662,6 +7133,8 @@ bool MultiSendMarketLeg(MultiGroupState &group, const long type, const double vo
                              : BuildSignalId(group.request_bar_time, type);
    group.state = STATE_ORDER_SENDING;
    MultiLogTradeEvent(group, "REQUEST_SUBMITTED");
+   group.dirty = true;
+   MultiSaveGroup(group);
    const string comment = MultiGroupComment(group.id, false);
    bool sent = type == ORDER_TYPE_BUY
                ? g_trade.Buy(normalized_volume, _Symbol, 0.0, 0.0, 0.0, comment)
@@ -5669,6 +7142,7 @@ bool MultiSendMarketLeg(MultiGroupState &group, const long type, const double vo
    if(!sent || g_trade.ResultRetcode() == TRADE_RETCODE_NO_MONEY)
      {
       const uint retcode = g_trade.ResultRetcode();
+      BasketRenewalAfterLeg(group,false,(int)retcode);
       group.request_retry_count++;
       group.state = STATE_RECOVERY;
       group.request_order_ticket = g_trade.ResultOrder();
@@ -5689,6 +7163,7 @@ bool MultiSendMarketLeg(MultiGroupState &group, const long type, const double vo
                          g_trade.ResultRetcode());
       return false;
      }
+   BasketRenewalAfterLeg(group,true,0);
    return true;
   }
 
@@ -5718,8 +7193,91 @@ bool MultiOpenMarket(MultiGroupState &group, const long type, const double volum
    return current + tolerance >= target;
   }
 
+bool MultiStartResolvedPair(const long direction, const int stop_points,
+                            const int take_profit_points, const double lots,
+                            const datetime signal_bar_time,
+                            const long signal_id)
+
+  {
+   if(direction != ORDER_TYPE_BUY && direction != ORDER_TYPE_SELL)
+      return false;
+   if(stop_points <= 0 || take_profit_points <= 0 || lots <= 0.0)
+      return false;
+   const int first_index = ArraySize(g_multi_groups);
+   if(ArrayResize(g_multi_groups, first_index + 2) != first_index + 2)
+      return false;
+   const int first_id = g_multi_next_id++;
+   const int second_id = g_multi_next_id++;
+   MultiGroupState first;
+   MultiGroupState second;
+   MultiResetState(first, first_id);
+   MultiResetState(second, second_id);
+   first.pair_role = 1;
+   first.dual_basket_member = true;
+   first.pair_peer_id = second_id;
+   second.pair_role = 2;
+   second.dual_basket_member = true;
+   second.pair_peer_id = first_id;
+   first.first_direction = direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+   second.first_direction = direction == ORDER_TYPE_BUY ? FIRST_SELL : FIRST_BUY;
+   first.cycle_mode = second.cycle_mode = g_gui_applied_config.cycle_mode;
+   first.stop_points = second.stop_points = stop_points;
+   first.take_profit_points = second.take_profit_points = take_profit_points;
+   first.signal_bar_time = second.signal_bar_time = signal_bar_time > 0
+      ? signal_bar_time : iTime(_Symbol, _Period, 0);
+   const long base_signal_id = signal_id > 0 ? signal_id
+      : BuildSignalId(first.signal_bar_time, direction);
+   first.signal_id = base_signal_id * 1000 + first_id;
+   second.signal_id = base_signal_id * 1000 + second_id;
+
+   first.transition_target_lots = VolumeNormalize(lots);
+   second.transition_target_lots = VolumeNormalize(lots);
+   first.state = second.state = STATE_SIGNAL_READY;
+   g_multi_groups[first_index] = first;
+   g_multi_groups[first_index + 1] = second;
+   if(!BasketRenewalRegisterPair(篮子数量, first_id, first_id, second_id))
+     { g_multi_groups[first_index].active=false;
+       g_multi_groups[first_index+1].active=false; return false; }
+   MultiSaveGroup(g_multi_groups[first_index]);
+   MultiSaveGroup(g_multi_groups[first_index + 1]);
+   if(!MultiOpenMarket(g_multi_groups[first_index], direction, lots))
+     {
+      if(g_multi_groups[first_index].request_in_flight)
+         return true;
+      if(BasketRenewalInitialFailure(first_id,second_id)) return true;
+      g_multi_groups[first_index].active = false;
+      g_multi_groups[first_index + 1].active = false;
+      g_multi_groups[first_index].dirty = true;
+      g_multi_groups[first_index + 1].dirty = true;
+      MultiSaveGroup(g_multi_groups[first_index]);
+      MultiSaveGroup(g_multi_groups[first_index + 1]);
+      return false;
+     }
+   ulong ticket = 0;
+   long type = POSITION_TYPE_BUY;
+   double total = 0.0, entry = 0.0, sl = 0.0, tp = 0.0;
+   if(MultiFindPosition(first_id, ticket, type, total, entry, sl, tp))
+     {
+      g_multi_groups[first_index].anchor_price = entry;
+      g_multi_groups[first_index].last_entry = entry;
+      g_multi_groups[first_index].linear_extreme = entry;
+      g_multi_groups[first_index].first_lots = total;
+      g_multi_groups[first_index].total_lots = total;
+      g_multi_groups[first_index].grid_lots = total;
+      g_multi_groups[first_index].transition_target_lots = 0.0;
+      if(!MultiSetStops(g_multi_groups[first_index], type)
+         || !MultiStopsVerified(g_multi_groups[first_index], type))
+         Print("Primary basket protection is not verified; the opposite basket remains gated.");
+      g_multi_groups[first_index].dirty = true;
+      MultiSaveGroup(g_multi_groups[first_index]);
+     }
+   return true;
+  }
+
 double MultiNextGroupLotsRaw(const MultiGroupState &group, const double fallback)
    {
+    if(g_gui_applied_config.first_order_lot_type == 3)
+       return g_gui_applied_config.stop_first_order_lots;
     if(g_gui_applied_config.first_order_lot_type == 2)
       {
        const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
@@ -5740,14 +7298,8 @@ double MultiNextGroupLots(const MultiGroupState &group, const double fallback)
 
 double MultiNextGroupLotsAfterStopRaw(const MultiGroupState &group, const double fallback)
    {
-    if(g_gui_applied_config.first_order_lot_type == 2)
-      {
-       const double base = group.first_lots > 0.0 ? group.first_lots : fallback;
-       return base * g_gui_applied_config.first_order_mult;
-      }
-    const double requested = group.cumulative_loss_lots > 0.0
-                             ? group.cumulative_loss_lots : fallback;
-    return requested * g_gui_applied_config.initial_lots_multiplier;
+    return BasketNextGroupLotsAfterStopRaw(group.cumulative_loss_lots + fallback,
+                                           group.first_lots, fallback);
    }
 
 double MultiNextGroupLotsAfterStop(const MultiGroupState &group, const double fallback)
@@ -5783,6 +7335,9 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
                                   const double previous_low, const int range_points,
                                   const double volume)
   {
+   if(!IsInitialSpreadAllowed())
+      return false;
+   group.initial_pending_lots = volume;
    if(group.initial_high_ticket > 0 || group.initial_low_ticket > 0)
       return true;
    const long high_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
@@ -5797,7 +7352,23 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
    if(!PlaceInitialPendingOrder(low_direction, previous_low, range_points, volume,
                                 MultiInitialPendingComment(group.id, false), low_ticket))
      {
-      DeletePendingTicket(high_ticket, "Multi initial pending rollback");
+      if(!DeletePendingTicket(high_ticket, "Multi initial pending rollback"))
+        {
+         group.initial_high_ticket = high_ticket;
+         group.initial_low_ticket = 0;
+         group.initial_high_price = PriceNormalize(previous_high);
+         group.initial_low_price = PriceNormalize(previous_low);
+         group.initial_high_direction = high_direction;
+         group.initial_low_direction = low_direction;
+         group.stop_points = range_points;
+         group.take_profit_points = range_points;
+         group.initial_pair_incomplete = true;
+         group.dirty = true;
+         MultiSaveGroup(group);
+         PrintFormat("[PAIR_STATUS=INCOMPLETE_OCO][GROUP=%d][FIRST_PENDING=%I64u][REASON=ROLLBACK_CANCEL_FAILED]",
+                     group.id, high_ticket);
+         return true;
+        }
       return false;
      }
    group.initial_high_ticket = high_ticket;
@@ -5806,17 +7377,329 @@ bool MultiPlaceInitialPendingPair(MultiGroupState &group, const double previous_
    group.initial_low_price = PriceNormalize(previous_low);
    group.initial_high_direction = high_direction;
    group.initial_low_direction = low_direction;
+   group.initial_pair_incomplete = false;
    group.stop_points = range_points;
    group.take_profit_points = range_points;
+
+   return true;
+  }
+
+bool MultiStartCandleOcoPair(const double previous_high, const double previous_low,
+                             const int range_points, const double volume)
+  {
+   if(range_points <= 0 || volume <= 0.0 || !IsInitialSpreadAllowed())
+      return false;
+   const int first_index = ArraySize(g_multi_groups);
+   if(ArrayResize(g_multi_groups, first_index + 2) != first_index + 2)
+      return false;
+   const int high_id = g_multi_next_id++;
+   const int low_id = g_multi_next_id++;
+   MultiResetState(g_multi_groups[first_index], high_id);
+   MultiResetState(g_multi_groups[first_index + 1], low_id);
+   const long high_direction = g_gui_applied_config.order_type == ORDERTYPE_FORWARD
+                               ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   const long low_direction = high_direction == ORDER_TYPE_BUY
+                              ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+   const datetime signal_bar = iTime(_Symbol, _Period, 0);
+   for(int leg = 0; leg < 2; leg++)
+     {
+      const int index = first_index + leg;
+      const long direction = leg == 0 ? high_direction : low_direction;
+      g_multi_groups[index].dual_basket_member = true;
+      g_multi_groups[index].pair_role = leg == 0 ? 4 : 5;
+      g_multi_groups[index].pair_peer_id = leg == 0 ? low_id : high_id;
+      g_multi_groups[index].first_direction = direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
+      g_multi_groups[index].cycle_mode = g_gui_applied_config.cycle_mode;
+      g_multi_groups[index].stop_points = range_points;
+      g_multi_groups[index].take_profit_points = range_points;
+      g_multi_groups[index].initial_high_price = PriceNormalize(previous_high);
+      g_multi_groups[index].initial_low_price = PriceNormalize(previous_low);
+      g_multi_groups[index].initial_high_direction = high_direction;
+      g_multi_groups[index].initial_low_direction = low_direction;
+      g_multi_groups[index].initial_pending_lots = VolumeNormalize(volume);
+      g_multi_groups[index].transition_target_lots = VolumeNormalize(volume);
+      g_multi_groups[index].signal_bar_time = signal_bar;
+      g_multi_groups[index].signal_id = BuildSignalId(signal_bar, direction) * 1000
+                                       + g_multi_groups[index].id;
+      g_multi_groups[index].state = STATE_SIGNAL_READY;
+      MultiSaveGroup(g_multi_groups[index]);
+     }
+   if(!BasketRenewalRegisterPair(篮子数量, high_id, high_id, low_id)) return false;
+   ulong high_ticket = 0;
+   if(!PlaceInitialPendingOrder(high_direction, previous_high, range_points, volume,
+        MultiInitialPendingComment(high_id, true), high_ticket))
+     {
+      BasketRenewalInitialFailure(high_id,low_id);
+      g_multi_groups[first_index].active = false;
+      g_multi_groups[first_index + 1].active = false;
+      g_multi_groups[first_index].dirty = true;
+      g_multi_groups[first_index + 1].dirty = true;
+      MultiSaveGroup(g_multi_groups[first_index]);
+      MultiSaveGroup(g_multi_groups[first_index + 1]);
+      return false;
+     }
+   g_multi_groups[first_index].initial_high_ticket = high_ticket;
+   g_multi_groups[first_index].dirty = true;
+   MultiSaveGroup(g_multi_groups[first_index]);
+   ulong low_ticket = 0;
+   if(!PlaceInitialPendingOrder(low_direction, previous_low, range_points, volume,
+        MultiInitialPendingComment(low_id, false), low_ticket))
+     {
+      if(!DeletePendingTicket(high_ticket, "Initial dual-basket OCO rollback"))
+        {
+         g_multi_groups[first_index].initial_pair_incomplete = true;
+         g_multi_groups[first_index].dirty = true;
+         MultiSaveGroup(g_multi_groups[first_index]);
+         PrintFormat("[PAIR_STATUS=INCOMPLETE_OCO][HIGH_GROUP=%d][LOW_GROUP=%d][FIRST_PENDING=%I64u][REASON=ROLLBACK_CANCEL_FAILED]",
+                     high_id, low_id, high_ticket);
+         return true;
+        }
+      BasketRenewalInitialFailure(high_id,low_id);
+      g_multi_groups[first_index].active = false;
+      g_multi_groups[first_index + 1].active = false;
+      g_multi_groups[first_index].dirty = true;
+      g_multi_groups[first_index + 1].dirty = true;
+      MultiSaveGroup(g_multi_groups[first_index]);
+      MultiSaveGroup(g_multi_groups[first_index + 1]);
+      return false;
+     }
+   g_multi_groups[first_index + 1].initial_low_ticket = low_ticket;
+   g_multi_groups[first_index].initial_pair_incomplete = false;
+   g_multi_groups[first_index].dirty = true;
+   g_multi_groups[first_index + 1].dirty = true;
+   MultiSaveGroup(g_multi_groups[first_index]);
+   MultiSaveGroup(g_multi_groups[first_index + 1]);
+   return true;
+  }
+
+bool MultiHandleOcoBasketGroup(MultiGroupState &group)
+  {
+   if(BasketRenewalAdoptInitial(group))return true;
+   if(group.pair_role != 4 && group.pair_role != 5)
+      return false;
+   if(group.signal_consumed)
+      return false;
+   const ulong own_ticket = group.pair_role == 4
+                            ? group.initial_high_ticket : group.initial_low_ticket;
+   const int peer_index = MultiFindGroupIndex(group.pair_peer_id);
+   if(peer_index < 0)
+      return true;
+   const ulong peer_ticket = g_multi_groups[peer_index].initial_high_ticket > 0
+      ? g_multi_groups[peer_index].initial_high_ticket
+      : g_multi_groups[peer_index].initial_low_ticket;
+   int own_status = own_ticket > 0
+      ? MultiInitialPendingStatus(own_ticket, group.id) : REVERSE_PENDING_CANCELED;
+   int peer_status = peer_ticket > 0
+      ? MultiInitialPendingStatus(peer_ticket, g_multi_groups[peer_index].id)
+      : REVERSE_PENDING_UNKNOWN;
+   // The sibling can already have completed its canceled-pending to market
+   // conversion and cleared those tickets. It is a confirmed initial leg.
+   if(group.basket_mode_at_start==3 && peer_ticket==0
+      && g_multi_groups[peer_index].basket_family_id==group.basket_family_id
+      && g_multi_groups[peer_index].signal_consumed)
+      peer_status=REVERSE_PENDING_FILLED;
+   if(group.initial_pair_incomplete && own_status == REVERSE_PENDING_FILLED)
+      peer_status = REVERSE_PENDING_CANCELED;
+   if(group.initial_pair_incomplete)
+     {
+      if(own_status == REVERSE_PENDING_ACTIVE)
+        {
+         if(!DeletePendingTicket(own_ticket, "Incomplete dual-basket OCO rollback"))
+            return true;
+         own_status = MultiInitialPendingStatus(own_ticket, group.id);
+        }
+      if(own_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(own_status != REVERSE_PENDING_FILLED)
+        {
+         group.active = false;
+         group.dirty = true;
+         if(peer_index >= 0)
+           {
+            g_multi_groups[peer_index].active = false;
+            g_multi_groups[peer_index].dirty = true;
+            MultiSaveGroup(g_multi_groups[peer_index]);
+           }
+         MultiSaveGroup(group);
+         return true;
+        }
+     }
+   if(own_status == REVERSE_PENDING_ACTIVE)
+     {
+      if(peer_status == REVERSE_PENDING_FILLED)
+        {
+         if(!DeletePendingTicket(own_ticket, "Dual-basket OCO sibling delete"))
+            return true;
+         own_status = MultiInitialPendingStatus(own_ticket, group.id);
+        }
+      else
+         return true;
+     }
+   if(own_status == REVERSE_PENDING_UNKNOWN)
+      return true;
+   if(own_status == REVERSE_PENDING_CANCELED)
+     {
+      if(peer_status == REVERSE_PENDING_ACTIVE || peer_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(peer_status != REVERSE_PENDING_FILLED)
+        {
+         group.active = false;
+         group.dirty = true;
+         MultiSaveGroup(group);
+         return true;
+        }
+      ulong peer_position = 0;
+      long peer_type = POSITION_TYPE_BUY;
+      double peer_volume = 0.0, peer_entry = 0.0, peer_sl = 0.0, peer_tp = 0.0;
+      const bool peer_visible=group.basket_mode_at_start==3 && peer_ticket==0
+         ? MultiFindPosition(g_multi_groups[peer_index].id,peer_position,peer_type,
+                             peer_volume,peer_entry,peer_sl,peer_tp)
+         : FindPositionByPendingOrder(peer_ticket,peer_position,peer_type,
+                                      peer_volume,peer_entry,peer_sl,peer_tp);
+      if(!peer_visible)
+         return true;
+      const long direction = group.first_direction == FIRST_BUY
+                             ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      if(!MultiOpenMarket(group, direction, group.initial_pending_lots))
+        {
+         if(group.request_in_flight) return true;
+         group.pair_role = 3;
+         group.pair_failure_retcode = (int)g_trade.ResultRetcode();
+         group.state = STATE_RECOVERY;
+         group.dirty = true;
+         if(g_multi_pair_failure_log_time == 0
+            || TimeCurrent() - g_multi_pair_failure_log_time >= 10)
+           {
+            PrintFormat("[PAIR_STATUS=PARTIAL][PRIMARY_GROUP=%d][OPPOSITE_GROUP=%d][RETCODE=%d][REASON=OCO_OPPOSITE_SEND_PERMANENT]",
+                        group.pair_peer_id, group.id, group.pair_failure_retcode);
+            g_multi_pair_failure_log_time = TimeCurrent();
+           }
+         MultiSaveGroup(group);
+         return true;
+        }
+      if(group.basket_mode_at_start==3)
+        {BasketRenewalAdoptInitial(group);return true;}
+      group.pair_role = 0;
+      group.pair_peer_id = 0;
+      group.signal_consumed = true;
+      group.initial_high_ticket = 0;
+      group.initial_low_ticket = 0;
+      group.transition_target_lots = 0.0;
+      group.dirty = true;
+      return true;
+     }
+   if(own_status == REVERSE_PENDING_FILLED)
+     {
+      if(peer_status == REVERSE_PENDING_ACTIVE)
+        {
+         if(!DeletePendingTicket(peer_ticket, "Dual-basket OCO sibling delete"))
+            return true;
+         return true;
+        }
+      if(peer_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      ulong ticket = 0;
+      long type = POSITION_TYPE_BUY;
+      double volume = 0.0, entry = 0.0, sl = 0.0, tp = 0.0;
+      if(!FindPositionByPendingOrder(own_ticket, ticket, type, volume, entry, sl, tp))
+         return true;
+      group.anchor_price = entry;
+      group.last_entry = entry;
+      group.linear_extreme = entry;
+      group.first_lots = volume;
+      group.total_lots = volume;
+      group.grid_lots = volume;
+      group.transition_target_lots = 0.0;
+      group.signal_consumed = true;
+      if(group.basket_mode_at_start==3)
+        {
+         group.pair_role=0;group.pair_peer_id=0;
+         group.initial_high_ticket=0;group.initial_low_ticket=0;
+        }
+      if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
+         Print("OCO basket fill protection is not verified; follow-up orders are paused.");
+      else
+        {
+         MultiPlaceReversePending(group, type);
+         MultiPlaceGridPending(group, type);
+        }
+      group.dirty = true;
+      MultiSaveGroup(group);
+      return true;
+     }
    return true;
   }
 
 bool MultiHandleInitialPendingFill(MultiGroupState &group)
   {
+   if(group.pair_role == 4 || group.pair_role == 5)
+      return MultiHandleOcoBasketGroup(group);
    if(group.initial_high_ticket == 0 && group.initial_low_ticket == 0)
       return false;
-   const int high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
-   const int low_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+   if(!IsInitialSpreadAllowed())
+     {
+      const int high_active_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
+      const int low_active_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+      if(high_active_status != REVERSE_PENDING_FILLED
+         && low_active_status != REVERSE_PENDING_FILLED)
+        {
+         bool deletion_failed = false;
+         for(int index = OrdersTotal() - 1; index >= 0; index--)
+           {
+            const ulong candidate = OrderGetTicket(index);
+            if(candidate == 0 || OrderGetString(ORDER_SYMBOL) != _Symbol
+               || (ulong)OrderGetInteger(ORDER_MAGIC) != g_gui_applied_config.magic_number
+               || !IsReversePendingType(OrderGetInteger(ORDER_TYPE)))
+               continue;
+            const string comment = OrderGetString(ORDER_COMMENT);
+            if(!MultiCommentMatches(comment, group.id)
+               || !IsInitialPendingComment(comment))
+               continue;
+            if(!DeletePendingTicket(candidate, "Wide-spread multi initial pending cancellation"))
+               deletion_failed = true;
+           }
+         if(deletion_failed)
+            return true;
+        }
+     }
+   int high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
+   int low_status = MultiInitialPendingStatus(group.initial_low_ticket, group.id);
+   if(group.initial_pair_incomplete && group.initial_high_ticket > 0
+      && group.initial_low_ticket == 0)
+     {
+      if(high_status == REVERSE_PENDING_ACTIVE)
+        {
+         if(!DeletePendingTicket(group.initial_high_ticket,
+                                 "Incomplete multi initial OCO rollback"))
+            return true;
+         high_status = MultiInitialPendingStatus(group.initial_high_ticket, group.id);
+        }
+      if(high_status == REVERSE_PENDING_UNKNOWN)
+         return true;
+      if(high_status == REVERSE_PENDING_FILLED)
+        {
+         group.initial_pair_incomplete = false;
+         low_status = REVERSE_PENDING_CANCELED;
+        }
+      else
+        {
+         const double retry_high = group.initial_high_price;
+         const double retry_low = group.initial_low_price;
+         const int retry_range = group.stop_points;
+         group.initial_high_ticket = 0;
+         group.initial_low_ticket = 0;
+         group.initial_pair_incomplete = false;
+         if(group.signal_bar_time > 0
+            && group.signal_bar_time == iTime(_Symbol, _Period, 0)
+            && GuiAllowsInitialEntry() && IsInitialEntryAllowed())
+            MultiPlaceInitialPendingPair(group, retry_high, retry_low,
+                                         retry_range,
+                                         group.initial_pending_lots);
+         group.dirty = true;
+         MultiSaveGroup(group);
+         return true;
+        }
+     }
    const bool high_filled = high_status == REVERSE_PENDING_FILLED;
    const bool low_filled = low_status == REVERSE_PENDING_FILLED;
    if(high_status == REVERSE_PENDING_ACTIVE && low_status == REVERSE_PENDING_ACTIVE)
@@ -5893,6 +7776,17 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
       MultiPlaceGridPending(group, position_type);
       return true;
      }
+   if(group.pair_role == 3)
+     {
+      if(g_multi_pair_failure_log_time == 0
+         || TimeCurrent() - g_multi_pair_failure_log_time >= 10)
+        {
+         PrintFormat("[PAIR_STATUS=PARTIAL][PRIMARY_GROUP=%d][OPPOSITE_GROUP=%d][RETCODE=%d][REASON=OPPOSITE_SEND_PERMANENT]",
+                     group.pair_peer_id, group.id, group.pair_failure_retcode);
+         g_multi_pair_failure_log_time = TimeCurrent();
+        }
+      return true;
+     }
    if(high_status == REVERSE_PENDING_UNKNOWN || low_status == REVERSE_PENDING_UNKNOWN)
       return true;
    if(high_status == REVERSE_PENDING_ACTIVE || low_status == REVERSE_PENDING_ACTIVE)
@@ -5905,6 +7799,27 @@ bool MultiHandleInitialPendingFill(MultiGroupState &group)
    if(MultiInitialPendingStatus(group.initial_high_ticket, group.id) != REVERSE_PENDING_ACTIVE
       && MultiInitialPendingStatus(group.initial_low_ticket, group.id) != REVERSE_PENDING_ACTIVE)
      {
+      const double previous_high = group.initial_high_price;
+      const double previous_low = group.initial_low_price;
+      const datetime current_bar = iTime(_Symbol, _Period, 0);
+      if(group.signal_bar_time > 0 && group.signal_bar_time == current_bar
+         && previous_high > 0.0 && previous_low > 0.0
+         && GuiAllowsInitialEntry() && IsInitialEntryAllowed())
+        {
+         if(!IsInitialSpreadAllowed())
+            return true;
+         const ulong canceled_high_ticket = group.initial_high_ticket;
+         const ulong canceled_low_ticket = group.initial_low_ticket;
+         group.initial_high_ticket = 0;
+         group.initial_low_ticket = 0;
+         if(MultiPlaceInitialPendingPair(group, previous_high, previous_low,
+                                         group.stop_points,
+                                         g_gui_applied_config.initial_lots))
+            return true;
+         group.initial_high_ticket = canceled_high_ticket;
+         group.initial_low_ticket = canceled_low_ticket;
+         return true;
+        }
       group.initial_high_ticket = 0;
       group.initial_low_ticket = 0;
       group.initial_high_price = 0.0;
@@ -6032,26 +7947,14 @@ bool MultiPlaceReversePending(MultiGroupState &group, const long current_type)
 
 double MultiGridLevelPrice(const MultiGroupState &group, const long type, const int level)
   {
-   if(g_gui_applied_config.grid_count <= 0 || group.stop_points <= 0
-      || group.anchor_price <= 0.0)
-      return 0.0;
-   const double distance = group.stop_points * _Point * level
-                           / g_gui_applied_config.grid_count;
-   return type == POSITION_TYPE_BUY
-          ? PriceNormalize(group.anchor_price - distance)
-          : PriceNormalize(group.anchor_price + distance);
+   return BasketGridPrice(group.anchor_price, group.stop_points,
+                          type, level, false);
   }
 
 double MultiFavorableGridLevelPrice(const MultiGroupState &group, const long type, const int level)
   {
-   if(g_gui_applied_config.grid_count <= 0 || group.stop_points <= 0
-      || group.anchor_price <= 0.0)
-      return 0.0;
-   const double distance = group.stop_points * _Point * level
-                           / g_gui_applied_config.grid_count;
-   return type == POSITION_TYPE_BUY
-          ? PriceNormalize(group.anchor_price + distance)
-          : PriceNormalize(group.anchor_price - distance);
+   return BasketGridPrice(group.anchor_price, group.stop_points,
+                          type, level, true);
   }
 
 bool PrepareMultiGridPendingForCurrentStop(const MultiGroupState &group,
@@ -6101,9 +8004,9 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
          if(!ValidateStops((ENUM_POSITION_TYPE)type, entry, stop_loss,
                            take_profit, stop_reason))
             continue;
-         const string comment = g_gui_applied_config.order_comment
-                                + MultiGroupTag(group.id) + ".Grid."
-                                + IntegerToString(level);
+         const string comment = MultiGroupTag(group.id) + ".Grid."
+                                + IntegerToString(level) + "."
+                                + g_gui_applied_config.order_comment;
          bool sent = false;
          if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
             sent = pending_type == ORDER_TYPE_BUY_STOP
@@ -6158,9 +8061,9 @@ bool MultiPlaceGridPending(MultiGroupState &group, const long type)
                continue;
             if(MathAbs(take_profit - MultiTakeProfitPrice(group, type)) > _Point * 0.5)
                continue;
-            const string comment = g_gui_applied_config.order_comment
-                                   + MultiGroupTag(group.id) + ".Grid.F."
-                                   + IntegerToString(level);
+            const string comment = MultiGroupTag(group.id) + ".Grid.F."
+                                   + IntegerToString(level) + "."
+                                   + g_gui_applied_config.order_comment;
             bool sent = false;
             if(pending_type == ORDER_TYPE_BUY_STOP || pending_type == ORDER_TYPE_BUY_LIMIT)
                sent = pending_type == ORDER_TYPE_BUY_STOP
@@ -6287,6 +8190,26 @@ bool MultiHandleGridFill(MultiGroupState &group, const long type, const double c
    return true;
   }
 
+bool MultiFinishGroupAfterMaxReversals(MultiGroupState &group)
+  {
+   if(!group.dual_basket_member)
+     {
+      BeginResetAfterMaxReversals();
+      return false;
+     }
+   PrintFormat("Maximum reversal count reached for group %d; closing only this basket.",
+               group.id);
+   if(!MultiDeletePending(group.id) || !MultiClosePositions(group.id))
+      return false;
+   group.pending_index = -1;
+   group.pending_ticket = 0;
+   group.transition_target_lots = 0.0;
+   group.active = false;
+   group.state = STATE_IDLE;
+   group.dirty = true;
+   return true;
+  }
+
 bool MultiHandleReverseFill(MultiGroupState &group, long &type, double &entry,
                              double &current_total)
   {
@@ -6327,9 +8250,11 @@ bool MultiHandleReverseFill(MultiGroupState &group, long &type, double &entry,
     current_total = promoted_total;
     if(group.reversal_count >= g_gui_applied_config.max_reversals)
      {
-      BeginResetAfterMaxReversals();
+      MultiFinishGroupAfterMaxReversals(group);
       return true;
      }
+   BasketRenewalPrepareStop(group, group.pending_index,
+                            (int)promoted_type, promoted_total, (ulong)filled_ticket);
    group.cumulative_loss_lots += group.total_lots;
    group.previous_grid_lots = group.grid_lots;
    group.reversal_count++;
@@ -6355,7 +8280,9 @@ bool MultiHandleReverseFill(MultiGroupState &group, long &type, double &entry,
                      ? VolumeNormalize(group.previous_grid_lots
                                        * g_gui_applied_config.grid_lot_multiplier)
                       : promoted_total;
+    BasketRenewalSaveTransition(group);
     MultiSetStops(group, promoted_type);
+    if(!BasketRenewalConfirmFirstOrder(group, (int)promoted_type, promoted_total)) return true;
    return true;
   }
 
@@ -6367,6 +8294,23 @@ bool ResetOrderGroupAfterOversizedReversal(MultiGroupState &group)
       return false;
    group.active = false;
    return true;
+  }
+
+bool MultiGroupTakeProfitReached(const MultiGroupState &group)
+  {
+   if(!group.active || group.transition_target_lots > 0.0
+      || group.first_lots <= 0.0 || group.anchor_price <= 0.0
+      || group.stop_points <= 0
+      || group.take_profit_points <= 0)
+      return false;
+
+   const long current_type = MultiSequenceDirection(group, group.cycle_index);
+   const double take_profit = MultiTakeProfitPrice(group, current_type);
+   if(take_profit <= 0.0)
+      return false;
+   if(current_type == POSITION_TYPE_BUY)
+      return SymbolInfoDouble(_Symbol, SYMBOL_BID) >= take_profit;
+   return SymbolInfoDouble(_Symbol, SYMBOL_ASK) <= take_profit;
   }
 
 bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
@@ -6388,6 +8332,12 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
         || (current_type == POSITION_TYPE_SELL && ask >= stop_loss)))
       return false;
 
+   if(group.reversal_count >= g_gui_applied_config.max_reversals)
+     {
+      MultiFinishGroupAfterMaxReversals(group);
+      return true;
+     }
+
    const double stopped_group_volume = group.total_lots > 0.0
                                       ? group.total_lots : group.first_lots;
    const double next_group_lots = MultiNextGroupLotsAfterStopRaw(
@@ -6405,6 +8355,10 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
      }
    if(!MultiDeletePending(group.id))
       return true;
+   BasketRenewalPrepareStop(group,
+      (group.cycle_index+1)%CycleLength(group.cycle_mode),
+      (int)MultiSequenceDirection(group,(group.cycle_index+1)%CycleLength(group.cycle_mode)),
+      next_group_lots);
    group.cumulative_loss_lots += stopped_group_volume;
    group.previous_grid_lots = group.grid_lots;
    const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
@@ -6414,6 +8368,7 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
    group.pending_index = -1;
    group.pending_ticket = 0;
    group.transition_target_lots = next_group_lots;
+   BasketRenewalSaveTransition(group);
    if(!MultiOpenMarket(group, next_type, next_group_lots))
       return true;
 
@@ -6448,6 +8403,7 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
                      : total;
    if(!MultiSetStops(group, type) || !MultiStopsVerified(group, type))
       return true;
+   if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
    MultiPlaceReversePending(group, type);
    MultiPlaceGridPending(group, type);
    return true;
@@ -6455,6 +8411,9 @@ bool MultiRecoverFlatGroupAfterBrokerStop(MultiGroupState &group)
 
 bool MultiManageGroup(MultiGroupState &group)
   {
+   if(!group.active && group.basket_mode_at_start==3) return false;
+
+   if(BasketRenewalAdoptInitial(group,true))return true;
    if(group.request_in_flight)
      {
       if(!MultiConfirmTradeRequestFromVisible(group))
@@ -6470,6 +8429,28 @@ bool MultiManageGroup(MultiGroupState &group)
         }
       return true;
      }
+   BasketRenewalReconcileRequest(group);
+   if(BasketRenewalProtectOnly(group)) return true;
+   if(BasketRenewalManagesChild(group)) return true;
+   if(!BasketRenewalResumeStop(group)) return true;
+   if(group.pair_role == 2)
+     {
+      const int peer_index = MultiFindGroupIndex(group.pair_peer_id);
+      if(peer_index < 0 || !g_multi_groups[peer_index].active)
+        { group.active = false; group.dirty = true; return false; }
+      if(g_multi_groups[peer_index].request_in_flight)
+         return true;
+      ulong peer_ticket = 0;
+      long peer_type = POSITION_TYPE_BUY;
+      double peer_total = 0.0, peer_entry = 0.0, peer_sl = 0.0, peer_tp = 0.0;
+      if(!MultiFindPosition(group.pair_peer_id, peer_ticket, peer_type,
+                            peer_total, peer_entry, peer_sl, peer_tp))
+         return true;
+      if(!MultiStopsVerified(g_multi_groups[peer_index], peer_type)
+         && (!MultiSetStops(g_multi_groups[peer_index], peer_type)
+             || !MultiStopsVerified(g_multi_groups[peer_index], peer_type)))
+         return true;
+     }
    if(MultiHandleInitialPendingFill(group))
       return true;
    ulong ticket = 0;
@@ -6480,6 +8461,12 @@ bool MultiManageGroup(MultiGroupState &group)
    double take_profit = 0.0;
    bool has_position = MultiFindPosition(group.id, ticket, type, total, entry,
                                          stop_loss, take_profit);
+   if(has_position && group.pair_role != 0)
+     {
+      group.pair_role = 0;
+      group.pair_peer_id = 0;
+      group.dirty = true;
+     }
    // A failed market reversal must remain recoverable. The old reverse
    // pending order is not a substitute for the required market order.
    if(!has_position && group.transition_target_lots > 0.0)
@@ -6488,7 +8475,25 @@ bool MultiManageGroup(MultiGroupState &group)
          return true;
       const long expected_type = MultiSequenceDirection(group, group.cycle_index);
       if(!MultiOpenMarket(group, expected_type, group.transition_target_lots))
+        {
+         if(group.pair_role == 2 && !group.request_in_flight)
+           {
+            group.pair_role = 3;
+            group.pair_failure_retcode = (int)g_trade.ResultRetcode();
+            group.state = STATE_RECOVERY;
+            group.dirty = true;
+            if(g_multi_pair_failure_log_time == 0
+               || TimeCurrent() - g_multi_pair_failure_log_time >= 10)
+              {
+               PrintFormat("[PAIR_STATUS=PARTIAL][PRIMARY_GROUP=%d][OPPOSITE_GROUP=%d][RETCODE=%u][REASON=%s]",
+                           group.pair_peer_id, group.id, g_trade.ResultRetcode(),
+                           g_trade.ResultRetcodeDescription());
+               g_multi_pair_failure_log_time = TimeCurrent();
+              }
+            MultiSaveGroup(group);
+           }
          return true;
+        }
       has_position = MultiFindPosition(group.id, ticket, type, total, entry,
                                        stop_loss, take_profit);
       if(!has_position)
@@ -6498,6 +8503,17 @@ bool MultiManageGroup(MultiGroupState &group)
      {
       if(MultiRecoverFlatGroupAfterBrokerStop(group))
          return true;
+      // A broker TP can flatten the positions between EA ticks. In that
+      // case an unrelated live reverse/grid pending order must not keep the
+      // completed basket alive indefinitely.
+      if(MultiGroupTakeProfitReached(group))
+        {
+         if(!MultiDeletePending(group.id))
+            return true;
+         group.active = false;
+         MarkMultiCandleTriggerBar();
+         return false;
+        }
       const int pending_status = MultiPendingStatus(group.pending_ticket, group.id, false);
       if(pending_status == REVERSE_PENDING_ACTIVE
          || pending_status == REVERSE_PENDING_FILLED)
@@ -6525,6 +8541,8 @@ bool MultiManageGroup(MultiGroupState &group)
       if(total > group.transition_target_lots + tolerance)
          return true;
       group.transition_target_lots = 0.0;
+      group.pair_role = 0;
+      group.pair_peer_id = 0;
       group.anchor_price = entry;
       group.last_entry = entry;
       group.linear_extreme = entry;
@@ -6550,12 +8568,15 @@ bool MultiManageGroup(MultiGroupState &group)
      {
       if(g_reset_pending)
          return false;
+      if(!group.active || group.reversal_count >= g_gui_applied_config.max_reversals)
+         return false;
       if(!MultiStopsVerified(group, type)
          && (!MultiSetStops(group, type) || !MultiStopsVerified(group, type)))
         {
          Print("Multi reverse fill protection is not verified; follow-up orders are paused.");
          return true;
         }
+      if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
       return true;
@@ -6621,7 +8642,8 @@ bool MultiManageGroup(MultiGroupState &group)
                   group.id);
       if(group.reversal_count >= g_gui_applied_config.max_reversals)
         {
-         BeginResetAfterMaxReversals();
+         if(!MultiFinishGroupAfterMaxReversals(group))
+            return true;
          return false;
         }
       const double next_group_lots = MultiNextGroupLotsAfterStopRaw(group, group.total_lots);
@@ -6635,10 +8657,16 @@ bool MultiManageGroup(MultiGroupState &group)
         }
       if(!MultiDeletePending(group.id))
          return true;
+   BasketRenewalPrepareStop(group,
+      (group.cycle_index+1)%CycleLength(group.cycle_mode),
+      (int)MultiSequenceDirection(group,(group.cycle_index+1)%CycleLength(group.cycle_mode)),
+      next_group_lots);
+      if(group.basket_mode_at_start!=3)
       group.cumulative_loss_lots += group.total_lots;
       group.previous_grid_lots = group.grid_lots;
       if(!MultiClosePositions(group.id))
          return false;
+      if(group.basket_mode_at_start==3) group.cumulative_loss_lots += group.total_lots;
       const int next_index = (group.cycle_index + 1) % CycleLength(group.cycle_mode);
       const long next_type = MultiSequenceDirection(group, next_index);
       group.reversal_count++;
@@ -6646,6 +8674,7 @@ bool MultiManageGroup(MultiGroupState &group)
       group.pending_index = -1;
       group.pending_ticket = 0;
       group.transition_target_lots = next_group_lots;
+   BasketRenewalSaveTransition(group);
       if(!MultiOpenMarket(group, next_type, next_group_lots))
          return false;
       if(!MultiFindPosition(group.id, ticket, type, total, entry, stop_loss, take_profit))
@@ -6675,6 +8704,7 @@ bool MultiManageGroup(MultiGroupState &group)
          Print("Multi transition protection is not verified; follow-up orders are paused.");
          return true;
         }
+      if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
       MultiPlaceReversePending(group, type);
       MultiPlaceGridPending(group, type);
       return true;
@@ -6693,6 +8723,7 @@ bool MultiManageGroup(MultiGroupState &group)
       Print("Multi grid-fill protection is not verified; follow-up orders are paused.");
       return true;
      }
+   if(!BasketRenewalConfirmFirstOrder(group, (int)type, group.first_lots)) return true;
    MultiPlaceReversePending(group, type);
    MultiPlaceGridPending(group, type);
    return true;
@@ -6702,8 +8733,9 @@ void ProcessInitialPendingFillEvent()
   {
    if(!g_gui_config_initialized || g_reset_pending)
       return;
-   if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
-      && g_gui_applied_config.candle_enable_multiple == 1)
+   if((g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
+       && g_gui_applied_config.candle_enable_multiple == 1)
+      || MultiHasActiveGroups() || BasketRenewalHasWork())
      {
       for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
         {
@@ -6718,14 +8750,20 @@ void ProcessInitialPendingFillEvent()
         }
       return;
      }
+   if(CancelInitialPendingPairIfSpreadTooHigh())
+      return;
    HandleInitialPendingFill();
   }
 
 bool MultiTryOpenCandleGroup()
   {
+   if(IsPairedBasketMode() && (MultiHasActiveGroups() || BasketRenewalHasWork()))
+      return false;
    if(!GuiAllowsInitialEntry())
       return false;
    if(!IsInitialEntryAllowed())
+      return false;
+   if(!IsInitialSpreadAllowed())
       return false;
    double previous_high = 0.0;
    double previous_low = 0.0;
@@ -6775,6 +8813,17 @@ bool MultiTryOpenCandleGroup()
        MultiRemoveGroup(new_index);
        return false;
       }
+   if(IsPairedBasketMode())
+     {
+      ArrayResize(g_multi_groups, new_index);
+      if(!MultiStartResolvedPair(first_direction, range_points, range_points,
+                                 g_gui_applied_config.initial_lots))
+         return false;
+      if(g_gui_applied_config.candle_order_mode == KORDER_ONCE_PER_BAR
+         && current_bar > 0)
+         MarkMultiCandleTriggerBar();
+      return true;
+     }
    state.first_direction = first_direction == ORDER_TYPE_BUY ? FIRST_BUY : FIRST_SELL;
    state.signal_id = BuildSignalId(current_bar, first_direction) * 1000 + new_group_id;
    if(!MultiOpenMarket(state, first_direction, g_gui_applied_config.initial_lots))
@@ -6842,15 +8891,22 @@ void ManageMultipleCandleGroups()
   {
    if(GuiProcessPendingReset())
       return;
+   BasketRenewalBeginBatch();
    bool closed_group = false;
    for(int index = ArraySize(g_multi_groups) - 1; index >= 0; index--)
      {
       const bool was_active = g_multi_groups[index].active;
       MultiGroupState before = g_multi_groups[index];
       MultiManageGroup(g_multi_groups[index]);
+      if(g_reset_pending)
+         return;
+      if(index < 0 || index >= ArraySize(g_multi_groups))
+         return;
+      if(g_multi_groups[index].id != before.id)
+         return;
       if(MultiStateChanged(before, g_multi_groups[index]))
          g_multi_groups[index].dirty = true;
-      if(was_active && !g_multi_groups[index].active)
+      if(!g_multi_groups[index].active && (was_active || g_multi_groups[index].basket_mode_at_start==3))
         {
          MultiRemoveGroup(index);
          closed_group = true;
@@ -6860,9 +8916,21 @@ void ManageMultipleCandleGroups()
       if(g_reset_pending)
          return;
      }
+   BasketRenewalProcess();
    if(closed_group)
       return;
+   if(g_gui_applied_config.distance_mode != DISTANCE_CANDLE_RANGE
+      || g_gui_applied_config.candle_enable_multiple != 1)
+      return;
    MultiTryOpenCandleGroup();
+  }
+
+bool MultiHasActiveGroups()
+  {
+   for(int index = 0; index < ArraySize(g_multi_groups); index++)
+      if(g_multi_groups[index].active)
+         return true;
+   return false;
   }
 
 int CountManagedPositions()
@@ -7111,17 +9179,45 @@ string GuiDistanceModeText(const DistanceMode value)
       return "长K线市价";
    if(value == DISTANCE_BOLLINGER_RANGE)
       return "布林带区间";
+   if(value == DISTANCE_ZIGZAG_RANGE)
+      return "ZigZag波段";
+   if(value == DISTANCE_BOX_RANGE)
+      return "箱体高度";
+   if(value == DISTANCE_BOX_BREAKOUT)
+      return "箱体确认突破";
+
    return "固定距离";
   }
 
 string GuiDistanceSummaryText(const GuiConfig &config)
   {
-   if(config.distance_mode == DISTANCE_BOLLINGER_RANGE)
-      return "止损/止盈：布林带宽度/4";
+   if(config.distance_mode == DISTANCE_BOX_BREAKOUT)
+      return "窗口" + IntegerToString(config.box_breakout_lookback_bars)
+             + " / 宽度" + IntegerToString(config.box_breakout_min_width_points)
+             + "-" + IntegerToString(config.box_breakout_max_width_points)
+             + "点 / ATR" + IntegerToString(config.box_breakout_atr_period);
+
+   if(config.distance_mode == DISTANCE_BOX_RANGE)
+      return (config.box_range_time_mode == BOX_RANGE_ROLLING
+              ? "回看" + IntegerToString(config.box_range_lookback_hours) + "小时"
+              : config.box_range_start_time + "-" + config.box_range_end_time)
+             + " / " + IntegerToString(config.box_range_min_points) + "-"
+             + IntegerToString(config.box_range_max_points) + "点";
+    if(config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+       return "止损：带宽×" + DoubleToString(config.bollinger_stop_percent, 2)
+              + "% / 盈亏比1:" + DoubleToString(config.bollinger_reward_risk_ratio, 2)
+              + "，允许"
+              + IntegerToString(config.bollinger_min_stop_points) + "-"
+              + IntegerToString(config.bollinger_max_stop_points) + "点";
    if(config.distance_mode == DISTANCE_AVERAGE_CANDLE_RANGE)
       return "均高N=" + IntegerToString(config.average_candle_count)
              + " ×止损" + DoubleToString(config.average_stop_multiplier, 2)
              + " / 止盈" + DoubleToString(config.average_take_profit_multiplier, 2);
+   if(config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+      return "波段" + IntegerToString(config.zigzag_min_points) + "-"
+             + IntegerToString(config.zigzag_max_points) + "点 ×"
+             + DoubleToString(config.zigzag_stop_percent, 1) + "% / 止盈×"
+             + DoubleToString(config.zigzag_take_profit_multiplier, 2);
    return IntegerToString(config.stop_loss_distance_points) + "/"
           + IntegerToString(config.take_profit_distance_points);
   }
@@ -7163,35 +9259,60 @@ string GuiTakeProfitModeText(const TakeProfitMode value)
 bool GuiIsEditableDropdownKey(const string key)
    {
    return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "stop_first_order_lots"
           || key == "first_order_mult"
           || key == "stop_loss_distance_points"
           || key == "take_profit_distance_points"
-          || key == "candle_min_range_points"
-          || key == "candle_max_range_points"
+           || key == "candle_min_range_points"
+           || key == "candle_max_range_points"
+           || key == "box_range_lookback_hours"
+           || key == "box_range_min_points" || key == "box_range_max_points"
+           || key == "box_range_start_time" || key == "box_range_end_time"
+           || key == "bollinger_min_stop_points"
+           || key == "bollinger_max_stop_points"
+           || key == "bollinger_stop_percent"
+           || key == "bollinger_reward_risk_ratio"
           || key == "average_candle_count"
           || key == "average_stop_multiplier"
           || key == "average_take_profit_multiplier"
           || key == "bollinger_period"
           || key == "bollinger_deviation"
+          || key == "zigzag_depth" || key == "zigzag_deviation"
+          || key == "zigzag_backstep" || key == "zigzag_min_points"
+          || key == "zigzag_max_points" || key == "zigzag_stop_percent"
+          || key == "zigzag_take_profit_multiplier"
           || key == "grid_count" || key == "grid_lot_multiplier"
           || key == "max_reversals" || key == "start_time"
           || key == "end_time" || key == "start_time_2"
           || key == "end_time_2" || key == "start_time_3"
-          || key == "end_time_3";
+          || key == "end_time_3" || key == "box_range_lookback_hours"
+          || key == "box_range_min_points" || key == "box_range_max_points"
+          || key == "box_range_start_time" || key == "box_range_end_time"
+          || key == "box_breakout_timeframe" || key == "box_breakout_lookback_bars"
+          || key == "box_breakout_atr_period" || key == "box_breakout_touch_atr_multiplier"
+          || key == "box_breakout_min_upper_touches" || key == "box_breakout_min_lower_touches"
+          || key == "box_breakout_min_round_trips" || key == "box_breakout_min_touch_spacing_bars"
+          || key == "box_breakout_min_width_points" || key == "box_breakout_max_width_points"
+          || key == "box_breakout_buffer_atr_multiplier";
+
   }
 
 int GuiEditableDropdownOptionCount(const string key)
   {
    if(key == "initial_lots")
       return 10;
+   if(key == "stop_first_order_lots")
+      return 10;
    if(key == "initial_lots_multiplier")
       return 5;
    if(key == "first_order_mult")
       return 5;
-   if(key == "stop_loss_distance_points"
-      || key == "take_profit_distance_points"
-      || key == "candle_min_range_points"
-      || key == "candle_max_range_points")
+    if(key == "stop_loss_distance_points"
+       || key == "take_profit_distance_points"
+       || key == "candle_min_range_points"
+       || key == "candle_max_range_points"
+       || key == "bollinger_min_stop_points"
+       || key == "bollinger_max_stop_points")
       return 11;
    if(key == "average_candle_count")
       return 6;
@@ -7199,6 +9320,15 @@ int GuiEditableDropdownOptionCount(const string key)
       return 6;
    if(key == "bollinger_period" || key == "bollinger_deviation")
       return 6;
+   if(key == "bollinger_stop_percent")
+      return 5;
+   if(key == "bollinger_reward_risk_ratio")
+      return 6;
+   if(key == "zigzag_depth" || key == "zigzag_deviation"
+      || key == "zigzag_backstep" || key == "zigzag_min_points"
+      || key == "zigzag_max_points" || key == "zigzag_stop_percent"
+      || key == "zigzag_take_profit_multiplier")
+      return 5;
    if(key == "grid_count")
       return 10;
    if(key == "grid_lot_multiplier")
@@ -7207,14 +9337,58 @@ int GuiEditableDropdownOptionCount(const string key)
       return 19;
    if(key == "start_time" || key == "end_time"
       || key == "start_time_2" || key == "end_time_2"
-      || key == "start_time_3" || key == "end_time_3")
+      || key == "start_time_3" || key == "end_time_3"
+      || key == "box_range_start_time" || key == "box_range_end_time")
       return 24;
+   if(key == "box_range_lookback_hours") return 24;
+   if(key == "box_range_min_points" || key == "box_range_max_points") return 11;
    return 0;
   }
 
 string GuiEditableDropdownOptionText(const string key, const int index)
   {
+   if(key == "box_range_lookback_hours") return IntegerToString(index + 1);
+   if(key == "box_range_min_points" || key == "box_range_max_points")
+      return index < 10 ? IntegerToString((index + 1) * 100) : "1500";
+   if(key == "zigzag_depth")
+      return IntegerToString((index + 1) * 6);
+   if(key == "zigzag_deviation")
+      return IntegerToString(index + 1);
+   if(key == "zigzag_backstep")
+      return IntegerToString(index + 1);
+   if(key == "zigzag_min_points")
+      return IntegerToString((index + 1) * 100);
+   if(key == "zigzag_max_points")
+      return IntegerToString((index + 1) * 5000);
+   if(key == "zigzag_stop_percent")
+      return DoubleToString((index + 1) * 25.0, 0);
+   if(key == "bollinger_stop_percent")
+      return DoubleToString((index + 1) * 25.0, 0);
+   if(key == "bollinger_reward_risk_ratio")
+     {
+      if(index == 0) return "0.5";
+      if(index == 1) return "1.0";
+      if(index == 2) return "1.5";
+      if(index == 3) return "2.0";
+      if(index == 4) return "3.0";
+      if(index == 5) return "5.0";
+     }
+   if(key == "zigzag_take_profit_multiplier")
+      return DoubleToString((index + 1) * 0.5, 1);
    if(key == "initial_lots")
+     {
+      if(index == 0) return "0.01";
+      if(index == 1) return "0.02";
+      if(index == 2) return "0.03";
+      if(index == 3) return "0.04";
+      if(index == 4) return "0.05";
+      if(index == 5) return "0.1";
+      if(index == 6) return "0.2";
+      if(index == 7) return "0.3";
+      if(index == 8) return "0.4";
+      if(index == 9) return "0.5";
+     }
+   if(key == "stop_first_order_lots")
      {
       if(index == 0) return "0.01";
       if(index == 1) return "0.02";
@@ -7279,10 +9453,12 @@ string GuiEditableDropdownOptionText(const string key, const int index)
       if(index == 4) return "3.0";
       if(index == 5) return "4.0";
      }
-   if(key == "stop_loss_distance_points"
-      || key == "take_profit_distance_points"
-      || key == "candle_min_range_points"
-      || key == "candle_max_range_points")
+    if(key == "stop_loss_distance_points"
+       || key == "take_profit_distance_points"
+       || key == "candle_min_range_points"
+       || key == "candle_max_range_points"
+       || key == "bollinger_min_stop_points"
+       || key == "bollinger_max_stop_points")
      {
       if(index >= 0 && index < 10)
          return IntegerToString((index + 1) * 100);
@@ -7301,7 +9477,8 @@ string GuiEditableDropdownOptionText(const string key, const int index)
       return IntegerToString(index + 2);
    if(key == "start_time" || key == "end_time"
       || key == "start_time_2" || key == "end_time_2"
-      || key == "start_time_3" || key == "end_time_3")
+      || key == "start_time_3" || key == "end_time_3"
+      || key == "box_range_start_time" || key == "box_range_end_time")
      {
       for(int hour = 0; hour < 24; hour++)
         {
@@ -7314,12 +9491,15 @@ string GuiEditableDropdownOptionText(const string key, const int index)
 
 int GuiDropdownOptionCount(const string key)
   {
+   if(key == "first_order_lot_type")
+      return 3;
    if(key == "first_direction" || key == "first_direction_mode"
-       || key == "distance_mode" || key == "order_type"
+       || key == "distance_mode" || key == "box_range_time_mode" || key == "order_type"
        || key == "candle_order_mode" || key == "candle_enable_multiple"
        || key == "take_profit_mode" || key == "first_order_lot_type"
         || key == "favorable_grid_enable" || key == "dynamic_stop_loss_enable")
-      return key == "distance_mode" ? 5 : 2;
+      return key == "distance_mode" ? 8 : 2;
+
    if(key == "cycle_mode")
       return 4;
    return 0;
@@ -7347,8 +9527,14 @@ string GuiDropdownOptionText(const string key, const int index)
       if(index == 2) return "平均K线高度";
       if(index == 3) return "长K线市价";
       if(index == 4) return "布林带区间";
+      if(index == 5) return "ZigZag波段";
+      if(index == 6) return "箱体高度";
+      if(index == 7) return "箱体确认突破";
+
       return "固定距离";
      }
+   if(key == "box_range_time_mode")
+      return index == 1 ? "每日固定时段" : "滚动回看";
    if(key == "order_type")
       return index == 1 ? "逆向" : "正向";
    if(key == "candle_order_mode")
@@ -7358,7 +9544,11 @@ string GuiDropdownOptionText(const string key, const int index)
    if(key == "take_profit_mode")
        return index == 1 ? "线性移动" : "网格移动";
    if(key == "first_order_lot_type")
-       return index == 1 ? "上一组首单" : "累计组总手数";
+     {
+      if(index == 1) return "上一组首单";
+      if(index == 2) return "固定手数";
+      return "累计组总手数";
+     }
     if(key == "favorable_grid_enable")
        return index == 1 ? "开启" : "关闭";
     if(key == "dynamic_stop_loss_enable")
@@ -7376,6 +9566,7 @@ int GuiDropdownValueIndex(const string key)
       return (int)g_gui_draft_config.cycle_mode;
    if(key == "distance_mode")
       return (int)g_gui_draft_config.distance_mode;
+   if(key == "box_range_time_mode") return (int)g_gui_draft_config.box_range_time_mode;
    if(key == "order_type")
       return g_gui_draft_config.order_type == ORDERTYPE_REVERSE ? 1 : 0;
    if(key == "candle_order_mode")
@@ -7385,7 +9576,7 @@ int GuiDropdownValueIndex(const string key)
    if(key == "take_profit_mode")
        return g_gui_draft_config.take_profit_mode == TAKE_PROFIT_LINEAR ? 1 : 0;
    if(key == "first_order_lot_type")
-       return g_gui_draft_config.first_order_lot_type == 2 ? 1 : 0;
+       return g_gui_draft_config.first_order_lot_type - 1;
     if(key == "favorable_grid_enable")
        return g_gui_draft_config.favorable_grid_enable == 1 ? 1 : 0;
     if(key == "dynamic_stop_loss_enable")
@@ -7407,6 +9598,8 @@ bool GuiSetDropdownValue(const string key, const int index)
       g_gui_draft_config.cycle_mode = (CycleMode)index;
    else if(key == "distance_mode")
       g_gui_draft_config.distance_mode = (DistanceMode)index;
+   else if(key == "box_range_time_mode")
+      g_gui_draft_config.box_range_time_mode = (BoxRangeTimeMode)index;
    else if(key == "order_type")
       g_gui_draft_config.order_type = index == 1 ? ORDERTYPE_REVERSE : ORDERTYPE_FORWARD;
    else if(key == "candle_order_mode")
@@ -7416,7 +9609,7 @@ bool GuiSetDropdownValue(const string key, const int index)
    else if(key == "take_profit_mode")
        g_gui_draft_config.take_profit_mode = index == 1 ? TAKE_PROFIT_LINEAR : TAKE_PROFIT_GRID;
    else if(key == "first_order_lot_type")
-       g_gui_draft_config.first_order_lot_type = index == 1 ? 2 : 1;
+       g_gui_draft_config.first_order_lot_type = index + 1;
     else if(key == "favorable_grid_enable")
        g_gui_draft_config.favorable_grid_enable = index == 1 ? 1 : 0;
    else if(key == "dynamic_stop_loss_enable")
@@ -7448,12 +9641,15 @@ int GuiAnyDropdownValueIndex(const string key)
    const int option_count = GuiEditableDropdownOptionCount(key);
    const bool time_value = key == "start_time" || key == "end_time"
                            || key == "start_time_2" || key == "end_time_2"
-                           || key == "start_time_3" || key == "end_time_3";
+                           || key == "start_time_3" || key == "end_time_3"
+                           || key == "box_range_start_time" || key == "box_range_end_time";
    string current = "";
    if(key == "initial_lots")
       current = DoubleToString(g_gui_draft_config.initial_lots, 8);
    else if(key == "initial_lots_multiplier")
        current = DoubleToString(g_gui_draft_config.initial_lots_multiplier, 8);
+   else if(key == "stop_first_order_lots")
+       current = DoubleToString(g_gui_draft_config.stop_first_order_lots, 8);
    else if(key == "first_order_mult")
        current = DoubleToString(g_gui_draft_config.first_order_mult, 8);
    else if(key == "grid_count")
@@ -7466,8 +9662,29 @@ int GuiAnyDropdownValueIndex(const string key)
       current = IntegerToString(g_gui_draft_config.take_profit_distance_points);
    else if(key == "candle_min_range_points")
       current = IntegerToString(g_gui_draft_config.candle_min_range_points);
-   else if(key == "candle_max_range_points")
-      current = IntegerToString(g_gui_draft_config.candle_max_range_points);
+    else if(key == "candle_max_range_points")
+       current = IntegerToString(g_gui_draft_config.candle_max_range_points);
+   else if(key == "box_range_lookback_hours") current = IntegerToString(g_gui_draft_config.box_range_lookback_hours);
+   else if(key == "box_range_min_points") current = IntegerToString(g_gui_draft_config.box_range_min_points);
+   else if(key == "box_range_max_points") current = IntegerToString(g_gui_draft_config.box_range_max_points);
+   else if(key == "box_range_start_time") current = g_gui_draft_config.box_range_start_time;
+   else if(key == "box_range_end_time") current = g_gui_draft_config.box_range_end_time;
+   else if(key == "box_breakout_timeframe") current = IntegerToString((int)g_gui_draft_config.box_breakout_timeframe);
+   else if(key == "box_breakout_lookback_bars") current = IntegerToString(g_gui_draft_config.box_breakout_lookback_bars);
+   else if(key == "box_breakout_atr_period") current = IntegerToString(g_gui_draft_config.box_breakout_atr_period);
+   else if(key == "box_breakout_touch_atr_multiplier") current = DoubleToString(g_gui_draft_config.box_breakout_touch_atr_multiplier, 8);
+   else if(key == "box_breakout_min_upper_touches") current = IntegerToString(g_gui_draft_config.box_breakout_min_upper_touches);
+   else if(key == "box_breakout_min_lower_touches") current = IntegerToString(g_gui_draft_config.box_breakout_min_lower_touches);
+   else if(key == "box_breakout_min_round_trips") current = IntegerToString(g_gui_draft_config.box_breakout_min_round_trips);
+   else if(key == "box_breakout_min_touch_spacing_bars") current = IntegerToString(g_gui_draft_config.box_breakout_min_touch_spacing_bars);
+   else if(key == "box_breakout_min_width_points") current = IntegerToString(g_gui_draft_config.box_breakout_min_width_points);
+   else if(key == "box_breakout_max_width_points") current = IntegerToString(g_gui_draft_config.box_breakout_max_width_points);
+   else if(key == "box_breakout_buffer_atr_multiplier") current = DoubleToString(g_gui_draft_config.box_breakout_buffer_atr_multiplier, 8);
+
+    else if(key == "bollinger_min_stop_points")
+       current = IntegerToString(g_gui_draft_config.bollinger_min_stop_points);
+    else if(key == "bollinger_max_stop_points")
+       current = IntegerToString(g_gui_draft_config.bollinger_max_stop_points);
    else if(key == "average_candle_count")
       current = IntegerToString(g_gui_draft_config.average_candle_count);
    else if(key == "average_stop_multiplier")
@@ -7478,6 +9695,17 @@ int GuiAnyDropdownValueIndex(const string key)
       current = IntegerToString(g_gui_draft_config.bollinger_period);
    else if(key == "bollinger_deviation")
       current = DoubleToString(g_gui_draft_config.bollinger_deviation, 8);
+   else if(key == "bollinger_stop_percent")
+      current = DoubleToString(g_gui_draft_config.bollinger_stop_percent, 8);
+   else if(key == "bollinger_reward_risk_ratio")
+      current = DoubleToString(g_gui_draft_config.bollinger_reward_risk_ratio, 8);
+   else if(key == "zigzag_depth") current = IntegerToString(g_gui_draft_config.zigzag_depth);
+   else if(key == "zigzag_deviation") current = IntegerToString(g_gui_draft_config.zigzag_deviation);
+   else if(key == "zigzag_backstep") current = IntegerToString(g_gui_draft_config.zigzag_backstep);
+   else if(key == "zigzag_min_points") current = IntegerToString(g_gui_draft_config.zigzag_min_points);
+   else if(key == "zigzag_max_points") current = IntegerToString(g_gui_draft_config.zigzag_max_points);
+   else if(key == "zigzag_stop_percent") current = DoubleToString(g_gui_draft_config.zigzag_stop_percent, 8);
+   else if(key == "zigzag_take_profit_multiplier") current = DoubleToString(g_gui_draft_config.zigzag_take_profit_multiplier, 8);
    else if(key == "max_reversals")
       current = IntegerToString(g_gui_draft_config.max_reversals);
    else if(key == "start_time")
@@ -7514,6 +9742,8 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.initial_lots = StringToDouble(value);
    else if(key == "initial_lots_multiplier")
        g_gui_draft_config.initial_lots_multiplier = StringToDouble(value);
+   else if(key == "stop_first_order_lots")
+       g_gui_draft_config.stop_first_order_lots = StringToDouble(value);
    else if(key == "first_order_mult")
        g_gui_draft_config.first_order_mult = StringToDouble(value);
    else if(key == "stop_loss_distance_points")
@@ -7522,8 +9752,29 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.take_profit_distance_points = (int)StringToInteger(value);
    else if(key == "candle_min_range_points")
       g_gui_draft_config.candle_min_range_points = (int)StringToInteger(value);
-   else if(key == "candle_max_range_points")
-      g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+    else if(key == "candle_max_range_points")
+       g_gui_draft_config.candle_max_range_points = (int)StringToInteger(value);
+   else if(key == "box_range_lookback_hours") g_gui_draft_config.box_range_lookback_hours = (int)StringToInteger(value);
+   else if(key == "box_range_min_points") g_gui_draft_config.box_range_min_points = (int)StringToInteger(value);
+   else if(key == "box_range_max_points") g_gui_draft_config.box_range_max_points = (int)StringToInteger(value);
+   else if(key == "box_range_start_time") g_gui_draft_config.box_range_start_time = value;
+   else if(key == "box_range_end_time") g_gui_draft_config.box_range_end_time = value;
+   else if(key == "box_breakout_timeframe") g_gui_draft_config.box_breakout_timeframe = (ENUM_TIMEFRAMES)StringToInteger(value);
+   else if(key == "box_breakout_lookback_bars") g_gui_draft_config.box_breakout_lookback_bars = (int)StringToInteger(value);
+   else if(key == "box_breakout_atr_period") g_gui_draft_config.box_breakout_atr_period = (int)StringToInteger(value);
+   else if(key == "box_breakout_touch_atr_multiplier") g_gui_draft_config.box_breakout_touch_atr_multiplier = StringToDouble(value);
+   else if(key == "box_breakout_min_upper_touches") g_gui_draft_config.box_breakout_min_upper_touches = (int)StringToInteger(value);
+   else if(key == "box_breakout_min_lower_touches") g_gui_draft_config.box_breakout_min_lower_touches = (int)StringToInteger(value);
+   else if(key == "box_breakout_min_round_trips") g_gui_draft_config.box_breakout_min_round_trips = (int)StringToInteger(value);
+   else if(key == "box_breakout_min_touch_spacing_bars") g_gui_draft_config.box_breakout_min_touch_spacing_bars = (int)StringToInteger(value);
+   else if(key == "box_breakout_min_width_points") g_gui_draft_config.box_breakout_min_width_points = (int)StringToInteger(value);
+   else if(key == "box_breakout_max_width_points") g_gui_draft_config.box_breakout_max_width_points = (int)StringToInteger(value);
+   else if(key == "box_breakout_buffer_atr_multiplier") g_gui_draft_config.box_breakout_buffer_atr_multiplier = StringToDouble(value);
+
+    else if(key == "bollinger_min_stop_points")
+       g_gui_draft_config.bollinger_min_stop_points = (int)StringToInteger(value);
+    else if(key == "bollinger_max_stop_points")
+       g_gui_draft_config.bollinger_max_stop_points = (int)StringToInteger(value);
    else if(key == "average_candle_count")
       g_gui_draft_config.average_candle_count = (int)StringToInteger(value);
    else if(key == "average_stop_multiplier")
@@ -7534,6 +9785,17 @@ bool GuiSetAnyDropdownValue(const string key, const int index)
       g_gui_draft_config.bollinger_period = (int)StringToInteger(value);
    else if(key == "bollinger_deviation")
       g_gui_draft_config.bollinger_deviation = StringToDouble(value);
+   else if(key == "bollinger_stop_percent")
+      g_gui_draft_config.bollinger_stop_percent = StringToDouble(value);
+   else if(key == "bollinger_reward_risk_ratio")
+      g_gui_draft_config.bollinger_reward_risk_ratio = StringToDouble(value);
+   else if(key == "zigzag_depth") g_gui_draft_config.zigzag_depth = (int)StringToInteger(value);
+   else if(key == "zigzag_deviation") g_gui_draft_config.zigzag_deviation = (int)StringToInteger(value);
+   else if(key == "zigzag_backstep") g_gui_draft_config.zigzag_backstep = (int)StringToInteger(value);
+   else if(key == "zigzag_min_points") g_gui_draft_config.zigzag_min_points = (int)StringToInteger(value);
+   else if(key == "zigzag_max_points") g_gui_draft_config.zigzag_max_points = (int)StringToInteger(value);
+   else if(key == "zigzag_stop_percent") g_gui_draft_config.zigzag_stop_percent = StringToDouble(value);
+   else if(key == "zigzag_take_profit_multiplier") g_gui_draft_config.zigzag_take_profit_multiplier = StringToDouble(value);
    else if(key == "grid_count")
       g_gui_draft_config.grid_count = (int)StringToInteger(value);
    else if(key == "grid_lot_multiplier")
@@ -7659,20 +9921,79 @@ bool GuiDropdownFieldPosition(const string key, int &field_x, int &field_y)
       keys[6] = "initial_lots";
       keys[7] = "initial_lots_multiplier";
       keys[8] = "first_order_lot_type";
-      keys[9] = "first_order_mult";
+      keys[9] = g_gui_draft_config.first_order_lot_type == 3
+                ? "stop_first_order_lots" : "first_order_mult";
       keys[10] = "bollinger_period";
       keys[11] = "bollinger_deviation";
       field_count = 12;
      }
    else if(g_gui_page == GUI_PAGE_DISTANCE)
      {
+      if(g_gui_draft_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+        {
+         keys[0] = "distance_mode";
+         keys[1] = "take_profit_mode";
+         keys[2] = "zigzag_depth";
+         keys[3] = "zigzag_deviation";
+         keys[4] = "zigzag_backstep";
+         keys[5] = "zigzag_min_points";
+         keys[6] = "zigzag_max_points";
+         keys[7] = "zigzag_stop_percent";
+         keys[8] = "zigzag_take_profit_multiplier";
+         field_count = 9;
+        }
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_RANGE)
+        {
+         keys[0] = "distance_mode"; keys[1] = "box_range_time_mode";
+         if(g_gui_draft_config.box_range_time_mode == BOX_RANGE_ROLLING)
+           {
+            keys[2] = "box_range_lookback_hours"; keys[3] = "box_range_min_points";
+            keys[4] = "box_range_max_points"; field_count = 5;
+           }
+         else
+           {
+            keys[2] = "box_range_start_time"; keys[3] = "box_range_end_time";
+            keys[4] = "box_range_min_points"; keys[5] = "box_range_max_points";
+            field_count = 6;
+           }
+        }
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_BREAKOUT)
+        {
+         keys[0] = "distance_mode";
+         keys[1] = "box_breakout_timeframe"; keys[2] = "box_breakout_lookback_bars";
+         keys[3] = "box_breakout_atr_period"; keys[4] = "box_breakout_touch_atr_multiplier";
+         keys[5] = "box_breakout_min_upper_touches"; keys[6] = "box_breakout_min_lower_touches";
+         keys[7] = "box_breakout_min_round_trips"; keys[8] = "box_breakout_min_touch_spacing_bars";
+         keys[9] = "box_breakout_min_width_points"; keys[10] = "box_breakout_max_width_points";
+         keys[11] = "box_breakout_buffer_atr_multiplier"; field_count = 12;
+        }
+
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+        {
+         keys[0] = "distance_mode";
+         keys[1] = "take_profit_mode";
+         keys[2] = "bollinger_stop_percent";
+         keys[3] = "bollinger_reward_risk_ratio";
+         keys[4] = "bollinger_min_stop_points";
+         keys[5] = "bollinger_max_stop_points";
+         field_count = 6;
+        }
+      else
+        {
       keys[0] = "distance_mode";
-      keys[1] = "stop_loss_distance_points";
-      keys[2] = "take_profit_distance_points";
-      keys[3] = "candle_min_range_points";
-      keys[4] = "candle_max_range_points";
-      keys[5] = "take_profit_mode";
-      field_count = 6;
+       keys[1] = "stop_loss_distance_points";
+       keys[2] = "take_profit_distance_points";
+       keys[3] = "candle_min_range_points";
+       keys[4] = "candle_max_range_points";
+       keys[5] = "take_profit_mode";
+       keys[6] = "average_stop_multiplier";
+       keys[7] = "average_candle_count";
+       keys[8] = "bollinger_min_stop_points";
+       keys[9] = "average_take_profit_multiplier";
+       keys[10] = "bollinger_max_stop_points";
+       keys[11] = "bollinger_stop_percent";
+      field_count = 12;
+        }
      }
     else if(g_gui_page == GUI_PAGE_GRID)
       {
@@ -8271,7 +10592,9 @@ bool GuiRenderContent()
                                   right_x, summary_y + row_gap * 6, ok)) ok = false;
        if(!GuiRenderReadOnlyField("overview.first_order_lot_type", "止损首单类型",
                                   g_gui_applied_config.first_order_lot_type == 2
-                                  ? "上一组首单" : "累计组总手数",
+                                  ? "上一组首单"
+                                  : (g_gui_applied_config.first_order_lot_type == 3
+                                     ? "固定手数" : "累计组总手数"),
                                   left_x, summary_y + row_gap * 7, ok)) ok = false;
         if(!GuiRenderReadOnlyField("overview.first_order_mult", "首单类型2倍数",
                                   DoubleToString(g_gui_applied_config.first_order_mult, 8),
@@ -8332,13 +10655,25 @@ bool GuiRenderContent()
           ok = false;
        if(!GuiRenderEnumField("first_order_lot_type", "止损首单类型",
                               g_gui_draft_config.first_order_lot_type == 2
-                              ? "上一组首单" : "累计组总手数",
+                              ? "上一组首单"
+                              : (g_gui_draft_config.first_order_lot_type == 3
+                                 ? "固定手数" : "累计组总手数"),
                               left_x, row + row_gap * 4, ok))
           ok = false;
-       if(!GuiRenderEditableDropdownField("first_order_mult", "首单类型2倍数",
-                                          DoubleToString(g_gui_draft_config.first_order_mult, 8),
-                                          right_x, row + row_gap * 4, ok))
-          ok = false;
+       if(g_gui_draft_config.first_order_lot_type == 2)
+         {
+          if(!GuiRenderEditableDropdownField("first_order_mult", "首单类型2倍数",
+                                             DoubleToString(g_gui_draft_config.first_order_mult, 8),
+                                             right_x, row + row_gap * 4, ok))
+             ok = false;
+         }
+       else if(g_gui_draft_config.first_order_lot_type == 3)
+         {
+          if(!GuiRenderEditableDropdownField("stop_first_order_lots", "止损首单固定手数",
+                                             DoubleToString(g_gui_draft_config.stop_first_order_lots, 8),
+                                             right_x, row + row_gap * 4, ok))
+             ok = false;
+         }
        if(!GuiRenderEditableDropdownField("bollinger_period", "布林带周期",
                                           IntegerToString(g_gui_draft_config.bollinger_period),
                                           left_x, row + row_gap * 5, ok))
@@ -8355,9 +10690,89 @@ bool GuiRenderContent()
       const int right_x = left_x + GUI_FIELD_WIDTH + GUI_FORM_GAP;
       const int row = y + 94;
       const int row_gap = 64;
-      if(!GuiRenderEnumField("distance_mode", "距离模式",
+       if(!GuiRenderEnumField("distance_mode", "距离模式",
                              GuiDistanceModeText(g_gui_draft_config.distance_mode), left_x, row, ok))
          ok = false;
+      if(g_gui_draft_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+        {
+         if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
+                                GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode),
+                                right_x, row, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_depth", "ZigZag深度",
+                                            IntegerToString(g_gui_draft_config.zigzag_depth),
+                                            left_x, row + row_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_deviation", "ZigZag偏差",
+                                            IntegerToString(g_gui_draft_config.zigzag_deviation),
+                                            right_x, row + row_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_backstep", "ZigZag回退",
+                                            IntegerToString(g_gui_draft_config.zigzag_backstep),
+                                            left_x, row + row_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_min_points", "ZigZag距离最小值(点)",
+                                            IntegerToString(g_gui_draft_config.zigzag_min_points),
+                                            right_x, row + row_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_max_points", "ZigZag距离最大值(点)",
+                                            IntegerToString(g_gui_draft_config.zigzag_max_points),
+                                            left_x, row + row_gap * 3, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_stop_percent", "ZigZag止损百分比(%)",
+                                            DoubleToString(g_gui_draft_config.zigzag_stop_percent, 2),
+                                            right_x, row + row_gap * 3, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("zigzag_take_profit_multiplier", "ZigZag止盈倍数",
+                                            DoubleToString(g_gui_draft_config.zigzag_take_profit_multiplier, 2),
+                                            left_x, row + row_gap * 4, ok)) ok = false;
+        }
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_RANGE)
+        {
+         if(!GuiRenderEnumField("box_range_time_mode", "箱体时间范围",
+            g_gui_draft_config.box_range_time_mode == BOX_RANGE_DAILY_SESSION ? "每日固定时段" : "滚动回看",
+            right_x, row, ok)) ok = false;
+         if(g_gui_draft_config.box_range_time_mode == BOX_RANGE_ROLLING)
+           {
+            if(!GuiRenderEditableDropdownField("box_range_lookback_hours", "回看小时数", IntegerToString(g_gui_draft_config.box_range_lookback_hours), left_x, row + row_gap, ok)) ok = false;
+           }
+         else
+           {
+            if(!GuiRenderEditableDropdownField("box_range_start_time", "箱体开始时间", g_gui_draft_config.box_range_start_time, left_x, row + row_gap, ok)) ok = false;
+            if(!GuiRenderEditableDropdownField("box_range_end_time", "箱体结束时间", g_gui_draft_config.box_range_end_time, right_x, row + row_gap, ok)) ok = false;
+           }
+         if(!GuiRenderEditableDropdownField("box_range_min_points", "箱体最小高度(点)", IntegerToString(g_gui_draft_config.box_range_min_points), left_x, row + row_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_range_max_points", "箱体最大高度(点)", IntegerToString(g_gui_draft_config.box_range_max_points), right_x, row + row_gap * 2, ok)) ok = false;
+        }
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_BREAKOUT)
+        {
+         const int box_gap = 48;
+         if(!GuiRenderEditableDropdownField("box_breakout_timeframe", "识别周期(0当前/1=M1/5=M5/16385=H1)", IntegerToString((int)g_gui_draft_config.box_breakout_timeframe), left_x, row + box_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_lookback_bars", "观察窗口K线数", IntegerToString(g_gui_draft_config.box_breakout_lookback_bars), right_x, row + box_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_atr_period", "ATR周期", IntegerToString(g_gui_draft_config.box_breakout_atr_period), left_x, row + box_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_touch_atr_multiplier", "触碰容差ATR倍数", DoubleToString(g_gui_draft_config.box_breakout_touch_atr_multiplier, 2), right_x, row + box_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_min_upper_touches", "上沿最少触碰", IntegerToString(g_gui_draft_config.box_breakout_min_upper_touches), left_x, row + box_gap * 3, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_min_lower_touches", "下沿最少触碰", IntegerToString(g_gui_draft_config.box_breakout_min_lower_touches), right_x, row + box_gap * 3, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_min_round_trips", "最少完整往返", IntegerToString(g_gui_draft_config.box_breakout_min_round_trips), left_x, row + box_gap * 4, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_min_touch_spacing_bars", "同侧最小间隔K线", IntegerToString(g_gui_draft_config.box_breakout_min_touch_spacing_bars), right_x, row + box_gap * 4, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_min_width_points", "最小宽度(点)", IntegerToString(g_gui_draft_config.box_breakout_min_width_points), left_x, row + box_gap * 5, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_max_width_points", "最大宽度(点)", IntegerToString(g_gui_draft_config.box_breakout_max_width_points), right_x, row + box_gap * 5, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("box_breakout_buffer_atr_multiplier", "突破缓冲ATR倍数", DoubleToString(g_gui_draft_config.box_breakout_buffer_atr_multiplier, 2), left_x, row + box_gap * 6, ok)) ok = false;
+        }
+
+      else if(g_gui_draft_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+        {
+         if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
+                                GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode),
+                                right_x, row, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("bollinger_stop_percent", "布林带止损百分比(%)",
+                                            DoubleToString(g_gui_draft_config.bollinger_stop_percent, 2),
+                                            left_x, row + row_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("bollinger_reward_risk_ratio", "布林带盈亏比",
+                                            DoubleToString(g_gui_draft_config.bollinger_reward_risk_ratio, 2),
+                                            right_x, row + row_gap, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("bollinger_min_stop_points", "布林带最小止损距离(点)",
+                                            IntegerToString(g_gui_draft_config.bollinger_min_stop_points),
+                                            left_x, row + row_gap * 2, ok)) ok = false;
+         if(!GuiRenderEditableDropdownField("bollinger_max_stop_points", "布林带最大止损距离(点)",
+                                            IntegerToString(g_gui_draft_config.bollinger_max_stop_points),
+                                            right_x, row + row_gap * 2, ok)) ok = false;
+        }
+      else
+        {
       if(!GuiRenderEditableDropdownField("stop_loss_distance_points", "固定止损距离(点)",
                                          IntegerToString(g_gui_draft_config.stop_loss_distance_points),
                                          right_x, row, ok))
@@ -8382,14 +10797,27 @@ bool GuiRenderContent()
                                          DoubleToString(g_gui_draft_config.average_stop_multiplier, 8),
                                          left_x, row + row_gap * 3, ok))
          ok = false;
-      if(!GuiRenderEditableDropdownField("average_take_profit_multiplier", "平均止盈倍数",
-                                         DoubleToString(g_gui_draft_config.average_take_profit_multiplier, 8),
-                                         right_x, row + row_gap * 4, ok))
-         ok = false;
+       if(!GuiRenderEditableDropdownField("average_take_profit_multiplier", "平均止盈倍数",
+                                          DoubleToString(g_gui_draft_config.average_take_profit_multiplier, 8),
+                                          right_x, row + row_gap * 4, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("bollinger_min_stop_points", "布林带最小止损距离(点)",
+                                          IntegerToString(g_gui_draft_config.bollinger_min_stop_points),
+                                          left_x, row + row_gap * 4, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("bollinger_max_stop_points", "布林带最大止损距离(点)",
+                                          IntegerToString(g_gui_draft_config.bollinger_max_stop_points),
+                                          left_x, row + row_gap * 5, ok))
+          ok = false;
+       if(!GuiRenderEditableDropdownField("bollinger_stop_percent", "布林带止损百分比(%)",
+                                          DoubleToString(g_gui_draft_config.bollinger_stop_percent, 2),
+                                          right_x, row + row_gap * 5, ok))
+          ok = false;
       if(!GuiRenderEnumField("take_profit_mode", "止盈移动模式",
                              GuiTakeProfitModeText(g_gui_draft_config.take_profit_mode), right_x,
                              row + row_gap * 2, ok))
          ok = false;
+        }
       GuiRenderNotice(x + GUI_CONTENT_PADDING, y + 500, ok);
      }
    else if(g_gui_page == GUI_PAGE_GRID)
@@ -8596,18 +11024,37 @@ void GuiMarkDraftChanged()
 bool GuiIsEditableFieldKey(const string key)
   {
    return key == "initial_lots" || key == "initial_lots_multiplier"
+          || key == "stop_first_order_lots"
           || key == "first_order_mult"
           || key == "grid_count" || key == "grid_lot_multiplier"
           || key == "stop_loss_distance_points"
           || key == "take_profit_distance_points"
-          || key == "candle_min_range_points"
-          || key == "candle_max_range_points"
+           || key == "candle_min_range_points"
+           || key == "candle_max_range_points"
+           || key == "bollinger_min_stop_points"
+           || key == "bollinger_max_stop_points"
+           || key == "bollinger_stop_percent"
+           || key == "bollinger_reward_risk_ratio"
           || key == "bollinger_period"
           || key == "bollinger_deviation"
+          || key == "zigzag_depth" || key == "zigzag_deviation"
+          || key == "zigzag_backstep" || key == "zigzag_min_points"
+          || key == "zigzag_max_points" || key == "zigzag_stop_percent"
+          || key == "zigzag_take_profit_multiplier"
           || key == "max_reversals" || key == "magic_number"
           || key == "start_time" || key == "end_time"
           || key == "start_time_2" || key == "end_time_2"
           || key == "start_time_3" || key == "end_time_3"
+          || key == "box_range_lookback_hours"
+          || key == "box_range_min_points" || key == "box_range_max_points"
+          || key == "box_range_start_time" || key == "box_range_end_time"
+          || key == "box_breakout_timeframe" || key == "box_breakout_lookback_bars"
+          || key == "box_breakout_atr_period" || key == "box_breakout_touch_atr_multiplier"
+          || key == "box_breakout_min_upper_touches" || key == "box_breakout_min_lower_touches"
+          || key == "box_breakout_min_round_trips" || key == "box_breakout_min_touch_spacing_bars"
+          || key == "box_breakout_min_width_points" || key == "box_breakout_max_width_points"
+          || key == "box_breakout_buffer_atr_multiplier"
+
           || key == "order_comment";
   }
 
@@ -8675,7 +11122,36 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
    string trimmed = value;
    StringTrimLeft(trimmed);
    StringTrimRight(trimmed);
+   if(key == "zigzag_stop_percent" || key == "zigzag_take_profit_multiplier"
+      || key == "bollinger_stop_percent" || key == "bollinger_reward_risk_ratio"
+      || key == "box_breakout_touch_atr_multiplier"
+      || key == "box_breakout_buffer_atr_multiplier")
+
+     {
+      double parsed = 0.0;
+      if(!GuiTryParseDouble(trimmed, parsed) || !IsFinitePositive(parsed))
+        {
+         error = "百分比和止盈倍数必须为正数";
+         return false;
+        }
+      normalized = DoubleToString(parsed, 16);
+      return true;
+     }
+   if(key == "zigzag_depth" || key == "zigzag_deviation"
+      || key == "zigzag_backstep" || key == "zigzag_min_points"
+      || key == "zigzag_max_points")
+     {
+      int parsed = 0;
+      if(!GuiTryParseInteger(trimmed, parsed) || parsed <= 0)
+        {
+         error = "ZigZag整数参数必须大于0";
+         return false;
+        }
+      normalized = IntegerToString(parsed);
+      return true;
+     }
     if(key == "initial_lots" || key == "initial_lots_multiplier"
+       || key == "stop_first_order_lots"
        || key == "first_order_mult"
        || key == "grid_lot_multiplier")
      {
@@ -8688,11 +11164,18 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
       normalized = DoubleToString(parsed, 8);
       return true;
      }
-   if(key == "stop_loss_distance_points"
-      || key == "take_profit_distance_points"
-      || key == "candle_min_range_points"
-      || key == "candle_max_range_points"
-      || key == "bollinger_period"
+    if(key == "stop_loss_distance_points"
+       || key == "take_profit_distance_points"
+       || key == "candle_min_range_points"
+       || key == "candle_max_range_points"
+       || key == "bollinger_min_stop_points"
+       || key == "bollinger_max_stop_points"
+      || key == "bollinger_period" || key == "box_breakout_timeframe"
+      || key == "box_breakout_lookback_bars" || key == "box_breakout_atr_period"
+      || key == "box_breakout_min_upper_touches" || key == "box_breakout_min_lower_touches"
+      || key == "box_breakout_min_round_trips" || key == "box_breakout_min_touch_spacing_bars"
+      || key == "box_breakout_min_width_points" || key == "box_breakout_max_width_points"
+
       || key == "grid_count" || key == "max_reversals")
      {
       int parsed = 0;
@@ -8701,11 +11184,19 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
          error = "请输入有效的整数";
          return false;
         }
-      if((key == "stop_loss_distance_points"
-          || key == "take_profit_distance_points"
-          || key == "candle_min_range_points"
-          || key == "candle_max_range_points"
-          || key == "bollinger_period") && parsed <= 0)
+       if((key == "stop_loss_distance_points"
+           || key == "take_profit_distance_points"
+           || key == "candle_min_range_points"
+           || key == "candle_max_range_points"
+           || key == "bollinger_min_stop_points"
+           || key == "bollinger_max_stop_points"
+            || key == "bollinger_period" || key == "box_range_lookback_hours"
+            || key == "box_range_min_points" || key == "box_range_max_points"
+            || key == "box_breakout_lookback_bars" || key == "box_breakout_atr_period"
+            || key == "box_breakout_min_upper_touches" || key == "box_breakout_min_lower_touches"
+            || key == "box_breakout_min_round_trips" || key == "box_breakout_min_touch_spacing_bars"
+            || key == "box_breakout_min_width_points" || key == "box_breakout_max_width_points") && parsed <= 0)
+
         {
          error = "距离和K线高度必须大于 0";
          return false;
@@ -8725,13 +11216,34 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
          error = "最大反手次数不能小于 0";
          return false;
         }
-      if(key == "candle_max_range_points"
-         && parsed < g_gui_draft_config.candle_min_range_points)
-        {
-         error = "K线最大高度不能小于最小高度";
-         return false;
-        }
-      normalized = IntegerToString(parsed);
+       if(key == "candle_max_range_points"
+          && parsed < g_gui_draft_config.candle_min_range_points)
+         {
+          error = "K线最大高度不能小于最小高度";
+          return false;
+         }
+       if(key == "bollinger_min_stop_points"
+          && parsed > g_gui_draft_config.bollinger_max_stop_points)
+         {
+          error = "布林带最小止损距离不能大于最大值";
+          return false;
+         }
+       if(key == "bollinger_max_stop_points"
+          && parsed < g_gui_draft_config.bollinger_min_stop_points)
+         {
+          error = "布林带最大止损距离不能小于最小值";
+          return false;
+         }
+       if(key == "box_range_min_points" && parsed > g_gui_draft_config.box_range_max_points)
+         { error = "箱体最小高度不能大于最大值"; return false; }
+       if(key == "box_range_max_points" && parsed < g_gui_draft_config.box_range_min_points)
+         { error = "箱体最大高度不能小于最小值"; return false; }
+       if(key == "box_breakout_min_width_points" && parsed > g_gui_draft_config.box_breakout_max_width_points)
+         { error = "箱体突破最小宽度不能大于最大值"; return false; }
+       if(key == "box_breakout_max_width_points" && parsed < g_gui_draft_config.box_breakout_min_width_points)
+         { error = "箱体突破最大宽度不能小于最小值"; return false; }
+
+       normalized = IntegerToString(parsed);
       return true;
      }
    if(key == "magic_number")
@@ -8747,7 +11259,8 @@ bool GuiParseEditableDropdownValue(const string key, const string value,
      }
    if(key == "start_time" || key == "end_time"
       || key == "start_time_2" || key == "end_time_2"
-      || key == "start_time_3" || key == "end_time_3")
+      || key == "start_time_3" || key == "end_time_3"
+      || key == "box_range_start_time" || key == "box_range_end_time")
      {
       string time_value = trimmed;
       if(StringLen(time_value) == 4 && StringGetCharacter(time_value, 1) == 58)
@@ -8797,7 +11310,16 @@ bool GuiSyncEditValue(const string key)
    double parsed_double = 0.0;
    int parsed_integer = 0;
    long parsed_long = 0;
-   if(key == "initial_lots")
+   if(key == "zigzag_depth") g_gui_draft_config.zigzag_depth = (int)StringToInteger(value);
+   else if(key == "zigzag_deviation") g_gui_draft_config.zigzag_deviation = (int)StringToInteger(value);
+   else if(key == "zigzag_backstep") g_gui_draft_config.zigzag_backstep = (int)StringToInteger(value);
+   else if(key == "zigzag_min_points") g_gui_draft_config.zigzag_min_points = (int)StringToInteger(value);
+   else if(key == "zigzag_max_points") g_gui_draft_config.zigzag_max_points = (int)StringToInteger(value);
+   else if(key == "zigzag_stop_percent") g_gui_draft_config.zigzag_stop_percent = StringToDouble(value);
+   else if(key == "bollinger_stop_percent") g_gui_draft_config.bollinger_stop_percent = StringToDouble(value);
+   else if(key == "bollinger_reward_risk_ratio") g_gui_draft_config.bollinger_reward_risk_ratio = StringToDouble(value);
+   else if(key == "zigzag_take_profit_multiplier") g_gui_draft_config.zigzag_take_profit_multiplier = StringToDouble(value);
+   else if(key == "initial_lots")
      {
       if(!GuiTryParseDouble(value, parsed_double))
         {
@@ -8817,6 +11339,16 @@ bool GuiSyncEditValue(const string key)
         }
        g_gui_draft_config.initial_lots_multiplier = parsed_double;
       }
+   else if(key == "stop_first_order_lots")
+     {
+      if(!GuiTryParseDouble(value, parsed_double))
+        {
+         g_gui_notice = "止损首单固定手数格式无效";
+         GuiRefreshNoticeObject();
+         return false;
+        }
+      g_gui_draft_config.stop_first_order_lots = parsed_double;
+     }
     else if(key == "first_order_mult")
       {
        if(!GuiTryParseDouble(value, parsed_double))
@@ -8825,7 +11357,7 @@ bool GuiSyncEditValue(const string key)
           GuiRefreshNoticeObject();
           return false;
          }
-       g_gui_draft_config.first_order_mult = parsed_double;
+        g_gui_draft_config.first_order_mult = parsed_double;
       }
    else if(key == "grid_count")
      {
@@ -8877,16 +11409,53 @@ bool GuiSyncEditValue(const string key)
         }
       g_gui_draft_config.candle_min_range_points = parsed_integer;
      }
-   else if(key == "candle_max_range_points")
-     {
+    else if(key == "box_range_lookback_hours") g_gui_draft_config.box_range_lookback_hours = parsed_integer;
+    else if(key == "box_breakout_timeframe") g_gui_draft_config.box_breakout_timeframe = (ENUM_TIMEFRAMES)parsed_integer;
+    else if(key == "box_breakout_lookback_bars") g_gui_draft_config.box_breakout_lookback_bars = parsed_integer;
+    else if(key == "box_breakout_atr_period") g_gui_draft_config.box_breakout_atr_period = parsed_integer;
+    else if(key == "box_breakout_min_upper_touches") g_gui_draft_config.box_breakout_min_upper_touches = parsed_integer;
+    else if(key == "box_breakout_min_lower_touches") g_gui_draft_config.box_breakout_min_lower_touches = parsed_integer;
+    else if(key == "box_breakout_min_round_trips") g_gui_draft_config.box_breakout_min_round_trips = parsed_integer;
+    else if(key == "box_breakout_min_touch_spacing_bars") g_gui_draft_config.box_breakout_min_touch_spacing_bars = parsed_integer;
+    else if(key == "box_breakout_min_width_points") g_gui_draft_config.box_breakout_min_width_points = parsed_integer;
+    else if(key == "box_breakout_max_width_points") g_gui_draft_config.box_breakout_max_width_points = parsed_integer;
+    else if(key == "box_breakout_touch_atr_multiplier") g_gui_draft_config.box_breakout_touch_atr_multiplier = parsed_double;
+    else if(key == "box_breakout_buffer_atr_multiplier") g_gui_draft_config.box_breakout_buffer_atr_multiplier = parsed_double;
+
+    else if(key == "box_range_min_points") g_gui_draft_config.box_range_min_points = parsed_integer;
+    else if(key == "box_range_max_points") g_gui_draft_config.box_range_max_points = parsed_integer;
+    else if(key == "box_range_start_time") g_gui_draft_config.box_range_start_time = value;
+    else if(key == "box_range_end_time") g_gui_draft_config.box_range_end_time = value;
+    else if(key == "candle_max_range_points")
+      {
       if(!GuiTryParseInteger(value, parsed_integer))
         {
          g_gui_notice = "K线最大高度格式无效";
          GuiRefreshNoticeObject();
          return false;
         }
-      g_gui_draft_config.candle_max_range_points = parsed_integer;
-     }
+       g_gui_draft_config.candle_max_range_points = parsed_integer;
+      }
+    else if(key == "bollinger_min_stop_points")
+      {
+       if(!GuiTryParseInteger(value, parsed_integer))
+         {
+          g_gui_notice = "布林带最小止损距离格式无效";
+          GuiRefreshNoticeObject();
+          return false;
+         }
+       g_gui_draft_config.bollinger_min_stop_points = parsed_integer;
+      }
+    else if(key == "bollinger_max_stop_points")
+      {
+       if(!GuiTryParseInteger(value, parsed_integer))
+         {
+          g_gui_notice = "布林带最大止损距离格式无效";
+          GuiRefreshNoticeObject();
+          return false;
+         }
+       g_gui_draft_config.bollinger_max_stop_points = parsed_integer;
+      }
    else if(key == "bollinger_period")
      {
       if(!GuiTryParseInteger(value, parsed_integer))
@@ -8906,6 +11475,26 @@ bool GuiSyncEditValue(const string key)
          return false;
         }
       g_gui_draft_config.bollinger_deviation = parsed_double;
+     }
+   else if(key == "bollinger_stop_percent")
+     {
+      if(!GuiTryParseDouble(value, parsed_double) || !IsFinitePositive(parsed_double))
+        {
+         g_gui_notice = "布林带止损百分比格式无效";
+         GuiRefreshNoticeObject();
+         return false;
+        }
+      g_gui_draft_config.bollinger_stop_percent = parsed_double;
+     }
+   else if(key == "bollinger_reward_risk_ratio")
+     {
+      if(!GuiTryParseDouble(value, parsed_double) || !IsFinitePositive(parsed_double))
+        {
+         g_gui_notice = "布林带盈亏比格式无效";
+         GuiRefreshNoticeObject();
+         return false;
+        }
+      g_gui_draft_config.bollinger_reward_risk_ratio = parsed_double;
      }
    else if(key == "max_reversals")
      {
@@ -9216,15 +11805,66 @@ bool GuiHandleChartClick(const int x, const int y)
       keys[6] = "initial_lots_multiplier";
       field_count = 7;
      }
-   else if(g_gui_page == GUI_PAGE_DISTANCE)
-     {
-      keys[0] = "distance_mode";
-      keys[1] = "stop_loss_distance_points";
-      keys[2] = "take_profit_distance_points";
-      keys[3] = "candle_min_range_points";
-      keys[4] = "candle_max_range_points";
-      keys[5] = "take_profit_mode";
-      field_count = 6;
+    else if(g_gui_page == GUI_PAGE_DISTANCE)
+      {
+       if(g_gui_draft_config.distance_mode == DISTANCE_ZIGZAG_RANGE)
+         {
+          keys[0] = "distance_mode";
+          keys[1] = "take_profit_mode";
+          keys[2] = "zigzag_depth";
+          keys[3] = "zigzag_deviation";
+          keys[4] = "zigzag_backstep";
+          keys[5] = "zigzag_min_points";
+          keys[6] = "zigzag_max_points";
+          keys[7] = "zigzag_stop_percent";
+          keys[8] = "zigzag_take_profit_multiplier";
+          field_count = 9;
+         }
+       else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_RANGE)
+         {
+          keys[0] = "distance_mode"; keys[1] = "box_range_time_mode";
+          if(g_gui_draft_config.box_range_time_mode == BOX_RANGE_ROLLING)
+            { keys[2] = "box_range_lookback_hours"; keys[3] = "box_range_min_points"; keys[4] = "box_range_max_points"; field_count = 5; }
+          else
+            { keys[2] = "box_range_start_time"; keys[3] = "box_range_end_time"; keys[4] = "box_range_min_points"; keys[5] = "box_range_max_points"; field_count = 6; }
+         }
+       else if(g_gui_draft_config.distance_mode == DISTANCE_BOX_BREAKOUT)
+         {
+          keys[0] = "distance_mode"; keys[1] = "box_breakout_timeframe";
+          keys[2] = "box_breakout_lookback_bars"; keys[3] = "box_breakout_atr_period";
+          keys[4] = "box_breakout_touch_atr_multiplier";
+          keys[5] = "box_breakout_min_upper_touches"; keys[6] = "box_breakout_min_lower_touches";
+          keys[7] = "box_breakout_min_round_trips"; keys[8] = "box_breakout_min_touch_spacing_bars";
+          keys[9] = "box_breakout_min_width_points"; keys[10] = "box_breakout_max_width_points";
+          keys[11] = "box_breakout_buffer_atr_multiplier"; field_count = 12;
+         }
+
+       else if(g_gui_draft_config.distance_mode == DISTANCE_BOLLINGER_RANGE)
+         {
+          keys[0] = "distance_mode";
+          keys[1] = "take_profit_mode";
+          keys[2] = "bollinger_stop_percent";
+          keys[3] = "bollinger_reward_risk_ratio";
+          keys[4] = "bollinger_min_stop_points";
+          keys[5] = "bollinger_max_stop_points";
+          field_count = 6;
+         }
+       else
+         {
+       keys[0] = "distance_mode";
+       keys[1] = "stop_loss_distance_points";
+       keys[2] = "take_profit_distance_points";
+       keys[3] = "candle_min_range_points";
+       keys[4] = "candle_max_range_points";
+       keys[5] = "take_profit_mode";
+       keys[6] = "average_stop_multiplier";
+       keys[7] = "average_candle_count";
+       keys[8] = "bollinger_min_stop_points";
+       keys[9] = "average_take_profit_multiplier";
+       keys[10] = "bollinger_max_stop_points";
+       keys[11] = "bollinger_stop_percent";
+       field_count = 12;
+         }
      }
     else if(g_gui_page == GUI_PAGE_GRID)
       {
@@ -9666,6 +12306,11 @@ int OnInit()
       PrintFormat("Invalid GUI configuration: %s", config_error);
       return INIT_PARAMETERS_INCORRECT;
      }
+   if(!EnsureBoxAtrHandle())
+     {
+      Print("Failed to create the ATR handle for box-breakout recognition.");
+      return INIT_FAILED;
+     }
 
    if(!AcquireExecutionOwnership())
       return INIT_FAILED;
@@ -9683,9 +12328,10 @@ int OnInit()
       g_active_cycle_mode = g_gui_applied_config.cycle_mode;
      }
    LoadState();
-   if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
-      && g_gui_applied_config.candle_enable_multiple == 1)
-      MultiLoadGroups();
+   MultiLoadGroups();
+   BasketRenewalLoad();
+   LoadBoxState();
+
    g_trade.SetTypeFillingBySymbol(_Symbol);
    if(v_enable == 1)
      {
@@ -9709,10 +12355,12 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
             MultiSaveGroup(g_multi_groups[index]);
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
       ProcessInitialPendingFillEvent();
+     BasketRenewalProtectVisible();
   }
 
 void OnTimer()
   {
+   if(g_reset_pending && BasketRenewalResetIsPending()) {ProcessReset();return;}
    if(g_trade_request_in_flight)
       ConfirmTradeRequestFromVisiblePosition();
    for(int index = 0; index < ArraySize(g_multi_groups); index++)
@@ -9720,6 +12368,7 @@ void OnTimer()
          MultiConfirmTradeRequestFromVisible(g_multi_groups[index]);
    EmitStrategyWatchdog();
    ProcessInitialPendingFillEvent();
+     BasketRenewalProtectVisible();
   }
 
 void OnTick()
@@ -9727,8 +12376,9 @@ void OnTick()
    if(!AcquireExecutionOwnership())
       return;
    EmitStrategyWatchdog();
-   if(g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
-      && g_gui_applied_config.candle_enable_multiple == 1)
+   if((g_gui_applied_config.distance_mode == DISTANCE_CANDLE_RANGE
+       && g_gui_applied_config.candle_enable_multiple == 1)
+      || MultiHasActiveGroups() || BasketRenewalHasWork())
       ManageMultipleCandleGroups();
    else
       Manage();
@@ -9738,6 +12388,13 @@ void OnTick()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
+   ReleaseBoxAtrHandle();
+
+   if(g_zigzag_handle != INVALID_HANDLE)
+     {
+      IndicatorRelease(g_zigzag_handle);
+      g_zigzag_handle = INVALID_HANDLE;
+     }
    GuiDestroy();
    if(g_gui_config_initialized)
      {

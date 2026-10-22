@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>不管涨跌 EA 参数解析报告</title>
+  <style>
+    :root { color-scheme: light; --navy:#173455; --ink:#203047; --muted:#586b80; --line:#dce5ef; --soft:#f4f8fc; --amber:#fff1cc; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:"Microsoft YaHei","Noto Sans CJK SC",Arial,sans-serif; color:var(--ink); background:#eef3f8; }
+    main { max-width:1500px; margin:0 auto; padding:32px 24px 64px; }
+    header { margin-bottom:24px; }
+    h1 { margin:0 0 8px; font-size:28px; color:var(--navy); }
+    .lead { margin:0; color:var(--muted); line-height:1.75; }
+    .summary { display:flex; gap:12px; flex-wrap:wrap; margin:24px 0; }
+    .summary div { background:white; border:1px solid var(--line); border-radius:10px; padding:14px 18px; min-width:170px; }
+    .summary strong { display:block; font-size:24px; color:var(--navy); }
+    .summary span { color:var(--muted); font-size:13px; }
+    .notice { background:#eaf2fb; border-left:4px solid #4278b1; padding:14px 18px; margin:0 0 22px; line-height:1.75; border-radius:0 8px 8px 0; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 14px; }
+    input,select { font:inherit; padding:10px 12px; border:1px solid #bdccdc; border-radius:8px; background:#fff; color:var(--ink); }
+    input { flex:1; min-width:230px; }
+    select { min-width:170px; }
+    #matchCount { color:var(--muted); font-size:13px; }
+    .table-wrap { overflow:auto; background:#fff; border:1px solid var(--line); border-radius:10px; box-shadow:0 5px 22px rgba(19,52,85,.05); }
+    table { width:100%; min-width:1050px; border-collapse:collapse; table-layout:fixed; }
+    col:nth-child(1){width:14%} col:nth-child(2){width:15%} col:nth-child(3){width:36%} col:nth-child(4){width:11%} col:nth-child(5){width:24%}
+    thead th { position:sticky; top:0; z-index:1; background:var(--navy); color:white; padding:13px 12px; text-align:left; font-size:14px; }
+    tbody tr:nth-child(even) { background:var(--soft); }
+    tbody td { padding:13px 12px; border-top:1px solid var(--line); vertical-align:top; line-height:1.65; overflow-wrap:anywhere; font-size:14px; }
+    .parameter { font-weight:700; color:var(--navy); }
+    .status { font-weight:700; }
+    tr[data-status="active"] .status { color:#136a4b; }
+    tr[data-status="inactive"] .status { color:#8c6000; background:var(--amber); }
+    [hidden] { display:none !important; }
+    footer { color:var(--muted); font-size:13px; line-height:1.7; margin-top:20px; }
+    @media print { body{background:#fff} main{max-width:none;padding:0} .toolbar{display:none} .table-wrap{box-shadow:none;border:0;overflow:visible} thead th{position:static} tbody tr{break-inside:avoid} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>不管涨跌 EA 参数解析报告</h1>
+    <p class="lead">对应所提供的 MT5 参数截图。按截图显示顺序列出参数、当前值、定义和生效条件。</p>
+  </header>
+  <section class="summary" aria-label="参数概览">
+    <div><strong id="totalCount">0</strong><span>截图中可见参数</span></div>
+    <div><strong id="activeCount">0</strong><span>当前生效</span></div>
+    <div><strong id="inactiveCount">0</strong><span>当前不生效</span></div>
+  </section>
+  <p class="notice"><strong>当前关键设置：</strong>首组预设做多；固定止损 100 点、固定止盈 200 点；止损首单类型为 2，下一组首单按上一组首单手数乘 2.0；最多进行 2 次止损后订单组切换。这里的“点”按交易品种的 _Point 计算。</p>
+  <div class="toolbar">
+    <input id="search" type="search" placeholder="搜索参数名或说明，例如：网格、止损、K线" aria-label="搜索参数">
+    <select id="statusFilter" aria-label="筛选生效状态">
+      <option value="all">全部参数</option>
+      <option value="active">只看当前生效</option>
+      <option value="inactive">只看当前不生效</option>
+    </select>
+    <span id="matchCount"></span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <colgroup><col><col><col><col><col></colgroup>
+      <thead><tr><th>参数</th><th>截图当前值</th><th>详细定义</th><th>当前是否生效</th><th>生效条件与补充说明</th></tr></thead>
+      <tbody>
+<tr data-status="active"><td class="parameter">首单方向</td><td class="">首单做多</td><td class="">全新一轮的第一组采用的预设方向。止损后各组方向由循环模式决定。</td><td class="status">生效</td><td class="">首单方向确定方式为“使用预设首单方向”时使用。</td></tr>
+<tr data-status="active"><td class="parameter">首单方向确定方式</td><td class="">使用预设首单方向</td><td class="">选择预设方向，或用现价相对布林带中轨确定首组方向；高于中轨做多，低于中轨做空。</td><td class="status">生效</td><td class="">当前使用“首单方向”的设置。</td></tr>
+<tr data-status="inactive"><td class="parameter">布林带周期</td><td class="">20</td><td class="">计算布林带中轨、上下轨所用的K线周期。</td><td class="status">当前不生效</td><td class="">首单方向选择布林带判断，或距离模式选择布林带区间时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">布林带标准差</td><td class="">2.0</td><td class="">控制布林带上下轨宽度的标准差倍数。</td><td class="status">当前不生效</td><td class="">首单方向选择布林带判断，或距离模式选择布林带区间时使用。</td></tr>
+<tr data-status="active"><td class="parameter">循环模式</td><td class="">模式一：多空空多空空</td><td class="">止损切换时决定下一组方向；首组做空则整串方向对调。模式二：多空多空多多；模式三：多空多多空多；模式四：多空空多多空空。</td><td class="status">生效</td><td class="">只控制订单组方向，不控制手数；模式一至三为六阶段，模式四为七阶段。</td></tr>
+<tr data-status="active"><td class="parameter">距离模式</td><td class="">固定止盈止损距离</td><td class="">决定当前组止盈、止损距离的来源。可选固定点数、上一根K线高度、平均K线高度、长K线市价、布林带区间。</td><td class="status">生效</td><td class="">当前读取“固定止损距离”和“固定止盈距离”。</td></tr>
+<tr data-status="inactive"><td class="parameter">开单方式</td><td class="">正向开单</td><td class="">K线高度模式下，正向为突破前一根K线高点做多、跌破低点做空；逆向则相反。</td><td class="status">当前不生效</td><td class="">仅距离模式为“K线高度”时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">K线开单模式</td><td class="">同一根当前K线只触发一次首单</td><td class="">一次模式在前一根K线高低点预挂双向首单，一侧成交后撤销另一侧；重复模式可在同一根当前K线再次按突破条件市价开首单。</td><td class="status">当前不生效</td><td class="">仅距离模式为“K线高度”时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">K线多组</td><td class="">0</td><td class="">0＝同时只管理一个订单组；1＝符合K线触发条件时可建立多个独立并行的订单组。</td><td class="status">当前不生效</td><td class="">仅距离模式为“K线高度”时使用。</td></tr>
+<tr data-status="active"><td class="parameter">止盈移动模式</td><td class="">网格移动止盈</td><td class="">不利方向网格成交后，以该笔网格成交价为参考重设整组止盈；有利方向网格成交不推动止盈。另一选项为线性移动。</td><td class="status">生效</td><td class="">止盈距离仍由当前组的距离模式决定。</td></tr>
+<tr data-status="active"><td class="parameter">首单手数</td><td class="">0.01</td><td class="">全新一轮第一组的基础首单手数；止盈或清理重启后重新从此值开始。</td><td class="status">生效</td><td class="">下单时还须符合品种最小手数、最大手数和步长。</td></tr>
+<tr data-status="inactive"><td class="parameter">首单手数倍数</td><td class="">1.0</td><td class="">止损首单类型为1时，下一组首单＝此前所有止损组总成交手数之和（含网格）×此倍数。</td><td class="status">当前不生效</td><td class="">当前止损首单类型为2。</td></tr>
+<tr data-status="active"><td class="parameter">止损首单类型</td><td class="">2</td><td class="">1＝累计此前止损组总成交手数再乘“首单手数倍数”；2＝上一组首单手数乘“首单类型2倍数”；3＝采用“止损首单固定手数”。</td><td class="status">生效</td><td class="">当前采用类型2，网格加单不计入下一组首单公式。</td></tr>
+<tr data-status="active"><td class="parameter">首单类型2倍数</td><td class="">2.0</td><td class="">类型2下，止损后下一组首单＝上一组首单实际手数×此倍数。例：0.01→0.02→0.04手。</td><td class="status">生效</td><td class="">仅“止损首单类型＝2”时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">止损首单固定手数</td><td class="">0.01</td><td class="">类型3下，止损后下一组首单直接使用此固定手数，不乘类型1或类型2的倍数；适用于止损直开及反向预挂单提前成交。</td><td class="status">当前不生效</td><td class="">当前止损首单类型为2。</td></tr>
+<tr data-status="active"><td class="parameter">最大反手次数</td><td class="">2</td><td class="">本轮最多允许2次止损后切换订单组；即初始组加后续2组。第三组再止损时清理并重新从基础首单开始。</td><td class="status">生效</td><td class="">同方向衔接也计数；设0则首组止损后直接清理重启。</td></tr>
+<tr data-status="active"><td class="parameter">网格数量</td><td class="">2</td><td class="">将首单锚定价到外层止损价之间等分为2格，所以每个开启方向只有1个内部网格价位。</td><td class="status">生效</td><td class="">N格对应N－1个内部网格层级；并非额外加N笔。</td></tr>
+<tr data-status="active"><td class="parameter">有利方向加单</td><td class="">1</td><td class="">1＝启用顺势网格：多单上涨或空单下跌时也按同样格距加同方向仓；0＝关闭。</td><td class="status">生效</td><td class="">当前有利方向有1个内部网格层级。</td></tr>
+<tr data-status="active"><td class="parameter">动态止损</td><td class="">1</td><td class="">1＝有利方向网格实际成交后，按已成交的最高有利层级收紧整组止损；0＝止损保持初始锚定位置。</td><td class="status">生效</td><td class="">只收紧；不利方向网格成交不会放宽止损。</td></tr>
+<tr data-status="active"><td class="parameter">v_enable</td><td class="">0</td><td class="">MT5自定义图表界面开关：0＝不显示；1＝显示。</td><td class="status">生效</td><td class="">不会停止EA交易；截图是MT5自带的“输入”窗口。</td></tr>
+<tr data-status="active"><td class="parameter">网格手数倍数</td><td class="">2.0</td><td class="">通常下一订单组的每笔网格手数＝上一组每笔网格手数×此倍数；首组网格手数默认等于首单手数。</td><td class="status">生效</td><td class="">当前与首单类型2倍数相同，EA会以当前组首单手数校准网格手数。</td></tr>
+<tr data-status="active"><td class="parameter">固定止损距离</td><td class="">100</td><td class="">固定距离模式下，新组首单锚定价到初始止损位的距离为100点。</td><td class="status">生效</td><td class="">有利网格成交且动态止损为1时，止损可进一步收紧。</td></tr>
+<tr data-status="active"><td class="parameter">固定止盈距离</td><td class="">200</td><td class="">固定距离模式下，新组首单锚定价到初始止盈位的距离为200点。</td><td class="status">生效</td><td class="">不利网格成交后可按当前“网格移动止盈”规则调整。</td></tr>
+<tr data-status="inactive"><td class="parameter">K线最小高度</td><td class="">500</td><td class="">上一根已完成K线高低价差的最低有效点数，包含边界值500。</td><td class="status">当前不生效</td><td class="">仅距离模式为“K线高度”时用于筛选K线。</td></tr>
+<tr data-status="inactive"><td class="parameter">K线最大高度</td><td class="">1000</td><td class="">上一根已完成K线高低价差的最高有效点数，包含边界值1000。</td><td class="status">当前不生效</td><td class="">仅距离模式为“K线高度”时用于筛选K线。</td></tr>
+<tr data-status="inactive"><td class="parameter">平均K线根数</td><td class="">20</td><td class="">计算平均高度时使用最近20根已完成K线的各自高低价差。</td><td class="status">当前不生效</td><td class="">仅距离模式为“平均K线高度”时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">平均止损倍数</td><td class="">1.0</td><td class="">平均K线高度模式下，止损点数＝平均K线高度点数×此倍数。</td><td class="status">当前不生效</td><td class="">仅距离模式为“平均K线高度”时使用。</td></tr>
+<tr data-status="inactive"><td class="parameter">平均止盈倍数</td><td class="">1.0</td><td class="">平均K线高度模式下，止盈点数＝计算出的止损点数×此倍数。</td><td class="status">当前不生效</td><td class="">仅距离模式为“平均K线高度”时使用。</td></tr>
+<tr data-status="active"><td class="parameter">订单识别编号</td><td class="">20260830</td><td class="">EA用于识别和管理自身订单的编号。</td><td class="status">生效</td><td class="">同账户、同品种运行多个实例时，应使用不同编号。</td></tr>
+<tr data-status="active"><td class="parameter">订单注释</td><td class="">不管涨跌</td><td class="">发送到交易平台的订单备注；部分网格单会追加内部识别标记。</td><td class="status">生效</td><td class="">不是交易方向或手数参数。</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <footer>仅覆盖截图中可见的 29 项。截图下方未显示的参数不在此表中。说明依据当前 EA 源码及截图设置整理。</footer>
+</main>
+<script>
+  const rows = [...document.querySelectorAll('tbody tr')];
+  const active = rows.filter(row => row.dataset.status === 'active').length;
+  document.getElementById('totalCount').textContent = rows.length;
+  document.getElementById('activeCount').textContent = active;
+  document.getElementById('inactiveCount').textContent = rows.length - active;
+  const search = document.getElementById('search');
+  const filter = document.getElementById('statusFilter');
+  function update() {
+    const query = search.value.trim().toLocaleLowerCase('zh-CN');
+    let count = 0;
+    for (const row of rows) {
+      const visible = (filter.value === 'all' || row.dataset.status === filter.value)
+        && (!query || row.textContent.toLocaleLowerCase('zh-CN').includes(query));
+      row.hidden = !visible;
+      if (visible) count++;
+    }
+    document.getElementById('matchCount').textContent = `显示 ${count} / ${rows.length} 项`;
+  }
+  search.addEventListener('input', update);
+  filter.addEventListener('change', update);
+  update();
+</script>
+</body>
+</html>
